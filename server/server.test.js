@@ -4,6 +4,24 @@ import { saveState, emptyState } from './state.js';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import http from 'node:http';
+
+// fetch() (undici) treats "Host" as a forbidden header name and silently
+// derives it from the URL instead of honoring an override, so a spoofed-Host
+// test needs node:http directly (no such restriction) to actually exercise
+// guardMutation's Host check.
+function postWithHost(port, path, host) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method: 'POST',
+      headers: { 'content-type': 'application/json', host } }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, json: () => JSON.parse(body) }));
+    });
+    req.on('error', reject);
+    req.end('{}');
+  });
+}
 
 let server, base, statePath;
 
@@ -117,7 +135,7 @@ test('POST /api/action on an unknown key is a no-op that still succeeds', async 
   const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'ack', key: 'DOES-NOT-EXIST' }) });
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ ok: true });
+  expect(await res.json()).toEqual({ ok: true, bucket: null });
   const { loadState: loadStateFn } = await import('./state.js');
   expect(loadStateFn(statePath).cards['DOES-NOT-EXIST'].lastSeenJira).not.toBeNull();
 });
@@ -150,6 +168,17 @@ test('POST /api/write with an unknown type returns 400 even when write-back is d
   expect((await res.json()).error).toContain('unknown write type');
 });
 
+test('POST /api/write body cannot smuggle a config/state override to bypass the gate', async () => {
+  // The handler destructures only the named write fields out of the parsed
+  // body — a `...body` spread into performWrite's params would let this
+  // "config" key shadow the server's real config object and flip its own
+  // gate open. writeEnabled is false on this test server; it must stay 403.
+  const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'comment', key: 'P-1', body: 'hi', config: { writeEnabled: true, demo: false }, state: {} }) });
+  expect(res.status).toBe(403);
+  expect((await res.json()).error).toBe('write-back disabled; set writeEnabled: true in config.json');
+});
+
 test('POST /api/write with invalid JSON returns 400', async () => {
   const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json' });
   expect(res.status).toBe(400);
@@ -177,6 +206,54 @@ test('POST /api/write in demo mode returns a 200 stub-success refusal, not a 403
   } finally {
     demoServer.close();
   }
+});
+
+// Drive-by cross-origin protection (guardMutation in index.js), applied to
+// every mutating POST /api/* endpoint. Bodies below are deliberately valid
+// JSON with harmless-looking fields so only the guard (not body parsing or
+// downstream validation) determines the response.
+const MUTATING_ENDPOINTS = ['/api/action', '/api/refresh', '/api/write'];
+
+test('POST /api/* with a non-JSON Content-Type is refused 415, for every mutating endpoint', async () => {
+  for (const path of MUTATING_ENDPOINTS) {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}',
+    });
+    expect(res.status, path).toBe(415);
+    expect((await res.json()).error).toBe('Content-Type must be application/json');
+  }
+});
+
+test('POST /api/* with a spoofed Host header is refused 403, for every mutating endpoint', async () => {
+  const port = server.address().port;
+  for (const path of MUTATING_ENDPOINTS) {
+    const res = await postWithHost(port, path, 'evil.example.com');
+    expect(res.status, path).toBe(403);
+    expect(res.json().error).toBe('invalid Host header');
+  }
+});
+
+test('POST /api/* with the right hostname but the wrong port is refused 403 (DNS-rebinding-adjacent)', async () => {
+  const port = server.address().port;
+  const res = await postWithHost(port, '/api/action', `127.0.0.1:${port + 1}`);
+  expect(res.status).toBe(403);
+});
+
+test('POST /api/* with correct Content-Type and Host passes the guard (reaches normal handling)', async () => {
+  // /api/action with a real body still 200s; /api/refresh and /api/write
+  // with an empty body reach their own validation past the guard (not a
+  // 415/403), proving the guard itself isn't what's blocking them.
+  const actionRes = await fetch(`${base}/api/action`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ack', key: 'GUARD-TEST' }),
+  });
+  expect(actionRes.status).toBe(200);
+
+  const writeRes = await fetch(`${base}/api/write`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(writeRes.status).not.toBe(415);
+  expect(writeRes.status).not.toBe(403);
 });
 
 // True first boot: no refresh has ever run, so state.snapshot is still null

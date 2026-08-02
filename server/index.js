@@ -15,6 +15,33 @@ async function readBody(req) {
   return JSON.parse(s || '{}');
 }
 
+// Drive-by cross-origin protection for every mutating POST /api/* endpoint
+// (/api/action, /api/refresh, /api/write). Two independent checks:
+//   - Content-Type must be application/json. None of the CORS-safelisted
+//     content types (text/plain, multipart/form-data,
+//     application/x-www-form-urlencoded) qualify as JSON, so any real
+//     cross-origin caller needs a CORS preflight first — and this server
+//     never sends Access-Control-Allow-Origin, so the browser never lets
+//     the actual request through. This is what stops a "simple request"
+//     CSRF from any page the user happens to have open.
+//   - Host header must be this exact loopback address plus the port this
+//     TCP connection actually landed on (req.socket.localPort, not
+//     config.port — those can differ, e.g. config.port: 0 in tests).
+//     Stops DNS rebinding: an attacker domain re-pointed at 127.0.0.1
+//     still sends its own Host header, not "127.0.0.1"/"localhost".
+function guardMutation(req) {
+  const contentType = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    return { status: 415, error: 'Content-Type must be application/json' };
+  }
+  const host = (req.headers.host ?? '').toLowerCase();
+  const port = req.socket.localPort;
+  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
+    return { status: 403, error: 'invalid Host header' };
+  }
+  return null;
+}
+
 export function createServer({ config, statePath, webDist }) {
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
@@ -37,11 +64,15 @@ export function createServer({ config, statePath, webDist }) {
         return send(200, state.snapshot ?? emptySnapshot());
       }
       if (url.pathname === '/api/refresh' && req.method === 'POST') {
+        const guardErr = guardMutation(req);
+        if (guardErr) return send(guardErr.status, { error: guardErr.error });
         const payload = await refresh({ config, state });
         saveState(statePath, state);
         return send(200, payload);
       }
       if (url.pathname === '/api/action' && req.method === 'POST') {
+        const guardErr = guardMutation(req);
+        if (guardErr) return send(guardErr.status, { error: guardErr.error });
         let body;
         try {
           body = await readBody(req);
@@ -52,16 +83,22 @@ export function createServer({ config, statePath, webDist }) {
         const result = applyAction({ state, config, type, key, bucket });
         if (result.error) return send(result.status ?? 400, { error: result.error });
         saveState(statePath, state);
-        return send(200, { ok: true });
+        return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {
+        const guardErr = guardMutation(req);
+        if (guardErr) return send(guardErr.status, { error: guardErr.error });
         let body;
         try {
           body = await readBody(req);
         } catch {
           return send(400, { error: 'invalid JSON body' });
         }
-        const result = await performWrite({ config, state, ...body });
+        // Explicit destructure, not `...body`: a spread would let a client
+        // smuggle arbitrary keys (e.g. "config"/"state") into performWrite's
+        // named parameters, potentially overriding config/state entirely.
+        const { type, key, repo, number, body: text, status } = body;
+        const result = await performWrite({ config, state, type, key, repo, number, body: text, status });
         if (result.error) return send(result.status ?? 400, { error: result.error });
         if (!result.demo) saveState(statePath, state);
         return send(200, result);

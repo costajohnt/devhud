@@ -74,7 +74,7 @@ The override persists across refreshes: on every `/api/refresh`, `classifyCard` 
 
 An action against an unknown `key` (a card not present in any bucket, or never seen before) does not 400. `cardState` is created lazily and the horizon fields are still written to `data/state.json`, but there's no matching snapshot item to move, so the action is a no-op on the visible board. This is intentional: it makes acking a card that just left the board (e.g. it merged and moved to `mergedCards` between page load and the click) harmless instead of an error.
 
-On success, both action types respond `{ "ok": true }` and persist `data/state.json` before returning.
+On success, both action types respond `{ "ok": true, "bucket": string | null }` — `bucket` is the card's resulting bucket, or `null` if it isn't on the current board (see the unknown-`key` case above) — and persist `data/state.json` before returning.
 
 ## POST /api/write
 

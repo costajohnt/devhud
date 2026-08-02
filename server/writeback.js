@@ -11,14 +11,31 @@
 // post-write refresh can't drift between callers, mirroring applyAction's
 // role for ack/move.
 import { refresh } from './refresh.js';
+import { loadConfig } from './config.js';
 
-/** Minimal ADF (Atlassian Document Format) doc wrapping plain text in one paragraph. */
+// One paragraph node's content: a blank-line-free run of text, hardBreak
+// nodes standing in for single \n line breaks within it. ADF has no notion
+// of a literal newline inside a text node — every \n has to become either a
+// paragraph boundary (blank line) or an explicit hardBreak node.
+function adfParagraph(paragraphText) {
+  const content = [];
+  paragraphText.split('\n').forEach((line, i) => {
+    if (i > 0) content.push({ type: 'hardBreak' });
+    if (line) content.push({ type: 'text', text: line });
+  });
+  return { type: 'paragraph', content };
+}
+
+/**
+ * Minimal ADF (Atlassian Document Format) doc from plain text: blank lines
+ * (\n\n or more) become paragraph breaks, single \n becomes a hardBreak
+ * within a paragraph. No formatting beyond that — this exists to make a
+ * multi-line comment/description readable in Jira's UI, not to support
+ * markdown or rich text.
+ */
 export function buildAdfDoc(text) {
-  return {
-    type: 'doc',
-    version: 1,
-    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
-  };
+  const paragraphs = text.split(/\n{2,}/).map(adfParagraph);
+  return { type: 'doc', version: 1, content: paragraphs.length ? paragraphs : [adfParagraph('')] };
 }
 
 // Case-insensitive match on transition.to.name (the workflow status a
@@ -113,6 +130,8 @@ const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 // the post-write refresh (same contract as applyAction) — callers persist
 // it themselves. `refreshFn` defaults to the real refresh() and exists so
 // tests can inject a throwing stub without reaching for module mocking.
+// `configPath`/`loadConfigFn` exist for the same reason, feeding the fresh
+// re-read below — see that comment for what/why.
 // Returns:
 //   - { ok: true, demo: true, message } — demo-mode stub, nothing written
 //   - { ok: true, ...writebackResult } — real write succeeded, board refreshed
@@ -121,7 +140,10 @@ const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 //     went through), refreshError is a warning for the caller to surface,
 //     not a reason to report the whole call as failed
 //   - { error, status } — validation failure, gate refusal, or write failure
-export async function performWrite({ config, state, type, key, repo, number, body, status, refreshFn = refresh }) {
+export async function performWrite({
+  config, state, type, key, repo, number, body, status,
+  refreshFn = refresh, configPath, loadConfigFn = loadConfig,
+}) {
   if (!WRITE_TYPES.includes(type)) {
     return { error: `unknown write type "${type}"`, status: 400 };
   }
@@ -141,7 +163,21 @@ export async function performWrite({ config, state, type, key, repo, number, bod
     return { error: `invalid repo "${repo}" or PR number`, status: 400 };
   }
 
-  const gate = checkWriteGate(config);
+  // Re-read config from disk fresh on every write (not the possibly-
+  // long-lived in-memory `config` a caller loaded once at process start),
+  // so flipping writeEnabled (or demo) in config.json takes effect on the
+  // very next write, with no server/CLI/MCP restart needed. loadConfig()
+  // is cheap — one readFileSync + JSON.parse. Falls back to the caller's
+  // in-memory `config` if the re-read throws (e.g. config.json transiently
+  // unreadable mid-edit) rather than hard-failing a write over that.
+  let liveConfig;
+  try {
+    liveConfig = loadConfigFn(configPath);
+  } catch {
+    liveConfig = config;
+  }
+
+  const gate = checkWriteGate(liveConfig);
   if (gate.blocked) {
     if (gate.demo) return { ok: true, demo: true, message: gate.message };
     return { error: gate.message, status: 403 };
@@ -149,9 +185,9 @@ export async function performWrite({ config, state, type, key, repo, number, bod
 
   let result;
   try {
-    if (type === 'transition') result = await transitionCard(config.jira, key, status);
-    else if (type === 'comment') result = await commentCard(config.jira, key, body);
-    else result = await commentPr(config.github, repo, number, body);
+    if (type === 'transition') result = await transitionCard(liveConfig.jira, key, status);
+    else if (type === 'comment') result = await commentCard(liveConfig.jira, key, body);
+    else result = await commentPr(liveConfig.github, repo, number, body);
   } catch (e) {
     return { error: e.message, status: 502 };
   }
@@ -169,7 +205,7 @@ export async function performWrite({ config, state, type, key, repo, number, bod
   console.log = () => {};
   let refreshError;
   try {
-    await refreshFn({ config, state });
+    await refreshFn({ config: liveConfig, state });
   } catch (e) {
     refreshError = e.message;
   } finally {

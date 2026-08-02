@@ -7,11 +7,11 @@
 // HTTP API so its in-memory state (source of truth while it's up) is what
 // gets read/mutated. Otherwise operate directly on disk via the same
 // server/*.js modules the server itself uses.
-import { loadState, saveState, emptySnapshot } from '../server/state.js';
+import { loadState, emptySnapshot } from '../server/state.js';
 import { refresh } from '../server/refresh.js';
 import { applyAction } from '../server/actions.js';
 import { performWrite } from '../server/writeback.js';
-import { probeServer, serverAppearsRunning, splitBrainError } from '../server/transport.js';
+import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from '../server/transport.js';
 
 async function getSnapshot({ config, statePath }) {
   const viaServer = await probeServer(config.port);
@@ -40,7 +40,7 @@ export async function doRefresh({ config, statePath }) {
   const viaServer = await probeServer(config.port);
   let payload;
   if (viaServer) {
-    payload = await (await fetch(`http://127.0.0.1:${config.port}/api/refresh`, { method: 'POST' })).json();
+    payload = await (await fetch(`http://127.0.0.1:${config.port}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
   } else {
     const blockingPid = serverAppearsRunning(statePath);
     if (blockingPid) return { error: splitBrainError(blockingPid) };
@@ -55,7 +55,13 @@ export async function doRefresh({ config, statePath }) {
     } finally {
       console.log = originalLog;
     }
-    saveState(statePath, state);
+    // Re-checked immediately before the write, not just the early guard
+    // above — a server can start during the refresh itself.
+    try {
+      saveStateGuarded(statePath, state);
+    } catch (e) {
+      return { error: e.message };
+    }
   }
   const counts = Object.fromEntries(Object.entries(payload.buckets).map(([b, items]) => [b, items.length]));
   return { counts, errors: payload.errors, newlyMerged: payload.newlyMerged };
@@ -81,7 +87,12 @@ async function doAction({ config, statePath, type, key, bucket }) {
   const state = loadState(statePath);
   const r = applyAction({ state, config, type, key, bucket });
   if (r.error) return { error: r.error };
-  saveState(statePath, state);
+  // Re-checked immediately before the write, not just the early guard above.
+  try {
+    saveStateGuarded(statePath, state);
+  } catch (e) {
+    return { error: e.message };
+  }
   return { ok: true, bucket: r.bucket };
 }
 
@@ -114,7 +125,16 @@ async function doWrite({ config, statePath, type, key, repo, number, body, statu
   if (blockingPid) return { error: splitBrainError(blockingPid) };
   const state = loadState(statePath);
   const result = await performWrite({ config, state, ...writeArgs });
-  if (result.ok && !result.demo) saveState(statePath, state);
+  if (result.ok && !result.demo) {
+    // Re-checked immediately before the write. The external Jira/GitHub
+    // write already succeeded by this point — a blocked local save must not
+    // read as the whole call having failed (same reasoning as refreshError).
+    try {
+      saveStateGuarded(statePath, state);
+    } catch (e) {
+      return { ...result, saveBlockedError: e.message };
+    }
+  }
   return result;
 }
 

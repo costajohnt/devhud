@@ -25,7 +25,7 @@ export function useData() {
     refreshInFlight.current = true;
     setRefreshing(true);
     try {
-      const res = await fetch('/api/refresh', { method: 'POST' });
+      const res = await fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' } });
       if (!res.ok) throw new Error(`refresh ${res.status}`);
       const d: DashboardData = await res.json();
       setData(d);

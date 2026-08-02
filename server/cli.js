@@ -12,11 +12,11 @@ import { spawnSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
-import { loadState, saveState, emptySnapshot } from './state.js';
+import { loadState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
 import { applyAction, BUCKETS } from './actions.js';
 import { performWrite } from './writeback.js';
-import { probeServer, serverAppearsRunning, splitBrainError } from './transport.js';
+import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.js';
 
 // Re-exported for backward compatibility: server/cli.test.js imports
 // probeServer from here, and server/transport.js is also used directly by
@@ -99,7 +99,7 @@ export async function run(argv, { config, statePath }) {
     let payload;
     if (cmd === 'refresh') {
       if (viaServer) {
-        payload = await (await fetch(`${base}/api/refresh`, { method: 'POST' })).json();
+        payload = await (await fetch(`${base}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
       } else {
         const blockingPid = serverAppearsRunning(statePath);
         if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
@@ -115,7 +115,13 @@ export async function run(argv, { config, statePath }) {
         } finally {
           console.log = originalLog;
         }
-        saveState(statePath, state);
+        // Re-checked immediately before the write (not just the early guard
+        // above) — a server can start during the refresh itself.
+        try {
+          saveStateGuarded(statePath, state);
+        } catch (e) {
+          return { code: 1, out: '', err: [err, e.message].join('\n') };
+        }
       }
     } else {
       payload = viaServer
@@ -154,8 +160,14 @@ export async function run(argv, { config, statePath }) {
       if (r.error) {
         result = { error: r.error };
       } else {
-        saveState(statePath, state);
-        result = { ok: true, bucket: r.bucket };
+        // Re-checked immediately before the write, not just the early guard
+        // above — closes the gap a slow applyAction call could open.
+        try {
+          saveStateGuarded(statePath, state);
+          result = { ok: true, bucket: r.bucket };
+        } catch (e) {
+          result = { error: e.message };
+        }
       }
     }
 
@@ -209,7 +221,19 @@ export async function run(argv, { config, statePath }) {
       if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
       const state = loadState(statePath);
       result = await performWrite({ config, state, ...writeArgs });
-      if (result.ok && !result.demo) saveState(statePath, state);
+      if (result.ok && !result.demo) {
+        // Re-checked immediately before the write, not just the early guard
+        // above. The external Jira/GitHub write already went through by
+        // this point though — a save being blocked here must not read as
+        // the whole command having failed (nothing needs retrying upstream,
+        // and retrying could double-post a comment); it's a warning field
+        // on an otherwise-successful result, same treatment as refreshError.
+        try {
+          saveStateGuarded(statePath, state);
+        } catch (e) {
+          result = { ...result, saveBlockedError: e.message };
+        }
+      }
     }
 
     if (values.json) {
@@ -218,9 +242,13 @@ export async function run(argv, { config, statePath }) {
     if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
     if (result.demo) return { code: 0, out: result.message, err };
     const out = result.transitionedTo ? `${key} -> ${result.transitionedTo}` : `${cmd} ok`;
-    // The write itself succeeded even if the post-write refresh failed — a
-    // warning, not an error: exit 0, success on stdout, warning on stderr.
-    const finalErr = result.refreshError ? [err, `Warning: board refresh after write failed: ${result.refreshError}`].join('\n') : err;
+    // The write itself succeeded even if the post-write refresh failed, or
+    // the local save got blocked — warnings, not errors: exit 0, success on
+    // stdout, warning(s) on stderr.
+    const warnings = [];
+    if (result.refreshError) warnings.push(`Warning: board refresh after write failed: ${result.refreshError}`);
+    if (result.saveBlockedError) warnings.push(`Warning: local board save skipped: ${result.saveBlockedError}`);
+    const finalErr = warnings.length ? [err, ...warnings].join('\n') : err;
     return { code: 0, out, err: finalErr };
   }
 
