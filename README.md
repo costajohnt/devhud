@@ -2,6 +2,18 @@
 
 Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serves a Preact SPA that tracks card status and PR activity across projects.
 
+See [docs/API.md](docs/API.md) for the full HTTP API reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the module map, data flow, and design decisions.
+
+## Features
+
+- **Buckets**: cards land in Needs Attention, In Progress, Waiting in Review, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
+- **Attention triggers**: a card surfaces in Needs Attention on CI failing, new PR comments, new Jira comments, or a merged PR whose card isn't yet In Test/Done.
+- **Drag-and-drop**: drag a card between In Progress, Waiting in Review, and In QA to pin it there (an override), independent of what the classifier would otherwise pick.
+- **Charts**: a Monthly Activity line chart (Opened/Merged/Closed) and a Top Repos stacked bar chart (Active/Merged/Closed), built from the full PR lifecycle log.
+- **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
+- **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
+- **Celebration**: confetti and a toast the first time a PR is observed merged.
+
 ## Demo mode
 
 Set `"demo": true` in `config.json` (or run with `JIRA_DASH_DEMO=1`) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
@@ -48,31 +60,15 @@ Logs go to `/tmp/jira-dash.log`. To unload: `launchctl unload ~/Library/LaunchAg
 
 ## API
 
-### GET /api/data
-
-Returns current state snapshot: cards organized into buckets, TODO items, merged cards, recent activity, and any sync errors.
-
-### POST /api/refresh
-
-Fetch fresh data from Jira and GitHub, returning the updated snapshot.
-
-### POST /api/action
-
-Accept a card action as JSON:
-
-- `type: 'ack'` - mark card as acknowledged. Clears attention flags, moves the card out of `needs_attention` (to its override bucket if one is set, otherwise a bucket derived from Jira status), and resets the "seen" horizon to the data horizon (the last snapshot's `updatedAt`, not wall-clock time). The override itself is **kept** — acking doesn't undo a prior manual move.
-- `type: 'move', bucket: 'in_progress' | 'waiting_review' | 'in_qa'` - move card to a specific bucket and pin it there via an override. Also resets the "seen" horizon, so comments already accounted for don't immediately bounce the card back to `needs_attention` on the next refresh.
-- `key` - Jira issue key (required for both).
-
-All manual moves and acknowledgements are stored locally in `data/state.json`. Jira and GitHub are never written.
+Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the last snapshot from memory, `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds it, `POST /api/action` applies an `ack` or `move` to one card. All manual moves and acknowledgements are stored locally in `data/state.json`; Jira and GitHub are never written to.
 
 ## Buckets
 
-- **needs_attention**: Triggered by new PR comments from others since last-seen, new Jira card comments from others since last-seen, CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done" status. These "live" triggers (CI failing, merged-not-in-test) re-flag the card on the next refresh regardless of any override — only the comment-based triggers are silenced by acking/moving, since those reset the seen horizon. A manual move pins the card to that bucket until a fresh attention trigger fires.
+- **needs_attention**: Triggered by new PR comments from others since last-seen, new Jira card comments from others since last-seen, CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done" status. These "live" triggers (CI failing, merged-not-in-test) re-flag the card on the next refresh regardless of any override. Only the comment-based triggers are silenced by acking/moving, since those reset the seen horizon. A manual move pins the card to that bucket until a fresh attention trigger fires.
 - **in_qa**: Jira card status is "In Test".
 - **waiting_review**: Open PR with review requests or active review comments.
 - **in_progress**: Everything else (default).
 
 ## Local State
 
-Manual moves and acknowledgements are stored in `data/state.json`. Server reads live Jira/GitHub state on each `/api/refresh` and merges with your local overrides.
+Manual moves and acknowledgements are stored in `data/state.json`. Server reads live Jira/GitHub state on each `/api/refresh` and merges with your local overrides. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#statejson-anatomy) for the full shape.

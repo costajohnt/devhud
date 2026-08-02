@@ -17,7 +17,9 @@ beforeAll(async () => {
   const state = emptyState();
   state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
     buckets: { needs_attention: [{ key: 'P-1', attention: ['ci_failing'], newComments: [], jiraStatus: 'open', bucket: 'needs_attention' }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+    closedPrs: [{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }],
+    prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }] };
   saveState(statePath, state);
   const config = { port: 0, jira: {}, github: {} };
   server = createServer({ config, statePath, webDist });
@@ -30,6 +32,12 @@ afterAll(() => server.close());
 test('GET /api/data returns snapshot', async () => {
   const d = await (await fetch(`${base}/api/data`)).json();
   expect(d.buckets.needs_attention[0].key).toBe('P-1');
+});
+
+test('GET /api/data carries closedPrs and prLog through unchanged', async () => {
+  const d = await (await fetch(`${base}/api/data`)).json();
+  expect(d.closedPrs).toEqual([{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }]);
+  expect(d.prLog).toEqual([{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }]);
 });
 
 test('POST /api/action ack clears attention and persists lastSeen', async () => {
@@ -99,4 +107,52 @@ test('sequential POSTs both persist (no lost update)', async () => {
   const state = loadStateFn(statePath);
   expect(state.cards['P-1'].lastSeenJira).not.toBeNull();
   expect(state.cards['P-1'].override).toBe('in_qa');
+});
+
+// A card that's no longer on the board (merged away, or never fetched) is a
+// valid target: cardState is created lazily and the horizon fields persist,
+// but there's no matching snapshot item to move, so this is a no-op on the
+// visible board rather than a 400.
+test('POST /api/action on an unknown key is a no-op that still succeeds', async () => {
+  const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ack', key: 'DOES-NOT-EXIST' }) });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ ok: true });
+  const { loadState: loadStateFn } = await import('./state.js');
+  expect(loadStateFn(statePath).cards['DOES-NOT-EXIST'].lastSeenJira).not.toBeNull();
+});
+
+test('POST /api/action with an unrecognized type returns 400', async () => {
+  const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'delete', key: 'P-1' }) });
+  expect(res.status).toBe(400);
+  expect((await res.json()).error).toBe('unknown action type');
+});
+
+test('unknown /api/* path returns 404 JSON instead of falling through to the SPA', async () => {
+  const res = await fetch(`${base}/api/nope`);
+  expect(res.status).toBe(404);
+  expect((await res.json()).error).toBe('not found');
+});
+
+// True first boot: no refresh has ever run, so state.snapshot is still null
+// and GET /api/data must fall back to the documented placeholder shape
+// (empty buckets, zeroed counters) instead of returning null to the client.
+test('GET /api/data returns the documented placeholder before any refresh has run', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const freshStatePath = join(dir, 'state.json');
+  const webDist = join(dir, 'dist');
+  mkdirSync(webDist);
+  writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
+  const freshServer = createServer({ config: { port: 0, jira: {}, github: {} }, statePath: freshStatePath, webDist });
+  await new Promise(r => freshServer.listen(0, r));
+  try {
+    const freshBase = `http://127.0.0.1:${freshServer.address().port}`;
+    const d = await (await fetch(`${freshBase}/api/data`)).json();
+    expect(d.updatedAt).toBeNull();
+    expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] });
+    expect(d.mergedTotal).toBe(0);
+  } finally {
+    freshServer.close();
+  }
 });
