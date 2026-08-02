@@ -1,5 +1,7 @@
-import { test, expect } from 'vitest';
-import { mapIssue, buildJql } from './jira.js';
+import { test, expect, vi, afterEach } from 'vitest';
+import { mapIssue, buildJql, adfToText, fetchJiraCards } from './jira.js';
+
+afterEach(() => vi.unstubAllGlobals());
 
 const cfg = { baseUrl: 'https://x.atlassian.net', projectKey: 'PROJ', accountId: 'me',
   statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
@@ -37,4 +39,47 @@ test('mapIssue flattens ADF description and comments', () => {
   expect(c.comments[0]).toMatchObject({ authorId: 'other', author: 'Sam', body: 'looks off' });
   expect(c.comments[0].createdAt).toMatch(/^2026-07-02T01:00:00/);
   expect(c.myAccountId).toBe('me');
+});
+
+test('adfToText resolves mention and hardBreak nodes', () => {
+  const doc = { type: 'doc', content: [{ type: 'paragraph', content: [
+    { type: 'text', text: 'hey ' },
+    { type: 'mention', attrs: { text: '@sam' } },
+    { type: 'hardBreak' },
+    { type: 'text', text: 'line two' },
+  ] }] };
+  expect(adfToText(doc)).toBe('hey @sam\nline two\n');
+});
+
+test('adfToText falls back to @user for a mention with no attrs.text', () => {
+  expect(adfToText({ type: 'mention', attrs: {} })).toBe('@user');
+});
+
+test('fetchJiraCards refetches the newest comments when the embedded list was truncated', async () => {
+  const searchPayload = {
+    issues: [{
+      key: 'PROJ-9',
+      fields: {
+        summary: 'S', status: { name: 'In Progress' }, created: '2026-07-01T00:00:00.000+0000', updated: '2026-07-01T00:00:00.000+0000',
+        description: null,
+        comment: { total: 3, comments: [{ author: { accountId: 'a', displayName: 'A' }, body: { type: 'doc', content: [] }, created: '2026-07-01T00:00:00.000+0000' }] },
+      },
+    }],
+  };
+  const latestCommentsPayload = { comments: [
+    { author: { accountId: 'a', displayName: 'A' }, body: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'newest' }] }] }, created: '2026-07-03T00:00:00.000+0000' },
+  ] };
+  const fetchMock = vi.fn((url) => {
+    const u = String(url);
+    if (u.includes('/comment?')) return Promise.resolve({ ok: true, json: () => Promise.resolve(latestCommentsPayload) });
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(searchPayload) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const cfg = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'me' };
+  const cards = await fetchJiraCards(cfg);
+  expect(cards[0].comments).toHaveLength(1);
+  expect(cards[0].comments[0].body).toContain('newest');
+  expect(warnSpy).toHaveBeenCalled();
+  warnSpy.mockRestore();
 });

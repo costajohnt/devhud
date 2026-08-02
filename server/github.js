@@ -60,6 +60,7 @@ export function reviewStateFrom(pr, reviews) {
 async function gh(path, token) {
   const res = await fetch(`https://api.github.com${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`GitHub ${res.status} ${path}: ${(await res.text()).slice(0, 200)}`);
   return res.json();
@@ -85,9 +86,12 @@ export async function fetchPrs(cfg) {
 export async function enrichPr(pr, cfg) {
   const [owner, repo] = pr.repo.split('/');
   const base = `/repos/${owner}/${repo}`;
+  // sort=created&direction=desc so a >100-comment thread keeps the newest
+  // comments (the ones that matter for attention) instead of silently
+  // truncating to the oldest page. The reviews endpoint is left as-is.
   const [issueComments, reviewComments, reviews, checks] = await Promise.all([
-    gh(`${base}/issues/${pr.number}/comments?per_page=100`, cfg.token),
-    gh(`${base}/pulls/${pr.number}/comments?per_page=100`, cfg.token),
+    gh(`${base}/issues/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
+    gh(`${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
     gh(`${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
     pr.state === 'open'
       ? gh(`${base}/commits/${pr._raw.head.sha}/check-runs?per_page=100`, cfg.token).then(d => d.check_runs)
