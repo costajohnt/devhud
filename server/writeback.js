@@ -41,7 +41,9 @@ function jiraAuth(cfg) {
 
 export async function transitionCard(cfg, key, targetStatusName) {
   const auth = jiraAuth(cfg);
-  const url = new URL(`/rest/api/3/issue/${key}/transitions`, cfg.baseUrl);
+  // performWrite already validates key against KEY_RE before this is ever
+  // called; encodeURIComponent here is belt-and-braces for any other caller.
+  const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, cfg.baseUrl);
   const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
@@ -57,7 +59,9 @@ export async function transitionCard(cfg, key, targetStatusName) {
 }
 
 export async function commentCard(cfg, key, body) {
-  const url = new URL(`/rest/api/3/issue/${key}/comment`, cfg.baseUrl);
+  // See transitionCard: belt-and-braces encodeURIComponent, key is already
+  // validated by performWrite before reaching this function.
+  const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, cfg.baseUrl);
   const res = await fetch(url, {
     method: 'POST',
     headers: { Authorization: jiraAuth(cfg), Accept: 'application/json', 'content-type': 'application/json' },
@@ -97,13 +101,27 @@ export function checkWriteGate(config) {
 
 const WRITE_TYPES = ['transition', 'comment', 'pr_comment'];
 
+// Jira issue key: one or more letters/digits/underscores starting with a
+// letter, a dash, then digits (e.g. "PROJ-123"). Rejects anything that
+// could smuggle a path segment (e.g. "PROJ-1/../x") into the URL built in
+// transitionCard/commentCard below.
+const KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+// "org/repo" — word chars, dots, and dashes only, exactly one slash.
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
 // Shared entry point for every write path. `state` is mutated in place by
 // the post-write refresh (same contract as applyAction) — callers persist
-// it themselves. Returns:
+// it themselves. `refreshFn` defaults to the real refresh() and exists so
+// tests can inject a throwing stub without reaching for module mocking.
+// Returns:
 //   - { ok: true, demo: true, message } — demo-mode stub, nothing written
 //   - { ok: true, ...writebackResult } — real write succeeded, board refreshed
+//   - { ok: true, ...writebackResult, refreshError } — write succeeded, but
+//     the post-write refresh failed; still a success (the external write
+//     went through), refreshError is a warning for the caller to surface,
+//     not a reason to report the whole call as failed
 //   - { error, status } — validation failure, gate refusal, or write failure
-export async function performWrite({ config, state, type, key, repo, number, body, status }) {
+export async function performWrite({ config, state, type, key, repo, number, body, status, refreshFn = refresh }) {
   if (!WRITE_TYPES.includes(type)) {
     return { error: `unknown write type "${type}"`, status: 400 };
   }
@@ -115,6 +133,12 @@ export async function performWrite({ config, state, type, key, repo, number, bod
   }
   if (type === 'pr_comment' && (!repo || !number || !body)) {
     return { error: 'pr_comment requires repo, number, and body', status: 400 };
+  }
+  if ((type === 'transition' || type === 'comment') && !KEY_RE.test(key)) {
+    return { error: `invalid Jira issue key "${key}"`, status: 400 };
+  }
+  if (type === 'pr_comment' && (!REPO_RE.test(repo) || !Number.isInteger(number))) {
+    return { error: `invalid repo "${repo}" or PR number`, status: 400 };
   }
 
   const gate = checkWriteGate(config);
@@ -136,13 +160,21 @@ export async function performWrite({ config, state, type, key, repo, number, bod
   // poll. refresh() logs an operational one-liner via console.log — fine
   // for the server's own /api/refresh, but this call has no business
   // writing to a CLI/MCP caller's stdout on its own; silence it.
+  //
+  // The write itself already succeeded by this point — a refresh failure
+  // (Jira/GitHub hiccup, network blip) must not turn a successful write
+  // into a reported failure. Caught separately and returned as a warning
+  // field instead.
   const originalLog = console.log;
   console.log = () => {};
+  let refreshError;
   try {
-    await refresh({ config, state });
+    await refreshFn({ config, state });
+  } catch (e) {
+    refreshError = e.message;
   } finally {
     console.log = originalLog;
   }
 
-  return { ok: true, ...result };
+  return refreshError ? { ok: true, ...result, refreshError } : { ok: true, ...result };
 }

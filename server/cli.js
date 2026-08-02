@@ -201,10 +201,12 @@ export async function run(argv, { config, statePath }) {
       result = await res.json().catch(() => ({}));
       if (!res.ok && !result.error) result.error = `HTTP ${res.status}`;
     } else {
-      // Not split-brain-guarded: the write itself touches no local state
-      // (it's a network call to Jira/GitHub), and performWrite's post-write
-      // refresh either goes through this same probe on its next command or
-      // accepts the same residual risk the rest of direct mode does.
+      // The write call itself is a network call to Jira/GitHub with no
+      // local state — but performWrite's post-write refresh does write
+      // state.json (same operation `refresh` guards), so this needs the
+      // same split-brain guard.
+      const blockingPid = serverAppearsRunning(statePath);
+      if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
       const state = loadState(statePath);
       result = await performWrite({ config, state, ...writeArgs });
       if (result.ok && !result.demo) saveState(statePath, state);
@@ -216,7 +218,10 @@ export async function run(argv, { config, statePath }) {
     if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
     if (result.demo) return { code: 0, out: result.message, err };
     const out = result.transitionedTo ? `${key} -> ${result.transitionedTo}` : `${cmd} ok`;
-    return { code: 0, out, err };
+    // The write itself succeeded even if the post-write refresh failed — a
+    // warning, not an error: exit 0, success on stdout, warning on stderr.
+    const finalErr = result.refreshError ? [err, `Warning: board refresh after write failed: ${result.refreshError}`].join('\n') : err;
+    return { code: 0, out, err: finalErr };
   }
 
   return { code: 1, out: '', err: `Unknown command: ${cmd}\n\n${HELP}` };

@@ -93,11 +93,12 @@ export async function moveCard({ config, statePath, key, bucket }) {
   return await doAction({ config, statePath, type: 'move', key, bucket });
 }
 
-// Write-back (transition/comment/pr_comment): not split-brain-guarded like
-// doAction, since the write itself is a network call to Jira/GitHub, not a
-// local state.json mutation — performWrite's own post-write refresh accepts
-// the same residual risk direct mode always has. Gate refusal (writeEnabled
-// false, or demo mode) is handled entirely inside performWrite.
+// Write-back (transition/comment/pr_comment): the write call itself is a
+// network call to Jira/GitHub with no local state — but performWrite's
+// post-write refresh does write state.json (same operation doAction/
+// doRefresh guard), so this needs the same split-brain guard before the
+// direct-mode branch. Gate refusal (writeEnabled false, or demo mode) is
+// handled entirely inside performWrite.
 async function doWrite({ config, statePath, type, key, repo, number, body, status }) {
   const viaServer = await probeServer(config.port);
   const writeArgs = { type, key, repo, number, body, status };
@@ -109,6 +110,8 @@ async function doWrite({ config, statePath, type, key, repo, number, body, statu
     if (!res.ok) return { error: j.error ?? `HTTP ${res.status}` };
     return j;
   }
+  const blockingPid = serverAppearsRunning(statePath);
+  if (blockingPid) return { error: splitBrainError(blockingPid) };
   const state = loadState(statePath);
   const result = await performWrite({ config, state, ...writeArgs });
   if (result.ok && !result.demo) saveState(statePath, state);

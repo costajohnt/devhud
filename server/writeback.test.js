@@ -71,3 +71,40 @@ test('performWrite: writeEnabled false (non-demo) refuses with a real error, not
   const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi' });
   expect(result).toEqual({ error: 'write-back disabled; set writeEnabled: true in config.json', status: 403 });
 });
+
+test('performWrite rejects a Jira key that looks like a path-traversal attempt', async () => {
+  const config = { demo: false, writeEnabled: true };
+  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'PROJ-1/../x', body: 'hi' });
+  expect(result).toEqual({ error: 'invalid Jira issue key "PROJ-1/../x"', status: 400 });
+});
+
+test('performWrite rejects a malformed repo for pr_comment', async () => {
+  const config = { demo: false, writeEnabled: true };
+  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'not-a-repo', number: 1, body: 'hi' });
+  expect(result.status).toBe(400);
+  expect(result.error).toContain('invalid repo');
+});
+
+test('performWrite rejects a non-integer PR number for pr_comment', async () => {
+  const config = { demo: false, writeEnabled: true };
+  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'o/r', number: '1; rm -rf', body: 'hi' });
+  expect(result.status).toBe(400);
+});
+
+test('performWrite: a successful write with a failing post-write refresh is still ok:true, with refreshError set', async () => {
+  const config = { demo: false, writeEnabled: true, jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' } };
+  const fetchMock = () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  const originalFetch = global.fetch;
+  global.fetch = fetchMock;
+  try {
+    const result = await performWrite({
+      config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi',
+      refreshFn: () => { throw new Error('jira down mid-refresh'); },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.refreshError).toBe('jira down mid-refresh');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

@@ -132,6 +132,14 @@ test('commentPr against demo config returns the stub-success refusal', async () 
   expect(result.demo).toBe(true);
 });
 
+test('transitionCard refuses a direct-mode write when a server.pid exists for a live process (split-brain guard)', async () => {
+  const statePath = tempStatePath();
+  const writeEnabledConfig = { ...config, demo: false, writeEnabled: true };
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
+  const result = await transitionCard({ config: writeEnabledConfig, statePath, key: 'P-1', status: 'Done' });
+  expect(result.error).toContain('appears to be running');
+});
+
 test('transitionCard against a non-demo config with writeEnabled false refuses with a real error', async () => {
   const statePath = tempStatePath();
   const nonDemoConfig = { ...config, demo: false, writeEnabled: false };

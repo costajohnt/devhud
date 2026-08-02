@@ -197,6 +197,15 @@ test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', asy
   expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
 
+test('direct-mode transition refuses when a server.pid exists for a live process (split-brain guard)', async () => {
+  const statePath = tempStatePath();
+  const writeEnabledConfig = { port: 39217, demo: false, writeEnabled: true, jira: { statuses: {} }, github: {} };
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  const { code, err } = await run(['transition', 'P-1', 'Done'], { config: writeEnabledConfig, statePath });
+  expect(code).toBe(1);
+  expect(err).toContain(`a server (pid ${process.pid}) appears to be running`);
+});
+
 test('transition/comment usage errors when KEY or status/text is missing', async () => {
   const t = await run(['transition', 'P-1'], { config, statePath: tempStatePath() });
   expect(t.code).toBe(1);
