@@ -34,11 +34,47 @@ test('todo cards split out, done cards with merged PR land in mergedCards + cele
   expect(p1.mergedCards[0].key).toBe('PROJ-3');
   expect(p1.newlyMerged).toEqual(['PROJ-3']);
   expect(p1.mergedTotal).toBe(1);
-  expect(p1.mergedLog).toEqual([{ id: 'o/r#1', at: '2026-07-03T00:00:00Z' }]);
+  expect(p1.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]);
   const p2 = buildSnapshot({ cards, prs, state, config, errors: {} });
   expect(p2.newlyMerged).toEqual([]);   // celebrated already
   expect(p2.mergedTotal).toBe(1);
-  expect(p2.mergedLog).toEqual([{ id: 'o/r#1', at: '2026-07-03T00:00:00Z' }]); // no duplicate on re-run
+  expect(p2.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]); // no duplicate on re-run
+});
+
+test('upserts every fetched PR into prLog on refresh, keyed by org/repo#num', () => {
+  const state = emptyState();
+  const p = buildSnapshot({ cards: [card()], prs: [pr({ repo: 'o/r', number: 1 })], state, config, errors: {} });
+  expect(p.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: null, closedAt: null }]);
+  expect(state.prLog['o/r#1']).toBeDefined();
+});
+
+test('prLog upsert updates an existing entry rather than duplicating it', () => {
+  const state = emptyState();
+  buildSnapshot({ cards: [card()], prs: [pr({ repo: 'o/r', number: 1, reviewState: 'none' })], state, config, errors: {} });
+  const p2 = buildSnapshot({ cards: [card()], prs: [pr({ repo: 'o/r', number: 1, state: 'merged', mergedAt: '2026-07-04T00:00:00Z' })], state, config, errors: {} });
+  expect(p2.prLog).toHaveLength(1);
+  expect(p2.prLog[0].mergedAt).toBe('2026-07-04T00:00:00Z');
+});
+
+test('closed-unmerged PRs classify with closedAt set and mergedAt null', () => {
+  const state = emptyState();
+  const p = buildSnapshot({
+    cards: [card()],
+    prs: [pr({ repo: 'o/r', number: 2, state: 'closed', mergedAt: null, updatedAt: '2026-07-05T00:00:00Z' })],
+    state, config, errors: {},
+  });
+  expect(p.prLog[0]).toEqual({ id: 'o/r#2', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: null, closedAt: '2026-07-05T00:00:00Z' });
+});
+
+test('merged PRs never get closedAt set, even though state is not "closed"', () => {
+  const state = emptyState();
+  const p = buildSnapshot({
+    cards: [card()],
+    prs: [pr({ repo: 'o/r', number: 3, state: 'merged', mergedAt: '2026-07-05T00:00:00Z' })],
+    state, config, errors: {},
+  });
+  expect(p.prLog[0].mergedAt).toBe('2026-07-05T00:00:00Z');
+  expect(p.prLog[0].closedAt).toBeNull();
 });
 
 test('unlinked PRs surface; errors pass through', () => {
@@ -127,6 +163,7 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.newlyMerged.length).toBeGreaterThan(0);
   expect(p.unlinkedPrs.length).toBeGreaterThan(0);
   expect(p.errors).toEqual({ jira: null, github: null });
-  expect(p.mergedLog.length).toBeGreaterThan(0);
-  expect(p.mergedLog[0]).toEqual(expect.objectContaining({ id: expect.any(String) }));
+  expect(p.prLog.length).toBeGreaterThan(0);
+  expect(p.prLog[0]).toEqual(expect.objectContaining({ id: expect.any(String), repo: expect.any(String) }));
+  expect(p.prLog.some(e => e.closedAt !== null)).toBe(true); // demo now includes closed-unmerged PRs
 });

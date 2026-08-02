@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
-import type { MergedLogEntry } from './chart-panel.js';
+import type { PrLogEntry } from './chart-panel.js';
 
 /**
  * Lazy loader for the Chart.js-backed charts panel.
@@ -16,7 +16,7 @@ import type { MergedLogEntry } from './chart-panel.js';
  */
 
 interface ChartPanelProps {
-  mergedLog: MergedLogEntry[];
+  prLog: PrLogEntry[];
   theme: string;
 }
 
@@ -39,11 +39,11 @@ function ChartSkeleton() {
   return (
     <div class="chart-panel" aria-busy="true" aria-label="Loading charts">
       <div class="chart-card">
-        <h3 class="chart-card-title">Merged per Month</h3>
+        <h3 class="chart-card-title">Monthly Activity</h3>
         <div class="chart-canvas-wrapper" style={{ minHeight: 240 }} />
       </div>
       <div class="chart-card">
-        <h3 class="chart-card-title">Merged by Repo</h3>
+        <h3 class="chart-card-title">Top Repos</h3>
         <div class="chart-canvas-wrapper" style={{ minHeight: 240 }} />
       </div>
     </div>

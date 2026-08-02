@@ -23,9 +23,29 @@ const itemComments = (card, pr) => {
     .slice(0, 10);
 };
 
+// Upsert every fetched PR into the lifecycle log, keyed by "org/repo#num".
+// Runs on every refresh (real and demo) so prLog always reflects the latest
+// known state of every PR ever seen. Never deletes entries — history only.
+// closedAt only fires for closed-and-unmerged PRs; a merged PR gets mergedAt,
+// not closedAt, mirroring oss-autopilot's Opened/Merged/Closed series.
+function upsertPrLog(state, prs) {
+  for (const p of prs) {
+    const id = `${p.repo}#${p.number}`;
+    state.prLog[id] = {
+      id,
+      repo: p.repo,
+      openedAt: p.createdAt ?? null,
+      mergedAt: p.mergedAt ?? null,
+      closedAt: p.state === 'closed' ? (p.updatedAt ?? null) : null,
+    };
+  }
+}
+
 export function buildSnapshot({ cards, prs, state, config, errors }) {
   const { statuses } = config.jira;
   const username = config.github.username;
+  state.prLog ??= {};
+  upsertPrLog(state, prs);
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
   const buckets = { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] };
@@ -73,7 +93,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     mergedCards, mergedTotal: state.mergedTotal, newlyMerged, recentActivity,
-    mergedLog: state.celebrated.map(e => ({ id: e.id, at: e.at })),
+    prLog: Object.values(state.prLog),
   };
 }
 

@@ -13,6 +13,7 @@ test('fresh state when file missing', () => {
   expect(s.mergedTotal).toBe(0);
   expect(s.lastCards).toBeNull();
   expect(s.lastPrs).toBeNull();
+  expect(s.prLog).toEqual({});
 });
 
 test('round-trips and creates card entries', () => {
@@ -60,6 +61,39 @@ test('loadState migrates legacy string celebrated entries to { id, at: null }', 
     { id: 'org/repo#42', at: null },
     { id: 'org/repo#43', at: '2026-01-01T00:00:00Z' },
   ]);
+});
+
+test('loadState tolerates a state file with no prLog field (pre-existing states)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify({ ...emptyState(), prLog: undefined, celebrated: [] }));
+  const s = loadState(path);
+  expect(s.prLog).toEqual({});
+});
+
+test('loadState backfills prLog from celebrated entries missing from it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const legacy = { ...emptyState(), celebrated: [{ id: 'org/repo#42', at: '2026-01-01T00:00:00Z' }] };
+  delete legacy.prLog;
+  writeFileSync(path, JSON.stringify(legacy));
+  const s = loadState(path);
+  expect(s.prLog['org/repo#42']).toEqual({
+    id: 'org/repo#42', repo: 'org/repo', openedAt: null, mergedAt: '2026-01-01T00:00:00Z', closedAt: null,
+  });
+});
+
+test('loadState backfill does not clobber an existing prLog entry for the same id', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const state = {
+    ...emptyState(),
+    celebrated: [{ id: 'org/repo#42', at: '2026-01-01T00:00:00Z' }],
+    prLog: { 'org/repo#42': { id: 'org/repo#42', repo: 'org/repo', openedAt: '2025-12-01T00:00:00Z', mergedAt: '2026-01-01T00:00:00Z', closedAt: null } },
+  };
+  writeFileSync(path, JSON.stringify(state));
+  const s = loadState(path);
+  expect(s.prLog['org/repo#42'].openedAt).toBe('2025-12-01T00:00:00Z');
 });
 
 test('saveState rotates the previous file to .bak before writing', () => {

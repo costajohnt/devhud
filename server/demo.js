@@ -62,5 +62,10 @@ export function demoPrs(cfg) {
     pr('api-gateway', 371, 'DEMO-85-token-rotation', { state: 'merged', mergedAt: iso(79), reviewState: 'approved', ciStatus: 'unknown' }),
     pr('webapp', 431, 'DEMO-86-a11y-nav', { state: 'merged', mergedAt: iso(104), reviewState: 'approved', ciStatus: 'unknown' }),
     pr('mobile', 188, 'DEMO-87-crash-reporting', { state: 'merged', mergedAt: iso(129), reviewState: 'approved', ciStatus: 'unknown' }),
+    // Closed-unmerged PRs, varied ages/repos, so the Closed series in the
+    // Monthly Activity chart has real data.
+    pr('webapp', 460, 'stale-experiment-toggle', { state: 'closed', mergedAt: null, createdAt: iso(50), updatedAt: iso(45), reviewState: 'changes_requested', ciStatus: 'failing' }),
+    pr('api-gateway', 405, 'abandoned-cache-layer', { state: 'closed', mergedAt: null, createdAt: iso(75), updatedAt: iso(70), reviewState: 'none', ciStatus: 'unknown' }),
+    pr('mobile', 210, 'rejected-push-redesign', { state: 'closed', mergedAt: null, createdAt: iso(20), updatedAt: iso(15), reviewState: 'changes_requested', ciStatus: 'unknown' }),
   ];
 }

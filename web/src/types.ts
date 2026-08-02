@@ -25,5 +25,5 @@ export interface DashboardData {
   mergedTotal: number;
   newlyMerged: string[];
   recentActivity: { type: string; label: string; url: string; date: string }[];
-  mergedLog: { id: string; at: string | null }[];
+  prLog: { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null }[];
 }

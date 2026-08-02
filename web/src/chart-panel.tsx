@@ -1,36 +1,54 @@
 import { useEffect, useRef } from 'preact/hooks';
 import {
   Chart,
+  LineController,
   BarController,
   CategoryScale,
   LinearScale,
+  PointElement,
+  LineElement,
   BarElement,
   Tooltip,
+  Legend,
 } from 'chart.js';
 
 // Register only what we need — keeps the lazy chart chunk small.
-Chart.register(BarController, CategoryScale, LinearScale, BarElement, Tooltip);
+Chart.register(
+  LineController,
+  BarController,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Tooltip,
+  Legend,
+);
 
-export interface MergedLogEntry { id: string; at: string | null; }
+export interface PrLogEntry { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null; }
 
 interface ChartPanelProps {
-  mergedLog: MergedLogEntry[];
+  prLog: PrLogEntry[];
   theme: string;
 }
 
 // Chart.js can't read CSS vars directly; map theme to explicit hex values
-// matching the palette in styles.css (--purple / --blue / grid/text colors).
+// mirroring oss-autopilot's dashboard chart-panel.
 function getChartColors(theme: string) {
   if (theme === 'light') {
     return {
+      green: '#16a34a',
       purple: '#9333ea',
+      red: '#dc2626',
       blue: '#2563eb',
       gridColor: 'rgba(15, 23, 42, 0.06)',
       textColor: '#475569',
     };
   }
   return {
+    green: '#4ade80',
     purple: '#c084fc',
+    red: '#fb7185',
     blue: '#60a5fa',
     gridColor: 'rgba(255, 255, 255, 0.06)',
     textColor: '#94a3b8',
@@ -54,121 +72,133 @@ function monthLabel(key: string): string {
   return new Date(y!, m! - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
 }
 
-/** id is "org/repo#number" — the repo (with org) is everything before '#'. */
-function repoOf(id: string): string {
-  return id.split('#')[0] ?? id;
-}
-
-function monthlyCounts(mergedLog: MergedLogEntry[], months: string[]): number[] {
+function monthlyCounts(dates: (string | null)[], months: string[]): number[] {
   const counts = new Map<string, number>();
-  for (const e of mergedLog) {
-    if (!e.at) continue; // legacy pre-migration entries with no known merge time
-    const key = e.at.slice(0, 7);
+  for (const at of dates) {
+    if (!at) continue;
+    const key = at.slice(0, 7);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return months.map(m => counts.get(m) ?? 0);
 }
 
-function topRepos(mergedLog: MergedLogEntry[], limit = 8): { repo: string; count: number }[] {
-  const counts = new Map<string, number>();
-  for (const e of mergedLog) {
-    const repo = repoOf(e.id);
-    counts.set(repo, (counts.get(repo) ?? 0) + 1);
+function topRepos(prLog: PrLogEntry[], limit = 10): { repo: string; active: number; merged: number; closed: number }[] {
+  const byRepo = new Map<string, { active: number; merged: number; closed: number }>();
+  for (const e of prLog) {
+    const bucket = byRepo.get(e.repo) ?? { active: 0, merged: 0, closed: 0 };
+    if (e.mergedAt) bucket.merged += 1;
+    else if (e.closedAt) bucket.closed += 1;
+    else bucket.active += 1;
+    byRepo.set(e.repo, bucket);
   }
-  return [...counts.entries()]
-    .map(([repo, count]) => ({ repo, count }))
-    .sort((a, b) => b.count - a.count || a.repo.localeCompare(b.repo))
+  return [...byRepo.entries()]
+    .map(([repo, counts]) => ({ repo, ...counts }))
+    .sort((a, b) => (b.active + b.merged + b.closed) - (a.active + a.merged + a.closed) || a.repo.localeCompare(b.repo))
     .slice(0, limit);
 }
 
-export function ChartPanel({ mergedLog, theme }: ChartPanelProps) {
-  const monthlyCanvasRef = useRef<HTMLCanvasElement>(null);
-  const repoCanvasRef = useRef<HTMLCanvasElement>(null);
-  const monthlyChartRef = useRef<Chart | null>(null);
-  const repoChartRef = useRef<Chart | null>(null);
+export function ChartPanel({ prLog, theme }: ChartPanelProps) {
+  const lineCanvasRef = useRef<HTMLCanvasElement>(null);
+  const barCanvasRef = useRef<HTMLCanvasElement>(null);
+  const lineChartRef = useRef<Chart | null>(null);
+  const barChartRef = useRef<Chart | null>(null);
 
-  // Merged-per-month bar chart. Created once, then updated in place: fresh
-  // array/object identities arrive on every refresh, and destroy-and-recreate
-  // would replay the entrance animation on every poll (mirrors oss-autopilot
-  // dashboard's chart-panel #1459 fix).
+  // Monthly activity line chart (Opened/Merged/Closed). Created once, then
+  // updated in place: fresh array/object identities arrive on every refresh,
+  // and destroy-and-recreate would replay the entrance animation on every
+  // poll (mirrors oss-autopilot dashboard's chart-panel #1459 fix).
   useEffect(() => {
-    const canvas = monthlyCanvasRef.current;
+    const canvas = lineCanvasRef.current;
     if (!canvas) return;
 
     const colors = getChartColors(theme);
     const scaleOpts = { ticks: { color: colors.textColor }, grid: { color: colors.gridColor } };
+    const legendOpts = { labels: { color: colors.textColor, boxWidth: 12 } };
     const months = lastNMonths(6);
-    const counts = monthlyCounts(mergedLog, months);
+
+    const opened = monthlyCounts(prLog.map(e => e.openedAt), months);
+    const merged = monthlyCounts(prLog.map(e => e.mergedAt), months);
+    const closed = monthlyCounts(prLog.map(e => e.closedAt), months);
 
     const data = {
       labels: months.map(monthLabel),
-      datasets: [{ label: 'Merged', data: counts, backgroundColor: colors.purple, borderRadius: 4 }],
+      datasets: [
+        { label: 'Opened', data: opened, borderColor: colors.blue, backgroundColor: colors.blue, tension: 0.3, pointRadius: 3 },
+        { label: 'Merged', data: merged, borderColor: colors.purple, backgroundColor: colors.purple, tension: 0.3, pointRadius: 3 },
+        { label: 'Closed', data: closed, borderColor: colors.red, backgroundColor: colors.red, tension: 0.3, pointRadius: 3 },
+      ],
     };
     const options = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 1200, easing: 'easeOutQuart' as const },
-      plugins: { legend: { display: false } },
+      animation: { duration: 1500, easing: 'easeOutQuart' as const },
+      plugins: { legend: legendOpts },
       scales: {
         x: scaleOpts,
-        y: { beginAtZero: true, ticks: { ...scaleOpts.ticks, precision: 0 }, grid: scaleOpts.grid },
+        y: { beginAtZero: true, ...scaleOpts },
       },
     };
 
-    const existing = monthlyChartRef.current;
+    const existing = lineChartRef.current;
     if (existing) {
       existing.data = data;
       existing.options = options;
       existing.update('none');
       return;
     }
-    monthlyChartRef.current = new Chart(canvas, { type: 'bar', data, options });
-  }, [mergedLog, theme]);
+    lineChartRef.current = new Chart(canvas, { type: 'line', data, options });
+  }, [prLog, theme]);
 
-  // Merged-by-repo horizontal bar chart — same create-once-then-update-in-place
-  // pattern as the monthly chart above.
+  // Top repos stacked horizontal bar (Active/Merged/Closed) — same
+  // create-once-then-update-in-place pattern as the line chart above.
   useEffect(() => {
-    const canvas = repoCanvasRef.current;
+    const canvas = barCanvasRef.current;
     if (!canvas) return;
 
     const colors = getChartColors(theme);
     const scaleOpts = { ticks: { color: colors.textColor }, grid: { color: colors.gridColor } };
-    const repos = topRepos(mergedLog);
+    const legendOpts = { labels: { color: colors.textColor, boxWidth: 12 } };
+    const repos = topRepos(prLog);
+    const labels = repos.map(r => r.repo);
 
     const data = {
-      labels: repos.map(r => r.repo),
-      datasets: [{ label: 'Merged', data: repos.map(r => r.count), backgroundColor: colors.blue, borderRadius: 4 }],
+      labels,
+      datasets: [
+        { label: 'Active', data: repos.map(r => r.active), backgroundColor: colors.green },
+        { label: 'Merged', data: repos.map(r => r.merged), backgroundColor: colors.purple },
+        { label: 'Closed', data: repos.map(r => r.closed), backgroundColor: colors.red },
+      ],
     };
     const options = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 1200, easing: 'easeOutQuart' as const },
+      animation: { duration: 1500, easing: 'easeOutQuart' as const },
       indexAxis: 'y' as const,
-      plugins: { legend: { display: false } },
+      plugins: { legend: legendOpts },
       scales: {
-        x: { beginAtZero: true, ticks: { ...scaleOpts.ticks, precision: 0 }, grid: scaleOpts.grid },
-        y: scaleOpts,
+        x: { stacked: true, beginAtZero: true, ...scaleOpts },
+        y: { stacked: true, ...scaleOpts },
       },
     };
 
-    const existing = repoChartRef.current;
+    const existing = barChartRef.current;
     if (existing) {
       existing.data = data;
       existing.options = options;
       existing.update('none');
       return;
     }
-    repoChartRef.current = new Chart(canvas, { type: 'bar', data, options });
-  }, [mergedLog, theme]);
+    barChartRef.current = new Chart(canvas, { type: 'bar', data, options });
+  }, [prLog, theme]);
 
   // Destroy chart instances only on unmount — the effects above update
   // existing instances in place on data/theme changes.
   useEffect(
     () => () => {
-      monthlyChartRef.current?.destroy();
-      monthlyChartRef.current = null;
-      repoChartRef.current?.destroy();
-      repoChartRef.current = null;
+      lineChartRef.current?.destroy();
+      lineChartRef.current = null;
+      barChartRef.current?.destroy();
+      barChartRef.current = null;
     },
     [],
   );
@@ -176,15 +206,15 @@ export function ChartPanel({ mergedLog, theme }: ChartPanelProps) {
   return (
     <div class="chart-panel">
       <div class="chart-card">
-        <h3 class="chart-card-title">Merged per Month</h3>
+        <h3 class="chart-card-title">Monthly Activity</h3>
         <div class="chart-canvas-wrapper">
-          <canvas ref={monthlyCanvasRef} aria-label="Pull requests merged per month" role="img" />
+          <canvas ref={lineCanvasRef} aria-label="Monthly PR activity chart" role="img" />
         </div>
       </div>
       <div class="chart-card">
-        <h3 class="chart-card-title">Merged by Repo</h3>
+        <h3 class="chart-card-title">Top Repos</h3>
         <div class="chart-canvas-wrapper">
-          <canvas ref={repoCanvasRef} aria-label="Pull requests merged by repository" role="img" />
+          <canvas ref={barCanvasRef} aria-label="Top repositories by PR count" role="img" />
         </div>
       </div>
     </div>

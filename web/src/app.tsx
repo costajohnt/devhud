@@ -156,9 +156,9 @@ function AppContent() {
                 <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} actionInFlight={actionInFlight} />
               )}
             </div>
-            {data.mergedLog.length > 0 && (
+            {data.prLog.length > 0 && (
               <div class="animate-in delay-4">
-                <LazyChartPanel mergedLog={data.mergedLog} theme={theme} />
+                <LazyChartPanel prLog={data.prLog} theme={theme} />
               </div>
             )}
             <div class="animate-in delay-4">

@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export function emptyState() {
-  return { cards: {}, celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null };
+  return { cards: {}, celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
 }
 
 // Legacy state files stored `celebrated` as plain id strings ("org/repo#42").
@@ -16,6 +16,19 @@ function migrateCelebrated(state) {
   return state;
 }
 
+// Older states predate the prLog field: synthesize a minimal entry for every
+// celebrated merge so the charts don't lose merge history that predates this
+// field. Real PR lifecycle data (openedAt/closedAt) stays unknown for these —
+// only mergedAt is recoverable from the celebrated timestamp.
+function migratePrLog(state) {
+  state.prLog = state.prLog ?? {};
+  for (const e of state.celebrated) {
+    if (state.prLog[e.id]) continue;
+    state.prLog[e.id] = { id: e.id, repo: e.id.split('#')[0], openedAt: null, mergedAt: e.at, closedAt: null };
+  }
+  return state;
+}
+
 // A missing file is the normal first-run case (no warn). An existing but
 // unparseable file is a corruption signal: warn and fall back to the
 // rotating .bak written by saveState, rather than silently losing overrides.
@@ -23,10 +36,10 @@ export function loadState(path) {
   let raw;
   try { raw = readFileSync(path, 'utf8'); }
   catch { return emptyState(); }
-  try { return migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) }); }
+  try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) })); }
   catch (e) {
     console.warn(`jira-dash: state file at ${path} is unparseable (${e.message}); falling back to ${path}.bak`);
-    try { return migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) }); }
+    try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) })); }
     catch { return emptyState(); }
   }
 }
