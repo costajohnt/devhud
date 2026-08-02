@@ -1,0 +1,14 @@
+{
+  "jira": {
+    "baseUrl": "https://your-domain.atlassian.net",
+    "email": "your-email@example.com",
+    "apiToken": "your-api-token",
+    "projectKey": "PROJ",
+    "accountId": "your-account-id"
+  },
+  "github": {
+    "org": "your-org",
+    "repos": ["repo1", "repo2"],
+    "username": "your-username"
+  }
+}
