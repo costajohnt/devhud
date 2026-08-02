@@ -45,6 +45,8 @@ const DROPPABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
 // whenever a new anonymous route-component identity gets mounted.
 export function useBoardFilter(data: DashboardData | null, act: (b: object) => Promise<void>, actionInFlight = false) {
   const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState<Bucket | 'all'>('all');
+  const [repoFilter, setRepoFilter] = useState('all');
   const [dragOverBucket, setDragOverBucket] = useState<Bucket | null>(null);
   // dragenter/dragleave fire on every child element as the pointer crosses them;
   // a per-bucket counter absorbs that churn so the highlight only clears once
@@ -89,13 +91,25 @@ export function useBoardFilter(data: DashboardData | null, act: (b: object) => P
     void act({ type: 'move', key, bucket: b });
   };
 
-  const match = (i: Item) =>
-    !q || i.key.toLowerCase().includes(q.toLowerCase()) || i.summary.toLowerCase().includes(q.toLowerCase());
+  // Distinct repos across all buckets, sorted; the dropdown itself is hidden
+  // by the caller when there are fewer than 2 (nothing to filter between).
+  const repos = data
+    ? Array.from(new Set(BUCKET_ORDER.flatMap(b => data.buckets[b].map(i => i.pr?.repo).filter((r): r is string => !!r)))).sort()
+    : [];
+
+  const match = (i: Item) => {
+    if (statusFilter !== 'all' && i.bucket !== statusFilter) return false;
+    // Cards without a linked PR have no repo to filter on, so they stay
+    // visible under every repo selection except "All Repos" would be wrong —
+    // per spec they're only shown under "All Repos".
+    if (repoFilter !== 'all' && i.pr?.repo !== repoFilter) return false;
+    return !q || i.key.toLowerCase().includes(q.toLowerCase()) || i.summary.toLowerCase().includes(q.toLowerCase());
+  };
   const total = data ? BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].length, 0) : 0;
   const shown = data ? BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].filter(match).length, 0) : 0;
 
   return {
-    q, setQ, dragOverBucket, match, total, shown,
+    q, setQ, statusFilter, setStatusFilter, repoFilter, setRepoFilter, repos, dragOverBucket, match, total, shown,
     onRowDragStart, onSectionDragEnter, onSectionDragLeave, onSectionDragOver, onSectionDrop,
   };
 }
@@ -138,6 +152,30 @@ export function BoardStats({ data }: { data: DashboardData }) {
 export function BoardFilterBar({ board }: { board: BoardFilter }) {
   return (
     <div class="filter-bar animate-in delay-2">
+      <select
+        class="filter-select"
+        aria-label="Filter by status"
+        value={board.statusFilter}
+        onChange={e => board.setStatusFilter((e.target as HTMLSelectElement).value as Bucket | 'all')}
+      >
+        <option value="all">All Buckets</option>
+        {BUCKET_ORDER.map(b => (
+          <option key={b} value={b}>{BUCKET_LABEL[b]}</option>
+        ))}
+      </select>
+      {board.repos.length > 1 && (
+        <select
+          class="filter-select"
+          aria-label="Filter by repository"
+          value={board.repoFilter}
+          onChange={e => board.setRepoFilter((e.target as HTMLSelectElement).value)}
+        >
+          <option value="all">All Repos</option>
+          {board.repos.map(r => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </select>
+      )}
       <input
         class="filter-input"
         placeholder="Search cards…"
