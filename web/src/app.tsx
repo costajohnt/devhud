@@ -1,7 +1,10 @@
 import { useState } from 'preact/hooks';
+import { LocationProvider, Router, Route } from 'preact-iso';
 import { useData } from './use-data.js';
 import { Board } from './board.js';
 import { Detail } from './detail.js';
+import { Extras } from './extras.js';
+import { MergedPage } from './merged.js';
 
 export function App() {
   const { data, loading, refreshing, connError, refresh, act } = useData();
@@ -64,8 +67,21 @@ export function App() {
       {data.errors.github && <div class="partial-banner" role="status"><span>GitHub fetch failed: {data.errors.github}</span></div>}
       <main class="dashboard-main">
         <div class="dashboard-content">
-          <Board data={data} selectedKey={selected} onSelect={setSelected} />
-          {selectedItem && <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} />}
+          <LocationProvider>
+            <Router>
+              <Route
+                path="/"
+                component={() => (
+                  <>
+                    <Board data={data} selectedKey={selected} onSelect={setSelected} />
+                    {selectedItem && <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} />}
+                    <Extras data={data} />
+                  </>
+                )}
+              />
+              <Route path="/merged" component={() => <MergedPage data={data} />} />
+            </Router>
+          </LocationProvider>
         </div>
       </main>
     </div>
