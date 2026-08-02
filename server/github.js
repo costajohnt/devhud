@@ -47,14 +47,20 @@ async function gh(path, token) {
   return res.json();
 }
 
+// Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
 export async function fetchPrs(cfg) {
   const prs = [];
+  const errors = [];
   for (const repo of cfg.repos) {
     const full = `${cfg.org}/${repo}`;
-    const list = await gh(`/repos/${full}/pulls?state=all&sort=updated&direction=desc&per_page=50`, cfg.token);
-    prs.push(...list.filter(r => r.user?.login === cfg.username).map(r => ({ ...mapPr(r, full), _raw: r })));
+    try {
+      const list = await gh(`/repos/${full}/pulls?state=all&sort=updated&direction=desc&per_page=50`, cfg.token);
+      prs.push(...list.filter(r => r.user?.login === cfg.username).map(r => ({ ...mapPr(r, full), _raw: { head: { sha: r.head?.sha }, requested_reviewers: r.requested_reviewers, requested_teams: r.requested_teams } })));
+    } catch (e) {
+      errors.push(`${full}: ${e.message}`);
+    }
   }
-  return prs;
+  return { prs, errors };
 }
 
 // Detail-fetch only PRs that got linked to a card (keeps API calls bounded).
