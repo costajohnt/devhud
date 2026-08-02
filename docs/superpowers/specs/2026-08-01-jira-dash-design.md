@@ -84,18 +84,22 @@ Jira status names ("To Do", "In Test") configurable in config with these default
 
 ## UI
 
-Visual design copied from the oss-autopilot dashboard: its CSS, self-hosted @fontsource fonts, stat-card styling, row/section styling, dark/light theme with localStorage + pre-paint script.
+Visual design copied from the oss-autopilot dashboard (verified live at localhost:3000): its CSS, self-hosted @fontsource fonts, stat-card styling, row/section styling, dark/light theme with localStorage + pre-paint script.
 
-- **Header**: title, refresh button + last-refreshed time, Celebrate button.
-- **Stats bar**: clickable counts — Needs Attention, In Progress, Waiting in Review, In QA, TODO, Merged total.
-- **Sections** (oss-autopilot-style bucket lists, one per column): Needs Attention (red), In Progress, Waiting in Review (blue), In QA (purple). Row = Jira key + summary, linked PR repo#num, pills (CI red / "N new comments" / merged), age.
-- **Detail panel** on row click: card description, PR description, recent comments from both sides, links out to Jira and GitHub.
-- **Row actions**: Acknowledge, Move-to-bucket dropdown. (Drag-and-drop is later polish.)
-- **TODO section** below columns: plain list.
+Layout, top to bottom (mirrors oss-autopilot exactly):
+
+- **Header**: centered logo + app title; below it a summary strip — left: "N in flight · N merged" (colored figures); right: "Updated Xm ago", theme toggle, 🎉 celebrate icon button, Refresh button.
+- **Stats bar**: clickable stat cards with colored left borders — Needs Attention (red), In Progress, Waiting in Review (blue), In QA (purple), TODO, Merged (purple). Click scrolls to section or routes to /merged. Animated count-up on load.
+- **Filter bar**: status dropdown, repo dropdown, free-text search, "Showing X of Y cards" on the right.
+- **Sections** (bucket lists, not side-by-side columns — oss-autopilot stacks them vertically): colored dot + section label + count chip. Needs Attention, In Progress, Waiting in Review, In QA. Row = colored status dot, monospace `PROJ-123` key, truncated summary, linked `repo#num`, status pill right-aligned (CI red / "N new comments" / merged), "Nd ago". Selected row gets a left accent border. Empty sections hidden.
+- **Detail panel** on row click: sticky right-side panel, list shrinks left. Contents: card summary (title), status pill, `PROJ-123` + `repo#num` links out; labeled mini-sections in caps — JIRA STATUS, CI STATUS, REVIEW, NEW COMMENTS (recent comments from both Jira and GitHub with author + age), DAYS SINCE ACTIVITY, CREATED, UPDATED; bottom action buttons: **Acknowledge** and **Move to…** (bucket dropdown). Close ×.
+- **TODO section** below buckets: plain list of To Do cards.
+- **Recent Activity (Last 7 Days)** panel at the bottom: events grouped by type (Merged / Comments / Status changes), each row with pill + title + link + date.
+- **/merged route**: Back button + sortable table (Card, PR, repo, date merged) like oss-autopilot's Merged PRs page.
 
 ## Gamification
 
-- On refresh, merged PRs not yet in the celebrated list bump the tally, fire canvas-confetti (lazy-imported, `prefers-reduced-motion` respected) and a toast ("PROJ-123 merged 🎉").
+- On refresh, merged PRs not yet in the celebrated list bump the tally, fire canvas-confetti (lazy-imported, `prefers-reduced-motion` respected) and a toast ("PROJ-123 merged 🎉"). Confetti style copied from oss-autopilot: ~full-screen stacked bursts from both edges over ~1s (verified live — fires on merged-count delta at load/refresh).
 - Tally lives in state.json (server-side, unlike oss-autopilot's localStorage — survives browser resets).
 - Manual Celebrate button replays confetti without touching the tally.
 
@@ -114,5 +118,6 @@ Visual design copied from the oss-autopilot dashboard: its CSS, self-hosted @fon
 
 - Writing to Jira or GitHub (transitions, comments, replies).
 - Drag-and-drop.
-- Charts, streaks, multi-user, auth on the local server.
+- Charts (oss-autopilot's Monthly Activity / Top Repos chart.js panel — natural v1.1 once state accumulates history).
+- Streaks, multi-user, auth on the local server.
 - Claude integration (possible later: a skill that reads state.json and drafts replies).
