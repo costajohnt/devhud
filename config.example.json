@@ -1,14 +1,12 @@
 {
   "jira": {
-    "baseUrl": "https://your-domain.atlassian.net",
-    "email": "your-email@example.com",
-    "apiToken": "your-api-token",
+    "baseUrl": "https://YOURSITE.atlassian.net",
+    "email": "you@company.com",
+    "apiToken": "REPLACE",
     "projectKey": "PROJ",
-    "accountId": "your-account-id"
+    "accountId": "REPLACE",
+    "statuses": { "todo": "To Do", "inTest": "In Test", "done": "Done" }
   },
-  "github": {
-    "org": "your-org",
-    "repos": ["repo1", "repo2"],
-    "username": "your-username"
-  }
+  "github": { "token": "", "org": "YOURORG", "repos": ["repo1"], "username": "costajohnt" },
+  "port": 3010
 }
