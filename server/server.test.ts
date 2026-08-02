@@ -1,4 +1,4 @@
-import { test, expect, beforeAll, afterAll, vi } from 'vitest';
+import { test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer } from './index.ts';
 import { saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -55,13 +55,20 @@ function requestWithHost(port: number, path: string, host: string, method: 'GET'
 }
 const postWithHost = (port: number, path: string, host: string) => requestWithHost(port, path, host, 'POST');
 
-let server: http.Server;
-let base: string;
-let statePath: string;
-
-beforeAll(async () => {
+// Spins up a full server (temp state.json seeded with one needs_attention
+// card, temp config.json matching writeEnabled: false/demo: false, temp
+// webDist with a stub index.html) and returns everything a test needs.
+// Pulled out of what used to be a single `beforeAll` so every test gets its
+// own fresh server+state instead of ~20 tests sharing one mutable instance
+// across the whole file — the old version's later tests (ack keeps
+// override, sequential POSTs, the unknown-key no-op, ...) implicitly
+// depended on exactly which bucket card 'P-1' had been left in by whichever
+// test ran before them, which only worked because vitest happens to run a
+// file's tests in declaration order by default. Nothing here changed
+// behaviorally; this is purely an isolation fix.
+async function startServer(): Promise<{ server: http.Server; base: string; statePath: string; configPath: string }> {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
-  statePath = join(dir, 'state.json');
+  const statePath = join(dir, 'state.json');
   const webDist = join(dir, 'dist');
   mkdirSync(webDist);
   mkdirSync(join(webDist, 'assets'));
@@ -75,9 +82,9 @@ beforeAll(async () => {
   saveState(statePath, state);
   const config = makeConfig();
   // performWrite (used by POST /api/write) re-reads config from disk and
-  // now fails CLOSED if that read throws — so the write-back tests below
-  // need a real config.json on disk matching what they expect the gate to
-  // do (writeEnabled: false, not demo), not just an in-memory `config`.
+  // fails CLOSED if that read throws — so the write-back tests below need a
+  // real config.json on disk matching what they expect the gate to do
+  // (writeEnabled: false, not demo), not just an in-memory `config`.
   const configPath = join(dir, 'config.json');
   writeFileSync(configPath, JSON.stringify({
     port: 0,
@@ -85,12 +92,21 @@ beforeAll(async () => {
     github: { org: 'o', repos: ['r'], username: 'u' },
     writeEnabled: false, demo: false,
   }));
-  server = createServer({ config, statePath, webDist, configPath });
+  const server = createServer({ config, statePath, webDist, configPath });
   await new Promise<void>(r => server.listen(0, () => r()));
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { server, base, statePath, configPath };
+}
+
+let server: http.Server;
+let base: string;
+let statePath: string;
+
+beforeEach(async () => {
+  ({ server, base, statePath } = await startServer());
 });
 
-afterAll(() => server.close());
+afterEach(() => server.close());
 
 test('GET /api/data returns snapshot', async () => {
   const d = await (await fetch(`${base}/api/data`)).json();
@@ -262,6 +278,44 @@ test('POST /api/write in demo mode returns a 200 stub-success refusal, not a 403
     expect(res.status).toBe(200);
     const d = await res.json();
     expect(d).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
+  } finally {
+    demoServer.close();
+  }
+});
+
+// The demo-mode refresh test above (write-back) exercises the demo *write*
+// stub over HTTP; refresh()'s own demo branch is tested directly in
+// refresh.test.ts, bypassing the HTTP layer, guardHost/guardMutation, and
+// saveState entirely. This is the actual first-run path: a brand-new user's
+// browser hitting POST /api/refresh in demo mode through the real server.
+test('POST /api/refresh in demo mode returns a populated snapshot over real HTTP', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const demoStatePath = join(dir, 'state.json');
+  const webDist = join(dir, 'dist');
+  mkdirSync(webDist);
+  writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
+  const demoConfigPath = join(dir, 'config.json');
+  writeFileSync(demoConfigPath, JSON.stringify({
+    port: 0, demo: true,
+    jira: { projectKey: 'DEMO', accountId: 'me' },
+    github: { org: 'acme', repos: ['webapp'], username: 'costajohnt' },
+  }));
+  const demoServer = createServer({ config: makeConfig({ demo: true }), statePath: demoStatePath, webDist, configPath: demoConfigPath });
+  await new Promise<void>(r => demoServer.listen(0, () => r()));
+  try {
+    const demoBase = `http://127.0.0.1:${(demoServer.address() as AddressInfo).port}`;
+    const res = await fetch(`${demoBase}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+    expect(res.status).toBe(200);
+    const d = await res.json();
+    const boardCount = Object.values(d.buckets).flat().length;
+    expect(boardCount).toBeGreaterThan(0);
+    expect(d.errors).toEqual({ jira: null, github: null });
+    // Persisted too, not just returned — a follow-up GET /api/data (a
+    // fresh page load) must see the same populated board, not the
+    // pre-refresh placeholder.
+    const dataRes = await fetch(`${demoBase}/api/data`);
+    const persisted = await dataRes.json();
+    expect(persisted.updatedAt).toBe(d.updatedAt);
   } finally {
     demoServer.close();
   }

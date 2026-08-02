@@ -85,6 +85,26 @@ test('unlinked PRs surface; errors pass through', () => {
   expect(p.errors.jira).toBe('boom');
 });
 
+// The file-level vi.mock('./jira.ts') above always rejects fetchJiraCards
+// for every other test in this file, so the SUCCESS branch of refresh()
+// (`cards = await fetchJiraCards(...)`, `state.lastCards = cards`,
+// refresh.ts:150) was never exercised anywhere — breaking that assignment
+// wouldn't have failed the suite. This overrides the mock for one call.
+test('refresh() success path: a resolved fetchJiraCards sets state.lastCards and the payload reflects the fresh cards', async () => {
+  const { fetchJiraCards } = await import('./jira.ts');
+  const freshCards = [card({ key: 'PROJ-9', summary: 'Fresh from Jira' })];
+  vi.mocked(fetchJiraCards).mockResolvedValueOnce(freshCards);
+  const state = emptyState();
+  state.lastCards = [card({ key: 'PROJ-OLD', summary: 'Stale' })]; // must be replaced, not merged with
+
+  const payload = await refresh({ config, state });
+
+  expect(state.lastCards).toBe(freshCards);
+  expect(payload.errors.jira).toBeNull();
+  expect(payload.buckets.in_progress.some(i => i.key === 'PROJ-9')).toBe(true);
+  expect(payload.buckets.in_progress.some(i => i.key === 'PROJ-OLD')).toBe(false);
+});
+
 test('never blanks the board: jira error reuses lastCards, errors.jira is set', async () => {
   const state = emptyState();
   state.lastCards = [card()];

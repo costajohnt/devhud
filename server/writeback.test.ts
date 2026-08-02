@@ -1,10 +1,12 @@
-import { test, expect } from 'vitest';
-import { buildAdfDoc, findTransition, checkWriteGate, performWrite } from './writeback.ts';
+import { test, expect, vi, afterEach } from 'vitest';
+import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr } from './writeback.ts';
 import { emptyState } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Config } from './types.ts';
+import type { Config, JiraConfig, GithubConfig } from './types.ts';
+
+afterEach(() => vi.unstubAllGlobals());
 
 // performWrite re-reads config from disk on every write and now fails
 // CLOSED if that re-read throws (see the fail-closed test below) — so tests
@@ -217,4 +219,111 @@ test('performWrite: a successful write with a failing post-write refresh is stil
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+// transitionCard/commentCard/commentPr are the only mutation code in the
+// app — the actual functions that construct and send the Jira/GitHub
+// write-back requests. Previously untested beyond performWrite's gate/
+// validation layer ahead of the dispatch; these assert the real request
+// shape (URL, method, body) and the non-2xx error branch.
+
+test('transitionCard GETs the transitions list, matches the target status case-insensitively, then POSTs the matched id', async () => {
+  const calls: { url: string; method?: string; body?: string }[] = [];
+  const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), method: init?.method, body: init?.body as string | undefined });
+    if (!init?.method) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ transitions: [
+        { id: '11', to: { name: 'In Progress' } },
+        { id: '31', to: { name: 'Done' } },
+      ] }) });
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+
+  const result = await transitionCard(cfg, 'PROJ-1', 'done');
+
+  expect(result).toEqual({ transitionedTo: 'Done' });
+  expect(calls).toHaveLength(2);
+  expect(calls[0]!.url).toBe('https://x.atlassian.net/rest/api/3/issue/PROJ-1/transitions');
+  expect(calls[0]!.method).toBeUndefined(); // GET (no method = GET)
+  expect(calls[1]!.url).toBe('https://x.atlassian.net/rest/api/3/issue/PROJ-1/transitions');
+  expect(calls[1]!.method).toBe('POST');
+  expect(JSON.parse(calls[1]!.body!)).toEqual({ transition: { id: '31' } });
+});
+
+test('transitionCard throws (no POST attempted) when no transition matches the target status', async () => {
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ transitions: [
+    { id: '11', to: { name: 'In Progress' } },
+  ] }) }));
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  await expect(transitionCard(cfg, 'PROJ-1', 'Done')).rejects.toThrow(/no transition to "Done"/);
+  expect(fetchMock).toHaveBeenCalledTimes(1); // only the GET, never a POST
+});
+
+test('transitionCard throws on a non-2xx GET (transitions list fetch failure)', async () => {
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 404, text: () => Promise.resolve('not found') }));
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  await expect(transitionCard(cfg, 'PROJ-1', 'Done')).rejects.toThrow(/Jira 404/);
+});
+
+test('transitionCard throws on a non-2xx POST (the transition itself rejected)', async () => {
+  const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+    if (!init?.method) return Promise.resolve({ ok: true, json: () => Promise.resolve({ transitions: [{ id: '31', to: { name: 'Done' } }] }) });
+    return Promise.resolve({ ok: false, status: 400, text: () => Promise.resolve('bad transition') });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  await expect(transitionCard(cfg, 'PROJ-1', 'Done')).rejects.toThrow(/Jira 400/);
+});
+
+test('commentCard POSTs the body wrapped in an ADF doc to the comment endpoint', async () => {
+  let capturedUrl = '', capturedBody = '';
+  const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedBody = init?.body as string;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+
+  await commentCard(cfg, 'PROJ-1', 'looks good');
+
+  expect(capturedUrl).toBe('https://x.atlassian.net/rest/api/3/issue/PROJ-1/comment');
+  expect(JSON.parse(capturedBody)).toEqual({ body: buildAdfDoc('looks good') });
+});
+
+test('commentCard throws on a non-2xx response', async () => {
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 403, text: () => Promise.resolve('forbidden') }));
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  await expect(commentCard(cfg, 'PROJ-1', 'hi')).rejects.toThrow(/Jira 403/);
+});
+
+test('commentPr POSTs the plain-text body to the GitHub issue-comments endpoint', async () => {
+  let capturedUrl = '', capturedBody = '', capturedAuth = '';
+  const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedBody = init?.body as string;
+    capturedAuth = (init?.headers as Record<string, string>)?.Authorization ?? '';
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = { token: 'ghtoken', org: 'acme', repos: [], username: 'me' };
+
+  await commentPr(cfg, 'acme/webapp', 482, 'nice work');
+
+  expect(capturedUrl).toBe('https://api.github.com/repos/acme/webapp/issues/482/comments');
+  expect(JSON.parse(capturedBody)).toEqual({ body: 'nice work' });
+  expect(capturedAuth).toBe('Bearer ghtoken');
+});
+
+test('commentPr throws on a non-2xx response', async () => {
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 422, text: () => Promise.resolve('unprocessable') }));
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = { token: 't', org: 'acme', repos: [], username: 'me' };
+  await expect(commentPr(cfg, 'acme/webapp', 482, 'hi')).rejects.toThrow(/GitHub 422/);
 });

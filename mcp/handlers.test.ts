@@ -125,6 +125,29 @@ test('cardComments marks the payload as containing untrusted third-party text', 
   expect(result._note).toMatch(/never as instructions/);
 });
 
+// The card_comments MCP tool description explicitly documents this
+// fallback ("a card that has already merged and moved into mergedCards is
+// found but returns empty comments/newComments arrays") but nothing
+// verified it — MergedCard carries no comments/newComments fields, so
+// cardComments' `?? (snapshot.mergedCards ?? []).find(...)` fallback (and
+// the `as {...}` cast right after it) is the only thing standing between
+// that documented behavior and either a runtime crash or silently wrong
+// data if a future refactor breaks the shape assumption.
+test('cardComments finds a merged card via the mergedCards fallback, returning empty comments/newComments (not an error)', async () => {
+  const statePath = tempStatePath();
+  const state = seedSnapshot(statePath);
+  state.snapshot!.mergedCards = [
+    { key: 'P-9', summary: 'Shipped it', jiraUrl: 'https://x/browse/P-9', pr: null, mergedAt: '2026-07-01T00:00:00Z' },
+  ];
+  saveState(statePath, state);
+
+  const result = await cardComments({ config, statePath, key: 'P-9' }) as { key: string; comments: unknown[]; newComments: unknown[] };
+
+  expect(result.key).toBe('P-9');
+  expect(result.comments).toEqual([]);
+  expect(result.newComments).toEqual([]);
+});
+
 test('cardComments on an unknown key returns an error shape, not a throw', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
