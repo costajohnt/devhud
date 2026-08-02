@@ -1,6 +1,7 @@
 import { useRef, useState } from 'preact/hooks';
 import type { DashboardData, Item, Bucket } from './types.js';
 import { BUCKET_ORDER, BUCKET_LABEL } from './types.js';
+import { AnimatedValue } from './count-up.js';
 
 export const ago = (iso: string | null) => {
   if (!iso) return '';
@@ -8,11 +9,13 @@ export const ago = (iso: string | null) => {
   return d <= 0 ? 'today' : `${d}d ago`;
 };
 
+// Attention reasons (CI failing, unseen comments) always outrank "Merged" —
+// a merged PR that still needs a look shouldn't hide behind a muted pill.
 function pill(item: Item): { text: string; cls: string } | null {
-  if (item.pr?.state === 'merged') return { text: 'Merged', cls: 'pill pill--muted' };
   if (item.attention.includes('ci_failing')) return { text: 'CI Failing', cls: 'pill pill--red' };
   const n = item.newComments.length;
   if (n) return { text: `${n} new comment${n > 1 ? 's' : ''}`, cls: 'pill pill--red' };
+  if (item.pr?.state === 'merged') return { text: 'Merged', cls: 'pill pill--muted' };
   if (item.pr?.reviewState === 'changes_requested') return { text: 'Changes Requested', cls: 'pill pill--amber' };
   if (item.bucket === 'waiting_review') return { text: 'Awaiting Review', cls: 'pill pill--blue' };
   return null;
@@ -40,7 +43,7 @@ const DROPPABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
 // of a single Board component (and up into App, not into the Route's inline
 // component) so search/drag state survives re-renders instead of resetting
 // whenever a new anonymous route-component identity gets mounted.
-export function useBoardFilter(data: DashboardData | null, act: (b: object) => Promise<void>) {
+export function useBoardFilter(data: DashboardData | null, act: (b: object) => Promise<void>, actionInFlight = false) {
   const [q, setQ] = useState('');
   const [dragOverBucket, setDragOverBucket] = useState<Bucket | null>(null);
   // dragenter/dragleave fire on every child element as the pointer crosses them;
@@ -76,6 +79,9 @@ export function useBoardFilter(data: DashboardData | null, act: (b: object) => P
     e.preventDefault();
     dragCounters.current[b] = 0;
     setDragOverBucket(cur => (cur === b ? null : cur));
+    // An action is already in flight (ack/move) — ignore this drop rather
+    // than firing a second concurrent action against the same card.
+    if (actionInFlight) return;
     const key = e.dataTransfer?.getData('text/plain');
     if (!key || !data) return;
     const current = BUCKET_ORDER.find(bucket => data.buckets[bucket].some(i => i.key === key));
@@ -97,20 +103,32 @@ export function useBoardFilter(data: DashboardData | null, act: (b: object) => P
 export type BoardFilter = ReturnType<typeof useBoardFilter>;
 
 export function BoardStats({ data }: { data: DashboardData }) {
+  // A stat card only links to a #hash section when that section actually
+  // renders (non-empty) — otherwise it'd be a dead link to a missing anchor,
+  // so it renders as a plain span instead.
   return (
     <div class="stats-bar animate-in delay-1">
-      {BUCKET_ORDER.map(b => (
-        <a key={b} class={`stat-card ${STAT_COLOR[b]}`} href={`#${b}`}>
-          <span class="stat-value">{data.buckets[b].length}</span>
-          <span class="stat-label">{BUCKET_LABEL[b]}</span>
-        </a>
-      ))}
-      <a class="stat-card muted" href="#todo">
-        <span class="stat-value">{data.todo.length}</span>
-        <span class="stat-label">TODO</span>
-      </a>
+      {BUCKET_ORDER.map(b => {
+        const count = data.buckets[b].length;
+        const Tag = count > 0 ? 'a' : 'span';
+        return (
+          <Tag key={b} class={`stat-card ${STAT_COLOR[b]}`} {...(count > 0 ? { href: `#${b}` } : {})}>
+            <span class="stat-value"><AnimatedValue value={count} /></span>
+            <span class="stat-label">{BUCKET_LABEL[b]}</span>
+          </Tag>
+        );
+      })}
+      {(() => {
+        const Tag = data.todo.length > 0 ? 'a' : 'span';
+        return (
+          <Tag class="stat-card muted" {...(data.todo.length > 0 ? { href: '#todo' } : {})}>
+            <span class="stat-value"><AnimatedValue value={data.todo.length} /></span>
+            <span class="stat-label">TODO</span>
+          </Tag>
+        );
+      })()}
       <a class="stat-card purple" href="/merged">
-        <span class="stat-value">{data.mergedTotal}</span>
+        <span class="stat-value"><AnimatedValue value={data.mergedTotal} /></span>
         <span class="stat-label">Merged</span>
       </a>
     </div>
@@ -133,6 +151,13 @@ export function BoardFilterBar({ board }: { board: BoardFilter }) {
 
 export function BoardList({ data, selectedKey, onSelect, board }:
   { data: DashboardData; selectedKey: string | null; onSelect: (k: string | null) => void; board: BoardFilter }) {
+  if (board.shown === 0) {
+    return (
+      <div class="pr-list">
+        <p class="pr-list-empty">No cards to display</p>
+      </div>
+    );
+  }
   return (
     <div class="pr-list">
       {BUCKET_ORDER.map(b => {
@@ -163,6 +188,14 @@ export function BoardList({ data, selectedKey, onSelect, board }:
                   draggable
                   onDragStart={(e: DragEvent) => board.onRowDragStart(e, i.key)}
                   onClick={() => onSelect(i.key)}
+                  onKeyDown={(e: KeyboardEvent) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelect(i.key);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
                 >
                   <span class="pr-row-id">{i.key}</span>
                   <span class="pr-row-title">{i.summary}</span>

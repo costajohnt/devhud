@@ -6,6 +6,23 @@ import { Detail } from './detail.js';
 import { Extras } from './extras.js';
 import { MergedPage } from './merged.js';
 import { fireConfetti } from './celebrate.js';
+import { SkeletonLoader } from './skeleton-loader.js';
+
+// How often the header re-renders so the relative "Updated Xm ago" label
+// ticks — purely cosmetic, no network calls ride this interval.
+const RELATIVE_TIME_TICK_MS = 30_000;
+
+function formatUpdated(iso: string | null): string {
+  if (!iso) return 'Never refreshed';
+  const ts = Date.parse(iso);
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 60) return 'Updated just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Updated ${hours}h ago`;
+  return `Updated ${new Date(ts).toLocaleString()}`;
+}
 
 // preact-iso's <Router>/<Route> memoize the rendered route on
 // [url, JSON.stringify(matchProps)] and freeze the FIRST render's closure —
@@ -15,9 +32,9 @@ import { fireConfetti } from './celebrate.js';
 // plain JS (as the reference dashboard this app follows does) sidesteps
 // that memoization entirely.
 function AppContent() {
-  const { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed } = useData();
+  const { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed, clearActionError } = useData();
   const [selected, setSelected] = useState<string | null>(null);
-  const board = useBoardFilter(data, act);
+  const board = useBoardFilter(data, act, actionInFlight);
   const { path } = useLocation();
   const [theme, setTheme] = useState(localStorage.getItem('jira-dash-theme') ?? 'dark');
   const [toast, setToast] = useState<string | null>(null);
@@ -34,6 +51,26 @@ function AppContent() {
     };
   }, []);
 
+  // Purely cosmetic re-render tick so "Updated Xm ago" stays fresh even if
+  // the user leaves the tab open without triggering any other re-render.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), RELATIVE_TIME_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // Glanceable tab title: a backgrounded tab shows "(2) jira-dash" when
+  // cards need attention.
+  useEffect(() => {
+    const n = data?.buckets.needs_attention.length ?? 0;
+    document.title = n > 0 ? `(${n}) jira-dash` : 'jira-dash';
+  }, [data]);
+
+  // Scroll to top on every route change (e.g. Board <-> Merged).
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [path]);
+
   const flipTheme = () => {
     const t = theme === 'dark' ? 'light' : 'dark';
     setTheme(t);
@@ -41,10 +78,13 @@ function AppContent() {
     document.documentElement.dataset.theme = t;
   };
 
-  if (loading) {
+  if (loading && !data) {
     return (
-      <div class="shell-center">
-        <p class="shell-status">Loading…</p>
+      <div class="skeleton-wrapper">
+        <SkeletonLoader />
+        <div class="shell-center shell-center--skeleton">
+          <p class="shell-status">Loading…</p>
+        </div>
       </div>
     );
   }
@@ -52,6 +92,9 @@ function AppContent() {
     return (
       <div class="shell-center" role="alert">
         <p class="shell-status shell-error">Server unreachable.</p>
+        <button class="shell-retry" type="button" onClick={refresh}>
+          Retry
+        </button>
       </div>
     );
   }
@@ -65,6 +108,7 @@ function AppContent() {
     <div class="dashboard">
       <header class="dashboard-header">
         <div class="header-brand">
+          <img class="header-icon" src="/favicon.svg" alt="" width="32" height="32" />
           <h1>jira-dash</h1>
         </div>
         <div class="header-bar">
@@ -74,9 +118,7 @@ function AppContent() {
             <span><span class="val" style={{ color: 'var(--purple)' }}>{data.mergedTotal}</span> merged</span>
           </div>
           <div class="header-right">
-            <span class="last-updated">
-              {data.updatedAt ? `Updated ${new Date(data.updatedAt).toLocaleTimeString()}` : 'Never refreshed'}
-            </span>
+            <span class="last-updated">{formatUpdated(data.updatedAt)}</span>
             <button class="celebrate-btn" onClick={() => { fireConfetti(); }} type="button" aria-label="Celebrate" title="Celebrate">
               🎉
             </button>
@@ -90,10 +132,17 @@ function AppContent() {
         </div>
       </header>
       {connError && <div class="error-banner" role="alert"><span>Refresh failed ({connError}) — showing last data.</span></div>}
-      {actionError && <div class="error-banner" role="alert"><span>{actionError}</span></div>}
+      {actionError && (
+        <div class="error-banner" role="alert">
+          <span>{actionError}</span>
+          <button class="error-banner-dismiss" type="button" onClick={clearActionError} aria-label="Dismiss">
+            &times;
+          </button>
+        </div>
+      )}
       {data.errors.jira && <div class="partial-banner" role="status"><span>Jira fetch failed: {data.errors.jira}</span></div>}
       {data.errors.github && <div class="partial-banner" role="status"><span>GitHub fetch failed: {data.errors.github}</span></div>}
-      <main class="dashboard-main">
+      <main id="main-content" class="dashboard-main">
         {path === '/merged' ? (
           <MergedPage data={data} />
         ) : (
@@ -127,6 +176,9 @@ function AppContent() {
 export function App() {
   return (
     <LocationProvider>
+      <a class="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <AppContent />
     </LocationProvider>
   );

@@ -91,6 +91,24 @@ export function Detail({ item, onClose, act, actionInFlight }:
           </div>
         )}
 
+        {item.comments.length > 0 && (
+          <div class="pr-detail-field">
+            <span class="pr-detail-field-label">Comments</span>
+            {item.comments.map((c) => (
+              <div class="pr-detail-comment" key={`all-${c.source}-${c.createdAt}-${c.author}`}>
+                <div class="pr-detail-comment-header">
+                  <div class="pr-detail-comment-avatar" />
+                  <span class="pr-detail-comment-author">
+                    {c.source === 'jira' ? 'Jira' : 'GitHub'} · {c.author}
+                  </span>
+                  <span class="pr-detail-comment-date">{ago(c.createdAt)}</span>
+                </div>
+                <p class="pr-detail-comment-body">{c.body}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div class="pr-detail-field">
           <span class="pr-detail-field-label">Days Since Activity</span>
           <span class="pr-detail-field-value">{item.daysSinceActivity ?? '—'}</span>

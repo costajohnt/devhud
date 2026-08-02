@@ -68,5 +68,7 @@ export function useData() {
     return () => { clearTimeout(t0); clearInterval(t); };
   }, []);
 
-  return { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed };
+  const clearActionError = () => setActionError(null);
+
+  return { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed, clearActionError };
 }

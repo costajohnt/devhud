@@ -9,10 +9,14 @@ export async function fireConfetti() {
   try {
     confettiFn ??= await loadConfetti();
     const confetti = confettiFn;
+    // Stacked bursts from both sides with randomized origins, ~800ms total —
+    // matches oss-autopilot's use-celebration.ts fireConfetti.
+    const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 9999 };
     const end = Date.now() + 800;
     (function frame() {
-      confetti({ particleCount: 4, angle: 60, spread: 55, origin: { x: 0 } });
-      confetti({ particleCount: 4, angle: 120, spread: 55, origin: { x: 1 } });
+      for (const xOffset of [0, 0.7]) {
+        confetti({ ...defaults, particleCount: 50, origin: { x: xOffset + Math.random() * 0.3, y: Math.random() - 0.2 } });
+      }
       if (Date.now() < end) requestAnimationFrame(frame);
     })();
   } catch { /* toast is the canonical signal */ }
