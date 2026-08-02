@@ -67,17 +67,17 @@ test('POST /api/action with invalid JSON returns 400', async () => {
 });
 
 test('ack clears override', async () => {
+  // Seed the override via the live API (not a raw disk write) so this
+  // exercises the same shared in-memory state the ack handler mutates.
+  const moveRes = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'move', key: 'P-1', bucket: 'in_qa' }) });
+  expect(moveRes.status).toBe(200);
   const { loadState: loadStateFn } = await import('./state.js');
-  let state = loadStateFn(statePath);
-  state.cards['P-1'] = state.cards['P-1'] || {};
-  state.cards['P-1'].override = 'in_qa';
-  const { saveState: saveStateFn } = await import('./state.js');
-  saveStateFn(statePath, state);
+  expect(loadStateFn(statePath).cards['P-1'].override).toBe('in_qa');
   const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'ack', key: 'P-1' }) });
   expect(res.status).toBe(200);
-  state = loadStateFn(statePath);
-  expect(state.cards['P-1'].override).toBeNull();
+  expect(loadStateFn(statePath).cards['P-1'].override).toBeNull();
 });
 
 test('sequential POSTs both persist (no lost update)', async () => {
