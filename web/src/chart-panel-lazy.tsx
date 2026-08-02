@@ -70,7 +70,7 @@ export function LazyChartPanel(props: ChartPanelProps) {
       .catch((err) => {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
-          console.error('[jira-dash] failed to load chart-panel chunk:', err);
+          console.error('[simon-dash] failed to load chart-panel chunk:', err);
         }
       });
     return () => {

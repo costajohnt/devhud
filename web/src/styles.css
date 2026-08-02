@@ -377,6 +377,14 @@ a:hover {
   background-clip: text;
 }
 
+/* Two-tone wordmark: "simon" carries the gradient above, "-dash" resets to a
+   solid accent color so the two halves read distinctly at a glance. */
+.dashboard-header h1 .wordmark-accent {
+  background: none;
+  -webkit-text-fill-color: var(--blue);
+  color: var(--blue);
+}
+
 .header-icon {
   width: 72px;
   height: 72px;

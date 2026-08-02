@@ -1,4 +1,4 @@
-// Shared dual-transport helper: if a jira-dash server is already listening
+// Shared dual-transport helper: if a simon-dash server is already listening
 // on the configured port, callers (CLI, MCP server) should go through its
 // HTTP API so the running server's in-memory state — the source of truth
 // while it's up — is what gets read/mutated; otherwise they operate

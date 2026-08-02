@@ -16,7 +16,7 @@ export class ErrorBoundary extends Component<{ children: ComponentChildren }, Er
   }
 
   componentDidCatch(error: unknown, errorInfo: unknown): void {
-    console.error('[jira-dash] uncaught render error:', error, errorInfo);
+    console.error('[simon-dash] uncaught render error:', error, errorInfo);
   }
 
   private retry = (): void => {

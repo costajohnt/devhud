@@ -38,7 +38,7 @@ export function loadState(path) {
   catch { return emptyState(); }
   try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) })); }
   catch (e) {
-    console.warn(`jira-dash: state file at ${path} is unparseable (${e.message}); falling back to ${path}.bak`);
+    console.warn(`simon-dash: state file at ${path} is unparseable (${e.message}); falling back to ${path}.bak`);
     try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) })); }
     catch { return emptyState(); }
   }

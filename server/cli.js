@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Plain-JS ESM CLI, no deps. Dual transport: if a jira-dash server is
+// Plain-JS ESM CLI, no deps. Dual transport: if a simon-dash server is
 // already listening on the configured port, commands go through its HTTP
 // API (so a running server's in-memory state — the source of truth while
 // it's up — is what gets read/mutated); otherwise the CLI operates
@@ -24,21 +24,21 @@ import { probeServer, serverAppearsRunning, splitBrainError } from './transport.
 // disk access, and the split-brain guard) can't drift between callers.
 export { probeServer };
 
-const HELP = `jira-dash — Jira/GitHub board CLI
+const HELP = `simon-dash — Jira/GitHub board CLI
 
 Usage:
-  jira-dash status [--json]               Show the board snapshot
-  jira-dash refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
-  jira-dash ack <KEY> [--json]            Acknowledge a card's attention flags
-  jira-dash move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
-  jira-dash transition <KEY> <status...>  Transition a Jira card to a workflow status
-  jira-dash comment <KEY> <text...>       Comment on a Jira card
-  jira-dash pr-comment <repo#num> <text...>  Comment on a GitHub PR
-  jira-dash serve                         Run the dashboard server in the foreground
-  jira-dash open                          Open the dashboard in your browser
-  jira-dash --help                        Show this help
+  simon-dash status [--json]               Show the board snapshot
+  simon-dash refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
+  simon-dash ack <KEY> [--json]            Acknowledge a card's attention flags
+  simon-dash move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
+  simon-dash transition <KEY> <status...>  Transition a Jira card to a workflow status
+  simon-dash comment <KEY> <text...>       Comment on a Jira card
+  simon-dash pr-comment <repo#num> <text...>  Comment on a GitHub PR
+  simon-dash serve                         Run the dashboard server in the foreground
+  simon-dash open                          Open the dashboard in your browser
+  simon-dash --help                        Show this help
 
-If a jira-dash server is already running on the configured port, commands
+If a simon-dash server is already running on the configured port, commands
 go through its HTTP API; otherwise they operate directly on data/state.json.
 
 transition/comment/pr-comment are write-back: they mutate real Jira/GitHub
@@ -48,7 +48,7 @@ no-op in demo mode. See the README's write-back section.
 
 export function formatStatus(payload) {
   if (!payload.updatedAt) {
-    return 'No data yet — run `jira-dash refresh` to fetch a snapshot.';
+    return 'No data yet — run `simon-dash refresh` to fetch a snapshot.';
   }
   const b = payload.buckets;
   const lines = [
@@ -130,7 +130,7 @@ export async function run(argv, { config, statePath }) {
     const key = rest[0];
     const bucket = cmd === 'move' ? rest[1] : undefined;
     if (!key || (cmd === 'move' && !bucket)) {
-      const usage = `usage: jira-dash ${cmd} <KEY>${cmd === 'move' ? ' <bucket>' : ''}`;
+      const usage = `usage: simon-dash ${cmd} <KEY>${cmd === 'move' ? ' <bucket>' : ''}`;
       return { code: 1, out: '', err: [err, usage].join('\n') };
     }
 
@@ -180,7 +180,7 @@ export async function run(argv, { config, statePath }) {
       const m = rest[0]?.match(/^(.+)#(\d+)$/);
       body = rest.slice(1).join(' ');
       if (!m || !body) {
-        return { code: 1, out: '', err: [err, 'usage: jira-dash pr-comment <repo#num> <text...>'].join('\n') };
+        return { code: 1, out: '', err: [err, 'usage: simon-dash pr-comment <repo#num> <text...>'].join('\n') };
       }
       repoRef = m[1];
       number = Number(m[2]);
@@ -189,7 +189,7 @@ export async function run(argv, { config, statePath }) {
       const rest2 = rest.slice(1).join(' ');
       if (cmd === 'transition') status = rest2; else body = rest2;
       if (!key || !rest2) {
-        const usage = cmd === 'transition' ? 'usage: jira-dash transition <KEY> <status...>' : 'usage: jira-dash comment <KEY> <text...>';
+        const usage = cmd === 'transition' ? 'usage: simon-dash transition <KEY> <status...>' : 'usage: simon-dash comment <KEY> <text...>';
         return { code: 1, out: '', err: [err, usage].join('\n') };
       }
     }

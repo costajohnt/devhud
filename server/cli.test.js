@@ -25,7 +25,7 @@ test('status in direct mode against a fresh temp state file prints the empty-boa
   const { code, out, err } = await run(['status'], { config, statePath });
   expect(code).toBe(0);
   expect(err).toBe('direct');
-  expect(out).toBe('No data yet — run `jira-dash refresh` to fetch a snapshot.');
+  expect(out).toBe('No data yet — run `simon-dash refresh` to fetch a snapshot.');
 });
 
 test('status --json in direct mode against a populated temp state file returns the snapshot', async () => {
@@ -134,7 +134,7 @@ test('status still works direct-mode even with a server.pid present (read-only)'
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
   const { code, out } = await run(['status'], { config, statePath });
   expect(code).toBe(0);
-  expect(out).toBe('No data yet — run `jira-dash refresh` to fetch a snapshot.');
+  expect(out).toBe('No data yet — run `simon-dash refresh` to fetch a snapshot.');
 });
 
 test('a stale server.pid (dead process) does not block direct-mode writes', async () => {
@@ -179,14 +179,14 @@ test('pr-comment usage error when the repo#num ref is malformed', async () => {
   const statePath = tempStatePath();
   const { code, err } = await run(['pr-comment', 'not-a-ref', 'nice', 'work'], { config, statePath });
   expect(code).toBe(1);
-  expect(err).toContain('usage: jira-dash pr-comment <repo#num> <text...>');
+  expect(err).toContain('usage: simon-dash pr-comment <repo#num> <text...>');
 });
 
 test('pr-comment usage error when no comment text is given', async () => {
   const statePath = tempStatePath();
   const { code, err } = await run(['pr-comment', 'acme/webapp#482'], { config, statePath });
   expect(code).toBe(1);
-  expect(err).toContain('usage: jira-dash pr-comment <repo#num> <text...>');
+  expect(err).toContain('usage: simon-dash pr-comment <repo#num> <text...>');
 });
 
 test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', async () => {
@@ -209,10 +209,10 @@ test('direct-mode transition refuses when a server.pid exists for a live process
 test('transition/comment usage errors when KEY or status/text is missing', async () => {
   const t = await run(['transition', 'P-1'], { config, statePath: tempStatePath() });
   expect(t.code).toBe(1);
-  expect(t.err).toContain('usage: jira-dash transition <KEY> <status...>');
+  expect(t.err).toContain('usage: simon-dash transition <KEY> <status...>');
   const c = await run(['comment'], { config, statePath: tempStatePath() });
   expect(c.code).toBe(1);
-  expect(c.err).toContain('usage: jira-dash comment <KEY> <text...>');
+  expect(c.err).toContain('usage: simon-dash comment <KEY> <text...>');
 });
 
 test('exit code 1 for an unknown command', async () => {
@@ -224,10 +224,10 @@ test('exit code 1 for an unknown command', async () => {
 test('exit code 1 when ack/move is called without a KEY argument', async () => {
   const ack = await run(['ack'], { config, statePath: tempStatePath() });
   expect(ack.code).toBe(1);
-  expect(ack.err).toContain('usage: jira-dash ack <KEY>');
+  expect(ack.err).toContain('usage: simon-dash ack <KEY>');
   const move = await run(['move'], { config, statePath: tempStatePath() });
   expect(move.code).toBe(1);
-  expect(move.err).toContain('usage: jira-dash move <KEY> <bucket>');
+  expect(move.err).toContain('usage: simon-dash move <KEY> <bucket>');
 });
 
 test('--help / no command prints usage; exit 0 with --help, exit 1 with no command', async () => {

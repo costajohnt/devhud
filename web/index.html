@@ -4,13 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>jira-dash</title>
+    <title>simon-dash</title>
     <script>
       // Pre-paint theme: explicit choice wins, otherwise fall back to the OS
       // preference so there's no flash of the wrong theme before main.tsx's
-      // getInitialTheme() (app.tsx) runs the same logic.
-      const t = localStorage.getItem('jira-dash-theme')
+      // getInitialTheme() (app.tsx) runs the same logic. One-time migration
+      // from the pre-rename key: read it as a fallback and write it forward
+      // under the new key so nobody's saved theme choice resets.
+      const t = localStorage.getItem('simon-dash-theme')
+        || localStorage.getItem('jira-dash-theme')
         || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      if (!localStorage.getItem('simon-dash-theme')) localStorage.setItem('simon-dash-theme', t);
       document.documentElement.dataset.theme = t;
     </script>
   </head>

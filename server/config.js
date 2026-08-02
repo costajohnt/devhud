@@ -19,7 +19,9 @@ export function loadConfig(path = new URL('../config.json', import.meta.url).pat
     if (!c.github[key]) throw new Error(`config at ${path} is missing required key "github.${key}"`);
   }
   c.port ??= 3010;
-  c.demo = Boolean(c.demo) || process.env.JIRA_DASH_DEMO === '1';
+  // JIRA_DASH_DEMO is a deprecated alias kept for anyone with it already set
+  // in their environment; SIMON_DASH_DEMO is the current name post-rename.
+  c.demo = Boolean(c.demo) || process.env.SIMON_DASH_DEMO === '1' || process.env.JIRA_DASH_DEMO === '1';
   // Off by default: write-back (Jira transitions/comments, PR comments) must
   // be explicitly opted into. See server/writeback.js's checkWriteGate.
   c.writeEnabled = Boolean(c.writeEnabled);

@@ -14,14 +14,20 @@ import { LazyChartPanel } from './chart-panel-lazy.js';
 // ticks — purely cosmetic, no network calls ride this interval.
 const RELATIVE_TIME_TICK_MS = 30_000;
 
-const THEME_KEY = 'jira-dash-theme';
+const THEME_KEY = 'simon-dash-theme';
+const LEGACY_THEME_KEY = 'jira-dash-theme';
 
 // No explicit user preference stored yet: fall back to the OS setting. Mirrors
 // the pre-paint script in index.html so the very first render already agrees
-// with what that script painted (no flash of the wrong theme).
+// with what that script painted (no flash of the wrong theme). One-time
+// migration from the pre-rename key: read it as a fallback and write it
+// forward under the new key so nobody's saved theme choice resets.
 function getInitialTheme(): string {
-  const stored = localStorage.getItem(THEME_KEY);
-  if (stored) return stored;
+  const stored = localStorage.getItem(THEME_KEY) ?? localStorage.getItem(LEGACY_THEME_KEY);
+  if (stored) {
+    if (!localStorage.getItem(THEME_KEY)) localStorage.setItem(THEME_KEY, stored);
+    return stored;
+  }
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
@@ -72,11 +78,11 @@ function AppContent() {
     return () => clearInterval(id);
   }, []);
 
-  // Glanceable tab title: a backgrounded tab shows "(2) jira-dash" when
+  // Glanceable tab title: a backgrounded tab shows "(2) simon-dash" when
   // cards need attention.
   useEffect(() => {
     const n = data?.buckets.needs_attention.length ?? 0;
-    document.title = n > 0 ? `(${n}) jira-dash` : 'jira-dash';
+    document.title = n > 0 ? `(${n}) simon-dash` : 'simon-dash';
   }, [data]);
 
   // Scroll to top on every route change (e.g. Board <-> Merged).
@@ -139,7 +145,7 @@ function AppContent() {
       <header class="dashboard-header">
         <div class="header-brand">
           <img class="header-icon" src="/favicon.svg" alt="" width="32" height="32" />
-          <h1>jira-dash</h1>
+          <h1>simon<span class="wordmark-accent">-dash</span></h1>
         </div>
         <div class="header-bar">
           <div class="header-stats">

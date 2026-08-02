@@ -1,5 +1,5 @@
 {
-  "name": "jira-dash-web",
+  "name": "simon-dash-web",
   "private": true,
   "type": "module",
   "scripts": { "dev": "vite", "build": "tsc && vite build" },

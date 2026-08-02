@@ -1,4 +1,4 @@
-// Write-back to Jira/GitHub: the only code in jira-dash that mutates
+// Write-back to Jira/GitHub: the only code in simon-dash that mutates
 // external systems. Everything else (refresh, ack, move) is read-only or
 // local-only. Plain fetch, same shape as jira.js/github.js — no deps,
 // 30s timeouts, throws Error on a non-2xx response.

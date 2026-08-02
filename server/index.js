@@ -107,7 +107,7 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   });
   server.listen(config.port, '127.0.0.1', () => {
     writeFileSync(pidPath, JSON.stringify({ pid: process.pid, port: config.port, startedAt: new Date().toISOString() }));
-    console.log(`jira-dash on http://localhost:${config.port}`);
+    console.log(`simon-dash on http://localhost:${config.port}`);
   });
   const shutdown = () => {
     try { unlinkSync(pidPath); } catch {}

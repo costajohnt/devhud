@@ -1,8 +1,8 @@
 {
-  "name": "jira-dash",
+  "name": "simon-dash",
   "private": true,
   "type": "module",
-  "bin": { "jira-dash": "server/cli.js" },
+  "bin": { "simon-dash": "server/cli.js" },
   "scripts": {
     "test": "vitest run",
     "start": "node server/index.js",

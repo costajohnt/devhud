@@ -1,6 +1,6 @@
 # API Reference
 
-jira-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Three endpoints under `/api/`, plus static file serving for the SPA.
+simon-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Three endpoints under `/api/`, plus static file serving for the SPA.
 
 There are two other ways to reach the same board: `server/cli.js` (a plain-JS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
 
@@ -99,7 +99,7 @@ Gate semantics:
 
 On a real success (`writeEnabled: true`, not demo, the write succeeded), the server immediately runs the same refresh pipeline `/api/refresh` uses (so the board reflects the change without waiting for the next poll), persists `data/state.json`, and responds `{ "ok": true, ...writeSpecificFields }` — e.g. `{ "ok": true, "transitionedTo": "In Review" }` for a transition.
 
-The CLI (`jira-dash transition|comment|pr-comment`) and the MCP write tools (`transition_card`/`comment_card`/`comment_pr`) both go through this same endpoint when a server is running, and through the same `performWrite()` function directly on disk when one isn't — so gate semantics and the post-write refresh can't drift between the three surfaces.
+The CLI (`simon-dash transition|comment|pr-comment`) and the MCP write tools (`transition_card`/`comment_card`/`comment_pr`) both go through this same endpoint when a server is running, and through the same `performWrite()` function directly on disk when one isn't — so gate semantics and the post-write refresh can't drift between the three surfaces.
 
 ## Payload shape
 
@@ -250,4 +250,4 @@ The server binds `127.0.0.1:<port>` (loopback only, not reachable from other hos
 
 ## Demo mode
 
-Set `"demo": true` in `config.json`, or run with `JIRA_DASH_DEMO=1` in the environment. In demo mode, `/api/refresh` skips Jira and GitHub entirely and imports canned data from `server/demo.js` (`demoCards`/`demoPrs`), shaped to match what `jira.js`'s `mapIssue` and `github.js`'s `mapPr` (post-enrichment) would produce. That canned data runs through the same `buildSnapshot` pipeline as real data (classification, linking, `prLog` upsert, everything), so demo mode exercises the real logic end to end with no network calls and no credentials required. `errors.jira`/`errors.github` are always `null` in demo mode.
+Set `"demo": true` in `config.json`, or run with `SIMON_DASH_DEMO=1` in the environment (`JIRA_DASH_DEMO=1` still works as a deprecated alias). In demo mode, `/api/refresh` skips Jira and GitHub entirely and imports canned data from `server/demo.js` (`demoCards`/`demoPrs`), shaped to match what `jira.js`'s `mapIssue` and `github.js`'s `mapPr` (post-enrichment) would produce. That canned data runs through the same `buildSnapshot` pipeline as real data (classification, linking, `prLog` upsert, everything), so demo mode exercises the real logic end to end with no network calls and no credentials required. `errors.jira`/`errors.github` are always `null` in demo mode.

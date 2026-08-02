@@ -1,4 +1,4 @@
-# jira-dash
+# simon-dash
 
 Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serves a Preact SPA that tracks card status and PR activity across projects.
 
@@ -17,7 +17,7 @@ See [docs/API.md](docs/API.md) for the full HTTP API reference and [docs/ARCHITE
 
 ## Demo mode
 
-Set `"demo": true` in `config.json` (or run with `JIRA_DASH_DEMO=1`) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
+Set `"demo": true` in `config.json` (or run with `SIMON_DASH_DEMO=1`; `JIRA_DASH_DEMO=1` still works as a deprecated alias) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
 
 ## Setup
 
@@ -45,24 +45,24 @@ Starts the server on the configured port (default 3010). The script builds the w
 
 ### 4. launchd (optional)
 
-To run jira-dash at startup on macOS:
+To run simon-dash at startup on macOS:
 
 ```bash
-cp launchd/com.johncosta.jira-dash.plist ~/Library/LaunchAgents/
+cp launchd/com.johncosta.simon-dash.plist ~/Library/LaunchAgents/
 ```
 
 Edit the plist to replace `REPLACE_WITH_REPO_PATH` with the absolute path to this repo, then:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.johncosta.jira-dash.plist
+launchctl load ~/Library/LaunchAgents/com.johncosta.simon-dash.plist
 ```
 
-Logs go to `/tmp/jira-dash.log`. To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.jira-dash.plist`.
+Logs go to `/tmp/simon-dash.log`. To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.simon-dash.plist`.
 
 ## CLI
 
 `server/cli.js` is a plain-JS, dependency-free CLI over the same modules the
-server uses. If a jira-dash server is already running on the configured
+server uses. If a simon-dash server is already running on the configured
 port, commands go through its HTTP API; otherwise they operate directly on
 `data/state.json`; either way the result is the same, and which transport
 was used is printed to stderr.
@@ -83,7 +83,7 @@ node server/cli.js pr-comment acme/webapp#482 "looks good, one nit inline"
 ```
 
 Also runnable as `npm run cli -- status`, or (once linked/installed) as the
-`jira-dash` bin.
+`simon-dash` bin.
 
 ## Claude integration
 
@@ -98,7 +98,7 @@ cd mcp && npm i
 Register it with the Claude Code CLI:
 
 ```bash
-claude mcp add jira-dash --scope user -- node /path/to/jira-dash/mcp/index.js
+claude mcp add simon-dash --scope user -- node /path/to/simon-dash/mcp/index.js
 ```
 
 Or add it directly to `.mcp.json`:
@@ -106,9 +106,9 @@ Or add it directly to `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "jira-dash": {
+    "simon-dash": {
       "command": "node",
-      "args": ["/path/to/jira-dash/mcp/index.js"]
+      "args": ["/path/to/simon-dash/mcp/index.js"]
     }
   }
 }
@@ -125,11 +125,11 @@ Tools exposed:
 
 ## Write-back
 
-jira-dash can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
+simon-dash can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
 
 - Set `"writeEnabled": true` in `config.json`. The default (`false`, matching `config.example.json`) makes every write path refuse with a clear error: `write-back disabled; set writeEnabled: true in config.json`.
 - Demo mode **always** refuses writes, regardless of `writeEnabled` — there's nothing real for canned demo data to write to. That refusal is a "stub success" (not an error), so scripting against the CLI/MCP doesn't need special-case error handling for demo mode.
-- The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Writes only happen via an explicit CLI command (`transition`/`comment`/`pr-comment`) or an explicit MCP tool call, both of which require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose. Nothing in jira-dash writes to Jira or GitHub automatically or on a timer.
+- The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Writes only happen via an explicit CLI command (`transition`/`comment`/`pr-comment`) or an explicit MCP tool call, both of which require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose. Nothing in simon-dash writes to Jira or GitHub automatically or on a timer.
 - All three write paths (the CLI, the MCP tools, and `POST /api/write` itself) funnel through the same `performWrite()` function (`server/writeback.js`), so the gate and the "refresh the board after a successful write" behavior can't drift between them. See [docs/API.md](docs/API.md#post-apiwrite) for the endpoint and gate semantics in full.
 
 ## API

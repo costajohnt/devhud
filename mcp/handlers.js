@@ -1,9 +1,9 @@
-// Tool handler functions for the jira-dash MCP server, kept separate from
+// Tool handler functions for the simon-dash MCP server, kept separate from
 // mcp/index.js's stdio wiring so they're callable directly in tests without
 // spinning up a real MCP transport.
 //
 // Same dual-transport rule as the CLI (server/cli.js): probe the configured
-// HTTP port first. If a jira-dash server is already running, go through its
+// HTTP port first. If a simon-dash server is already running, go through its
 // HTTP API so its in-memory state (source of truth while it's up) is what
 // gets read/mutated. Otherwise operate directly on disk via the same
 // server/*.js modules the server itself uses.
