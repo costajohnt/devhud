@@ -145,6 +145,10 @@ export function BoardStats({ data }: { data: DashboardData }) {
         <span class="stat-value"><AnimatedValue value={data.mergedTotal} /></span>
         <span class="stat-label">Merged</span>
       </a>
+      <a class="stat-card red" href="/closed">
+        <span class="stat-value"><AnimatedValue value={data.closedPrs.length} /></span>
+        <span class="stat-label">Closed</span>
+      </a>
     </div>
   );
 }

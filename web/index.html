@@ -6,8 +6,12 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>jira-dash</title>
     <script>
-      const t = localStorage.getItem('jira-dash-theme');
-      if (t) document.documentElement.dataset.theme = t;
+      // Pre-paint theme: explicit choice wins, otherwise fall back to the OS
+      // preference so there's no flash of the wrong theme before main.tsx's
+      // getInitialTheme() (app.tsx) runs the same logic.
+      const t = localStorage.getItem('jira-dash-theme')
+        || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.dataset.theme = t;
     </script>
   </head>
   <body>

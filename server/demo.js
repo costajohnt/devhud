@@ -67,5 +67,7 @@ export function demoPrs(cfg) {
     pr('webapp', 460, 'stale-experiment-toggle', { state: 'closed', mergedAt: null, createdAt: iso(50), updatedAt: iso(45), reviewState: 'changes_requested', ciStatus: 'failing' }),
     pr('api-gateway', 405, 'abandoned-cache-layer', { state: 'closed', mergedAt: null, createdAt: iso(75), updatedAt: iso(70), reviewState: 'none', ciStatus: 'unknown' }),
     pr('mobile', 210, 'rejected-push-redesign', { state: 'closed', mergedAt: null, createdAt: iso(20), updatedAt: iso(15), reviewState: 'changes_requested', ciStatus: 'unknown' }),
+    // Recent closed-unmerged PR (within the 7-day Recent Activity window).
+    pr('webapp', 495, 'wont-fix-legacy-toggle', { state: 'closed', mergedAt: null, createdAt: iso(5), updatedAt: iso(2), reviewState: 'none', ciStatus: 'unknown' }),
   ];
 }

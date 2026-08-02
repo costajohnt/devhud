@@ -38,23 +38,31 @@ export function Extras({ data }: { data: DashboardData }) {
       {data.recentActivity.length > 0 && (
         <div class="recent-activity">
           <h3 class="recent-activity-title">Recent Activity (Last 7 Days)</h3>
-          <div class="recent-activity-section">
-            <h4 class="recent-activity-section-title recent-activity-section-title--merged">
-              Merged ({data.recentActivity.length})
-            </h4>
-            <div class="recent-activity-items">
-              {data.recentActivity.map(e => (
-                <div key={e.url} class="recent-activity-item">
-                  <span class="recent-activity-badge recent-activity-badge--merged">Merged</span>
-                  <span class="recent-activity-item-title">{e.label}</span>
-                  <a class="recent-activity-link" href={e.url} target="_blank" rel="noopener noreferrer">
-                    {e.url.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
-                  </a>
-                  <span class="recent-activity-date">{new Date(e.date).toLocaleDateString()}</span>
+          {(['merged', 'closed', 'comment'] as const).map(type => {
+            const entries = data.recentActivity.filter(e => e.type === type);
+            if (!entries.length) return null;
+            const groupLabel = type === 'merged' ? 'Merged' : type === 'closed' ? 'Closed' : 'Comments';
+            const badgeLabel = type === 'merged' ? 'Merged' : type === 'closed' ? 'Closed' : 'Comment';
+            return (
+              <div key={type} class="recent-activity-section">
+                <h4 class={`recent-activity-section-title recent-activity-section-title--${type}`}>
+                  {groupLabel} ({entries.length})
+                </h4>
+                <div class="recent-activity-items">
+                  {entries.map(e => (
+                    <div key={`${e.type}-${e.url}-${e.date}`} class="recent-activity-item">
+                      <span class={`recent-activity-badge recent-activity-badge--${type}`}>{badgeLabel}</span>
+                      <span class="recent-activity-item-title">{e.label}</span>
+                      <a class="recent-activity-link" href={e.url} target="_blank" rel="noopener noreferrer">
+                        {e.url.replace(/^https?:\/\/(www\.)?(github\.com|[^/]+\.atlassian\.net)\//, '')}
+                      </a>
+                      <span class="recent-activity-date">{new Date(e.date).toLocaleDateString()}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </>

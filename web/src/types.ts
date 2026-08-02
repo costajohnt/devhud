@@ -24,6 +24,7 @@ export interface DashboardData {
   mergedCards: { key: string; summary: string; jiraUrl: string; pr: PrRef; mergedAt: string }[];
   mergedTotal: number;
   newlyMerged: string[];
-  recentActivity: { type: string; label: string; url: string; date: string }[];
+  recentActivity: { type: 'merged' | 'closed' | 'comment'; label: string; url: string; date: string }[];
+  closedPrs: { repo: string; number: number; url: string; title: string; closedAt: string }[];
   prLog: { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null }[];
 }

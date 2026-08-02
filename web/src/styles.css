@@ -1477,6 +1477,10 @@ a:hover {
   color: var(--blue);
 }
 
+.recent-activity-section-title--comment {
+  color: var(--blue);
+}
+
 .recent-activity-items {
   display: flex;
   flex-direction: column;
@@ -1519,6 +1523,11 @@ a:hover {
 }
 
 .recent-activity-badge--unshelved {
+  color: var(--blue);
+  background: var(--blue-dim);
+}
+
+.recent-activity-badge--comment {
   color: var(--blue);
   background: var(--blue-dim);
 }

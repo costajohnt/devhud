@@ -99,6 +99,46 @@ test('recentActivity lists merges within 7 days of now', () => {
   expect(p.recentActivity.some(e => e.type === 'merged')).toBe(true);
 });
 
+test('recentActivity lists closed-unmerged PRs within 7 days of now', () => {
+  const now = new Date().toISOString();
+  const prs = [pr({ repo: 'o/r', number: 9, branch: 'other', state: 'closed', mergedAt: null, updatedAt: now })];
+  const p = buildSnapshot({ cards: [], prs, state: emptyState(), config, errors: {} });
+  const entry = p.recentActivity.find(e => e.type === 'closed');
+  expect(entry).toBeDefined();
+  expect(entry.url).toBe(prs[0].url);
+  expect(entry.date).toBe(now);
+});
+
+test('recentActivity lists new comments from board items within 7 days, with source-appropriate url', () => {
+  const now = new Date().toISOString();
+  const c = card({
+    comments: [{ author: 'jira-a', authorId: 'a', body: 'ping', createdAt: now }],
+  });
+  const p1 = pr({ comments: [{ author: 'gh-a', body: 'gh ping', createdAt: now }] });
+  const snap = buildSnapshot({ cards: [c], prs: [p1], state: emptyState(), config, errors: {} });
+  const comments = snap.recentActivity.filter(e => e.type === 'comment');
+  expect(comments).toHaveLength(2);
+  const githubEntry = comments.find(e => e.label.includes('gh-a'));
+  const jiraEntry = comments.find(e => e.label.includes('jira-a'));
+  expect(githubEntry.label).toBe('PROJ-1: comment from gh-a');
+  expect(githubEntry.url).toBe(p1.url);
+  expect(jiraEntry.url).toBe(c.url);
+});
+
+test('closedPrs: closed-unmerged PRs from the current fetch, newest first', () => {
+  const prs = [
+    pr({ repo: 'o/r', number: 5, branch: 'other', state: 'closed', mergedAt: null, updatedAt: '2026-07-01T00:00:00Z', title: 'older' }),
+    pr({ repo: 'o/r', number: 6, branch: 'other', state: 'closed', mergedAt: null, updatedAt: '2026-07-10T00:00:00Z', title: 'newer' }),
+    pr({ repo: 'o/r', number: 7, branch: 'other', state: 'open' }), // excluded: not closed
+    pr({ repo: 'o/r', number: 8, branch: 'other', state: 'merged', mergedAt: '2026-07-05T00:00:00Z' }), // excluded: merged
+  ];
+  const p = buildSnapshot({ cards: [], prs, state: emptyState(), config, errors: {} });
+  expect(p.closedPrs).toEqual([
+    { repo: 'o/r', number: 6, url: prs[1].url, title: 'newer', closedAt: '2026-07-10T00:00:00Z' },
+    { repo: 'o/r', number: 5, url: prs[0].url, title: 'older', closedAt: '2026-07-01T00:00:00Z' },
+  ]);
+});
+
 test('item comments merge both sources, newest first, capped at 10', () => {
   const c = card({
     comments: [
@@ -166,4 +206,6 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.prLog.length).toBeGreaterThan(0);
   expect(p.prLog[0]).toEqual(expect.objectContaining({ id: expect.any(String), repo: expect.any(String) }));
   expect(p.prLog.some(e => e.closedAt !== null)).toBe(true); // demo now includes closed-unmerged PRs
+  expect(p.closedPrs.length).toBeGreaterThan(0);
+  expect(p.closedPrs[0]).toEqual(expect.objectContaining({ repo: expect.any(String), number: expect.any(Number), closedAt: expect.any(String) }));
 });

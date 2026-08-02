@@ -81,9 +81,36 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
   }
 
   const weekAgo = Date.now() - 7 * DAY;
-  const recentActivity = prs
+
+  const closedPrs = prs
+    .filter(p => p.state === 'closed' && !p.mergedAt)
+    .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, closedAt: p.updatedAt }))
+    .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
+
+  const mergedActivity = prs
     .filter(p => p.mergedAt && Date.parse(p.mergedAt) > weekAgo)
-    .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt }))
+    .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt }));
+  const closedActivity = closedPrs
+    .filter(p => p.closedAt && Date.parse(p.closedAt) > weekAgo)
+    .map(p => ({ type: 'closed', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.closedAt }));
+  // Comments surface from the board items just built above: each item's
+  // newComments already carries source/author/createdAt, so no re-scan of
+  // cards/prs is needed. url follows the comment's source (PR vs Jira card).
+  const commentActivity = [];
+  for (const bucketItems of Object.values(buckets)) {
+    for (const item of bucketItems) {
+      for (const c of item.newComments) {
+        if (!c.createdAt || Date.parse(c.createdAt) <= weekAgo) continue;
+        commentActivity.push({
+          type: 'comment',
+          label: `${item.key}: comment from ${c.author}`,
+          url: c.source === 'github' ? (item.pr?.url ?? item.jiraUrl) : item.jiraUrl,
+          date: c.createdAt,
+        });
+      }
+    }
+  }
+  const recentActivity = [...mergedActivity, ...closedActivity, ...commentActivity]
     .sort((a, b) => b.date.localeCompare(a.date));
 
   return {
@@ -93,6 +120,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     mergedCards, mergedTotal: state.mergedTotal, newlyMerged, recentActivity,
+    closedPrs,
     prLog: Object.values(state.prLog),
   };
 }

@@ -5,6 +5,7 @@ import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.j
 import { Detail } from './detail.js';
 import { Extras } from './extras.js';
 import { MergedPage } from './merged.js';
+import { ClosedPage } from './closed.js';
 import { fireConfetti } from './celebrate.js';
 import { SkeletonLoader } from './skeleton-loader.js';
 import { LazyChartPanel } from './chart-panel-lazy.js';
@@ -12,6 +13,17 @@ import { LazyChartPanel } from './chart-panel-lazy.js';
 // How often the header re-renders so the relative "Updated Xm ago" label
 // ticks — purely cosmetic, no network calls ride this interval.
 const RELATIVE_TIME_TICK_MS = 30_000;
+
+const THEME_KEY = 'jira-dash-theme';
+
+// No explicit user preference stored yet: fall back to the OS setting. Mirrors
+// the pre-paint script in index.html so the very first render already agrees
+// with what that script painted (no flash of the wrong theme).
+function getInitialTheme(): string {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored) return stored;
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
 
 function formatUpdated(iso: string | null): string {
   if (!iso) return 'Never refreshed';
@@ -37,7 +49,7 @@ function AppContent() {
   const [selected, setSelected] = useState<string | null>(null);
   const board = useBoardFilter(data, act, actionInFlight);
   const { path } = useLocation();
-  const [theme, setTheme] = useState(localStorage.getItem('jira-dash-theme') ?? 'dark');
+  const [theme, setTheme] = useState(getInitialTheme);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -72,10 +84,27 @@ function AppContent() {
     window.scrollTo(0, 0);
   }, [path]);
 
+  // Track OS theme changes only while the user hasn't explicitly picked one
+  // (no localStorage entry). An explicit toggle below pins the choice and
+  // this listener backs off — it re-checks localStorage on every OS event
+  // rather than caching "unset" once, so a toggle mid-session stops it.
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const handler = (e: MediaQueryListEvent) => {
+      if (localStorage.getItem(THEME_KEY)) return;
+      const t = e.matches ? 'light' : 'dark';
+      setTheme(t);
+      document.documentElement.dataset.theme = t;
+    };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
   const flipTheme = () => {
     const t = theme === 'dark' ? 'light' : 'dark';
     setTheme(t);
-    localStorage.setItem('jira-dash-theme', t);
+    localStorage.setItem(THEME_KEY, t);
     document.documentElement.dataset.theme = t;
   };
 
@@ -146,7 +175,9 @@ function AppContent() {
       <main id="main-content" class="dashboard-main">
         {path === '/merged' ? (
           <MergedPage data={data} />
-        ) : (
+        ) : path === '/closed' ? (
+          <ClosedPage data={data} />
+        ) : path === '/' ? (
           <>
             <BoardStats data={data} />
             <BoardFilterBar board={board} />
@@ -165,6 +196,21 @@ function AppContent() {
               <Extras data={data} />
             </div>
           </>
+        ) : (
+          <div class="merged-view merged-view--full-width" role="alert">
+            <div class="merged-view-header">
+              <a href="/" class="merged-view-back">← Back to dashboard</a>
+              <div>
+                <h2 class="merged-view-title">Page not found</h2>
+              </div>
+            </div>
+            <div class="merged-view-empty">
+              <p>
+                The path <code>{path}</code> doesn't match any known route. Try the dashboard home, or one of the
+                stat cards to navigate to merged / closed.
+              </p>
+            </div>
+          </div>
         )}
       </main>
       {toast && (
