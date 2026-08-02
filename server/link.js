@@ -1,7 +1,8 @@
 // key must be followed by a non-digit so PROJ-1 doesn't match PROJ-12
 function mentions(text, key) {
   if (!text) return false;
-  return new RegExp(`${key}(?![0-9])`, 'i').test(text);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`${escaped}(?![0-9])`, 'i').test(text);
 }
 
 function prMatchesCard(p, c) {

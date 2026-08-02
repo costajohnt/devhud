@@ -20,3 +20,15 @@ test('loads config and applies defaults', () => {
 test('throws readable error when missing', () => {
   expect(() => loadConfig(join(dir, 'nope.json'))).toThrow(/config/i);
 });
+
+test('throws readable error on invalid JSON', () => {
+  const p = join(dir, 'bad.json');
+  writeFileSync(p, '{ not json');
+  expect(() => loadConfig(p)).toThrow(/not valid JSON/);
+});
+
+test('throws readable error when jira or github key missing', () => {
+  const p = join(dir, 'missing-key.json');
+  writeFileSync(p, JSON.stringify({ github: { org: 'o', repos: ['r'], username: 'u' } }));
+  expect(() => loadConfig(p)).toThrow(/missing required key "jira"/);
+});

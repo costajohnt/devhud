@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { loadConfig } from './config.js';
 import { loadState, saveState, cardState } from './state.js';
@@ -19,8 +19,11 @@ export function createServer({ config, statePath, webDist }) {
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
   // once here (instead of per-request) avoids a lost-update race between
-  // concurrent /api/refresh and /api/action calls, since Node's single
-  // process serializes handler execution around each await.
+  // concurrent /api/refresh and /api/action calls: every handler below
+  // mutates this one shared object, and each handler's mutate+save section
+  // runs synchronously (no `await` in between), so interleaving can only
+  // happen at an `await` boundary, at which point no partial mutation is
+  // ever visible to the next handler.
   const state = loadState(statePath);
   return http.createServer(async (req, res) => {
     const send = (code, obj) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
@@ -81,6 +84,9 @@ export function createServer({ config, statePath, webDist }) {
         saveState(statePath, state);
         return send(200, { ok: true });
       }
+      if (url.pathname.startsWith('/api/')) {
+        return send(404, { error: 'not found' });
+      }
       // static
       const root = resolve(webDist);
       let file = normalize(url.pathname).replace(/^([/\\])+/, '');
@@ -107,12 +113,21 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   const root = new URL('..', import.meta.url).pathname;
   const pidPath = join(root, 'data', 'server.pid');
   if (existsSync(pidPath)) {
-    const { pid } = JSON.parse(readFileSync(pidPath, 'utf8'));
-    try { process.kill(pid, 0); console.error(`already running (pid ${pid})`); process.exit(1); } catch {}
+    let parsed;
+    try { parsed = JSON.parse(readFileSync(pidPath, 'utf8')); } catch { parsed = null; }
+    if (parsed?.pid) {
+      try { process.kill(parsed.pid, 0); console.error(`already running (pid ${parsed.pid})`); process.exit(1); } catch {}
+    }
   }
   const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist') });
   server.listen(config.port, '127.0.0.1', () => {
     writeFileSync(pidPath, JSON.stringify({ pid: process.pid, port: config.port, startedAt: new Date().toISOString() }));
     console.log(`jira-dash on http://localhost:${config.port}`);
   });
+  const shutdown = () => {
+    try { unlinkSync(pidPath); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }

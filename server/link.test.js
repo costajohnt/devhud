@@ -28,6 +28,12 @@ test('prefers open PR over merged when both match', () => {
   expect(m.get('PROJ-5').number).toBe(2);
 });
 
+test('card key with regex metacharacters does not throw and does not false-match', () => {
+  expect(() => linkPrsToCards([card('PROJ(1')], [pr({ branch: 'proj-12-fix-thing' })], 'PROJ')).not.toThrow();
+  const m = linkPrsToCards([card('PROJ(1')], [pr({ branch: 'proj-12-fix-thing' })], 'PROJ');
+  expect(m.get('PROJ(1')).toBeUndefined();
+});
+
 test('unlinked returns leftover PRs', () => {
   const prs = [pr({ branch: 'PROJ-6-x' }), pr({ number: 9, branch: 'random' })];
   const m = linkPrsToCards([card('PROJ-6')], prs, 'PROJ');

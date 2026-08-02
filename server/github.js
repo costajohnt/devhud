@@ -18,10 +18,28 @@ export function mapPr(raw, repo) {
 
 const OK = new Set(['success', 'neutral', 'skipped']);
 
+// A rerun creates a new check run with the same name; dedup by name keeping
+// only the latest (by started_at, falling back to completed_at) so an old
+// failing attempt doesn't shadow a newer passing rerun.
+function latestByName(runs) {
+  const latest = new Map();
+  runs.forEach((r, i) => {
+    // Runs without a name can't be meaningfully deduped against each other;
+    // give each an index-scoped key so they're all kept.
+    const key = r.name ?? `__unnamed_${i}`;
+    const prev = latest.get(key);
+    const at = r.started_at ?? r.completed_at ?? '';
+    const prevAt = prev ? (prev.started_at ?? prev.completed_at ?? '') : '';
+    if (!prev || at > prevAt) latest.set(key, r);
+  });
+  return [...latest.values()];
+}
+
 export function ciFromCheckRuns(runs) {
   if (!runs?.length) return 'unknown';
-  if (runs.some(r => r.status !== 'completed')) return 'pending';
-  return runs.every(r => OK.has(r.conclusion)) ? 'passing' : 'failing';
+  const deduped = latestByName(runs);
+  if (deduped.some(r => r.status !== 'completed')) return 'pending';
+  return deduped.every(r => OK.has(r.conclusion)) ? 'passing' : 'failing';
 }
 
 export function reviewStateFrom(pr, reviews) {

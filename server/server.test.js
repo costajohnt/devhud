@@ -47,6 +47,13 @@ test('POST /api/action move to needs_attention rejected', async () => {
   expect(res.status).toBe(400);
 });
 
+test('GET /api/action returns 404 JSON for wrong method/unknown path', async () => {
+  const res = await fetch(`${base}/api/action`);
+  expect(res.status).toBe(404);
+  const d = await res.json();
+  expect(d.error).toBe('not found');
+});
+
 test('serves index.html for SPA routes', async () => {
   const res = await fetch(`${base}/merged`);
   expect(await res.text()).toContain('app');
