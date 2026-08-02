@@ -44,7 +44,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
       bucket, attention, newComments, pr: prView(pr),
       createdAt: card.createdAt, updatedAt: card.updatedAt,
-      daysSinceActivity: lastTs ? Math.floor((Date.now() - Date.parse(lastTs)) / DAY) : null,
+      daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
     });
   }
 
@@ -64,10 +64,19 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
   };
 }
 
+// On a source failure, reuse that source's last-known-good data instead of
+// blanking the board — a transient Jira/GitHub outage shouldn't wipe out
+// everything the user was tracking.
 export async function refresh({ config, state }) {
   const errors = {};
-  let cards = [], prs = [];
-  try { cards = await fetchJiraCards(config.jira); } catch (e) { errors.jira = e.message; }
+  let cards, prs;
+  try {
+    cards = await fetchJiraCards(config.jira);
+    state.lastCards = cards;
+  } catch (e) {
+    errors.jira = e.message;
+    cards = state.lastCards ?? [];
+  }
   try {
     const gh = await fetchPrs(config.github);
     prs = gh.prs;
@@ -76,9 +85,14 @@ export async function refresh({ config, state }) {
     const results = await Promise.allSettled([...new Set(linked.values())].map(p => enrichPr(p, config.github)));
     const failed = results.filter(r => r.status === 'rejected');
     if (failed.length) errors.github = [errors.github, ...failed.map(f => f.reason?.message)].filter(Boolean).join('; ');
-  } catch (e) { errors.github = [errors.github, e.message].filter(Boolean).join('; '); }
+    state.lastPrs = prs;
+  } catch (e) {
+    errors.github = [errors.github, e.message].filter(Boolean).join('; ');
+    prs = state.lastPrs ?? [];
+  }
   const payload = buildSnapshot({ cards, prs, state, config, errors });
   state.snapshot = payload;
   state.lastRefreshAt = payload.updatedAt;
+  console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
   return payload;
 }

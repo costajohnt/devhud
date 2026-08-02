@@ -1,6 +1,12 @@
-import { test, expect } from 'vitest';
-import { buildSnapshot } from './refresh.js';
+import { test, expect, vi } from 'vitest';
+import { buildSnapshot, refresh } from './refresh.js';
 import { emptyState } from './state.js';
+
+vi.mock('./jira.js', () => ({ fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))) }));
+vi.mock('./github.js', () => ({
+  fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
+  enrichPr: vi.fn((p) => Promise.resolve(p)),
+}));
 
 const config = {
   jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
@@ -37,6 +43,15 @@ test('unlinked PRs surface; errors pass through', () => {
   const p = buildSnapshot({ cards: [], prs: [pr({ branch: 'other' })], state: emptyState(), config, errors: { jira: 'boom' } });
   expect(p.unlinkedPrs[0].number).toBe(1);
   expect(p.errors.jira).toBe('boom');
+});
+
+test('never blanks the board: jira error reuses lastCards, errors.jira is set', async () => {
+  const state = emptyState();
+  state.lastCards = [card()];
+  const payload = await refresh({ config, state });
+  expect(payload.errors.jira).toBe('jira down');
+  expect(payload.buckets.in_progress).toHaveLength(1);
+  expect(payload.buckets.in_progress[0].key).toBe('PROJ-1');
 });
 
 test('recentActivity lists merges within 7 days of now', () => {

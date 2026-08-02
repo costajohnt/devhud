@@ -1,6 +1,6 @@
-import { test, expect } from 'vitest';
-import { loadState, saveState, cardState } from './state.js';
-import { mkdtempSync } from 'node:fs';
+import { test, expect, vi } from 'vitest';
+import { loadState, saveState, cardState, emptyState } from './state.js';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -11,6 +11,8 @@ test('fresh state when file missing', () => {
   expect(s.cards).toEqual({});
   expect(s.celebrated).toEqual([]);
   expect(s.mergedTotal).toBe(0);
+  expect(s.lastCards).toBeNull();
+  expect(s.lastPrs).toBeNull();
 });
 
 test('round-trips and creates card entries', () => {
@@ -19,4 +21,31 @@ test('round-trips and creates card entries', () => {
   saveState(p, s);
   const s2 = loadState(p);
   expect(s2.cards['PROJ-1'].override).toBe('in_qa');
+});
+
+test('loadState warns and falls back to .bak on a corrupt main file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const good = emptyState();
+  cardState(good, 'PROJ-9').override = 'in_qa';
+  writeFileSync(path + '.bak', JSON.stringify(good));
+  writeFileSync(path, '{ not json');
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const s = loadState(path);
+  expect(s.cards['PROJ-9'].override).toBe('in_qa');
+  expect(warnSpy).toHaveBeenCalled();
+  warnSpy.mockRestore();
+});
+
+test('saveState rotates the previous file to .bak before writing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const s1 = emptyState();
+  cardState(s1, 'A').override = 'in_progress';
+  saveState(path, s1);
+  const s2 = emptyState();
+  cardState(s2, 'B').override = 'in_qa';
+  saveState(path, s2);
+  expect(JSON.parse(readFileSync(path + '.bak', 'utf8')).cards.A.override).toBe('in_progress');
+  expect(JSON.parse(readFileSync(path, 'utf8')).cards.B.override).toBe('in_qa');
 });
