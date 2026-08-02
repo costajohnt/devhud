@@ -1,6 +1,6 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import { loadConfig } from './config.ts';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -107,4 +107,30 @@ test('jira.baseUrl/email/apiToken are not required in demo mode', () => {
     demo: true,
   }));
   expect(loadConfig(p).demo).toBe(true);
+});
+
+test('loadConfig warns when config.json is group/world-readable (0644)', () => {
+  const p = join(dir, 'loose-perms.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  chmodSync(p, 0o644);
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  loadConfig(p);
+  expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('chmod 600'));
+  warnSpy.mockRestore();
+});
+
+test('loadConfig does not warn when config.json is already 0600', () => {
+  const p = join(dir, 'tight-perms.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  chmodSync(p, 0o600);
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  loadConfig(p);
+  expect(warnSpy).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
 });

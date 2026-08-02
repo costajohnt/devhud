@@ -35,7 +35,7 @@ Set `"demo": true` in `config.json` (or run with `SIMON_DASH_DEMO=1`; `JIRA_DASH
 
 ### 1. Configure
 
-Copy `config.example.json` to `config.json` and fill in:
+Copy `config.example.json` to `config.json` and fill in, then `chmod 600 config.json` — it holds long-lived Jira/GitHub credentials, and the default umask leaves it readable by every other account on the machine (`loadConfig` warns at startup if you skip this).
 
 - **Jira**: Get your API token at https://id.atlassian.com/manage-profile/security/api-tokens. Get your accountId by visiting `https://<baseUrl>/rest/api/3/myself` (e.g., `https://mysite.atlassian.net/rest/api/3/myself`) while logged in, then copy the `accountId` field, or ask a Claude session with the Atlassian MCP to look it up.
 - **GitHub**: Create a token with `repo` read scope. Falls back to `GITHUB_TOKEN` env var if not provided in config.
@@ -102,7 +102,7 @@ Also runnable as `npm run cli -- status`, or (once linked/installed) as the
 
 ## Claude integration
 
-`mcp/` is a stdio MCP server exposing the board to Claude sessions, so you can ask Claude about your board directly instead of switching to the dashboard or the CLI. It uses the same dual transport as the CLI: proxies through a running server if one's up on the configured port, otherwise operates directly on `data/state.json`.
+`mcp/` is a stdio MCP server exposing the board to Claude sessions, so you can ask Claude about your board directly instead of switching to the dashboard or the CLI. It uses the same dual transport as the CLI: proxies through a running server if one's up on the configured port, otherwise operates directly on `data/state.json`. `board_status` and `card_comments` both carry an `_note` field (and matching tool-description text) flagging that card summaries and comment bodies are third-party Jira/GitHub text, not instructions — worth knowing if you're piping tool output somewhere else.
 
 Install its dependencies once:
 

@@ -18,29 +18,40 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   return JSON.parse(s || '{}') as Record<string, unknown>;
 }
 
-// Drive-by cross-origin protection for every mutating POST /api/* endpoint
-// (/api/action, /api/refresh, /api/write). Two independent checks:
-//   - Content-Type must be application/json. None of the CORS-safelisted
-//     content types (text/plain, multipart/form-data,
-//     application/x-www-form-urlencoded) qualify as JSON, so any real
-//     cross-origin caller needs a CORS preflight first — and this server
-//     never sends Access-Control-Allow-Origin, so the browser never lets
-//     the actual request through. This is what stops a "simple request"
-//     CSRF from any page the user happens to have open.
-//   - Host header must be this exact loopback address plus the port this
-//     TCP connection actually landed on (req.socket.localPort, not
-//     config.port — those can differ, e.g. config.port: 0 in tests).
-//     Stops DNS rebinding: an attacker domain re-pointed at 127.0.0.1
-//     still sends its own Host header, not "127.0.0.1"/"localhost".
-function guardMutation(req: IncomingMessage): { status: number; error: string } | null {
-  const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
-  if (contentType !== 'application/json') {
-    return { status: 415, error: 'Content-Type must be application/json' };
-  }
+// DNS-rebinding protection for every /api/* route, reads included. Host
+// header must be this exact loopback address plus the port this TCP
+// connection actually landed on (req.socket.localPort, not config.port —
+// those can differ, e.g. config.port: 0 in tests). Binding to 127.0.0.1
+// does NOT defend against rebinding on its own: the attacker's page keeps
+// the origin string "evil.com" while its DNS re-points to loopback, so the
+// browser treats the fetch as same-origin (no CORS check) and the page can
+// read the response body. GET /api/data was previously exempt from any
+// guard at all — a read-only endpoint is exactly what rebinding targets
+// (confidentiality, not mutation), so it needs this check just as much as
+// the POST routes do.
+function guardHost(req: IncomingMessage): { status: number; error: string } | null {
   const host = (req.headers.host ?? '').toLowerCase();
   const port = req.socket.localPort;
   if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
     return { status: 403, error: 'invalid Host header' };
+  }
+  return null;
+}
+
+// Drive-by CSRF protection for the three mutating POST /api/* endpoints.
+// Content-Type must be application/json. None of the CORS-safelisted
+// content types (text/plain, multipart/form-data,
+// application/x-www-form-urlencoded) qualify as JSON, so any real
+// cross-origin caller needs a CORS preflight first — and this server never
+// sends Access-Control-Allow-Origin, so the browser never lets the actual
+// request through. This is what stops a "simple request" CSRF from any
+// page the user happens to have open. (The Host check that used to live
+// here too is now guardHost, applied to every /api/* route, not just
+// mutating ones — see that function's comment.)
+function guardMutation(req: IncomingMessage): { status: number; error: string } | null {
+  const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    return { status: 415, error: 'Content-Type must be application/json' };
   }
   return null;
 }
@@ -65,6 +76,10 @@ export function createServer({ config, statePath, webDist, configPath }: {
     const send = (code: number, obj: unknown) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
       const url = new URL(req.url ?? '/', 'http://x');
+      if (url.pathname.startsWith('/api/')) {
+        const hostErr = guardHost(req);
+        if (hostErr) return send(hostErr.status, { error: hostErr.error });
+      }
       if (url.pathname === '/api/data' && req.method === 'GET') {
         return send(200, state.snapshot ?? emptySnapshot());
       }
@@ -128,7 +143,13 @@ export function createServer({ config, statePath, webDist, configPath }: {
       res.writeHead(200, { 'content-type': MIME[extname(p)] ?? 'application/octet-stream' });
       res.end(buf);
     } catch (e) {
-      send(500, { error: (e as Error).message });
+      // One handler covers both API and static branches, so it can't tell
+      // an authored error message (safe to show) from a runtime one (a
+      // filesystem error can carry an absolute path, e.g. ENOENT on a
+      // symlink target). Log the real error server-side; the client only
+      // ever sees a generic message.
+      console.error(`${req.method} ${req.url}: ${(e as Error).stack ?? (e as Error).message}`);
+      send(500, { error: 'internal error' });
     }
   });
 }

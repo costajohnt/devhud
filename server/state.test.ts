@@ -26,6 +26,25 @@ test('round-trips and creates card entries', () => {
   expect(s2.cards['PROJ-1'].override).toBe('in_qa');
 });
 
+test('emptyState().cards has a null prototype, and JSON.stringify still serializes it normally', () => {
+  const s = emptyState();
+  expect(Object.getPrototypeOf(s.cards)).toBeNull();
+  cardState(s, 'PROJ-1').override = 'in_qa';
+  const json = JSON.stringify(s);
+  expect(JSON.parse(json).cards['PROJ-1'].override).toBe('in_qa');
+});
+
+test('loadState re-establishes a null prototype on cards after JSON.parse (which always produces a normal-prototype object)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const s1 = emptyState();
+  cardState(s1, 'PROJ-1').override = 'in_qa';
+  saveState(path, s1);
+  const s2 = loadState(path);
+  expect(Object.getPrototypeOf(s2.cards)).toBeNull();
+  expect(s2.cards['PROJ-1']!.override).toBe('in_qa');
+});
+
 test('loadState warns and falls back to .bak on a corrupt main file', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');

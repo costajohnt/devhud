@@ -1,4 +1,4 @@
-import { test, expect, beforeAll, afterAll } from 'vitest';
+import { test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createServer } from './index.ts';
 import { saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -41,18 +41,19 @@ function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
 // derives it from the URL instead of honoring an override, so a spoofed-Host
 // test needs node:http directly (no such restriction) to actually exercise
 // guardMutation's Host check.
-function postWithHost(port: number, path: string, host: string): Promise<{ status: number | undefined; json: () => unknown }> {
+function requestWithHost(port: number, path: string, host: string, method: 'GET' | 'POST' = 'POST'): Promise<{ status: number | undefined; json: () => unknown }> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method: 'POST',
-      headers: { 'content-type': 'application/json', host } }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method,
+      headers: method === 'POST' ? { 'content-type': 'application/json', host } : { host } }, (res) => {
       let body = '';
       res.on('data', (c) => { body += c; });
       res.on('end', () => resolve({ status: res.statusCode, json: () => JSON.parse(body) }));
     });
     req.on('error', reject);
-    req.end('{}');
+    if (method === 'POST') req.end('{}'); else req.end();
   });
 }
+const postWithHost = (port: number, path: string, host: string) => requestWithHost(port, path, host, 'POST');
 
 let server: http.Server;
 let base: string;
@@ -191,6 +192,14 @@ test('POST /api/action with an unrecognized type returns 400', async () => {
   expect((await res.json()).error).toBe('unknown action type');
 });
 
+test('POST /api/action with key "__proto__" is refused 400 and Object.prototype is left untouched', async () => {
+  const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ack', key: '__proto__' }) });
+  expect(res.status).toBe(400);
+  expect((await res.json()).error).toBe('key "__proto__" is not allowed');
+  expect(({} as Record<string, unknown>).lastSeenPr).toBeUndefined();
+});
+
 test('unknown /api/* path returns 404 JSON instead of falling through to the SPA', async () => {
   const res = await fetch(`${base}/api/nope`);
   expect(res.status).toBe(404);
@@ -289,6 +298,22 @@ test('POST /api/* with the right hostname but the wrong port is refused 403 (DNS
   expect(res.status).toBe(403);
 });
 
+// H1: guardHost applies to every /api/* route, GET included — a read-only
+// endpoint is exactly what DNS rebinding targets (confidentiality, not
+// mutation), so it needs the same Host check as the mutating routes.
+test('GET /api/data with a spoofed Host header is refused 403 (DNS rebinding on a read)', async () => {
+  const port = (server.address() as AddressInfo).port;
+  const res = await requestWithHost(port, '/api/data', 'evil.example.com', 'GET');
+  expect(res.status).toBe(403);
+  expect((res.json() as { error: string }).error).toBe('invalid Host header');
+});
+
+test('GET /api/data with the correct Host still returns 200', async () => {
+  const port = (server.address() as AddressInfo).port;
+  const res = await requestWithHost(port, '/api/data', `127.0.0.1:${port}`, 'GET');
+  expect(res.status).toBe(200);
+});
+
 test('POST /api/* with correct Content-Type and Host passes the guard (reaches normal handling)', async () => {
   // /api/action with a real body still 200s; /api/refresh and /api/write
   // with an empty body reach their own validation past the guard (not a
@@ -309,6 +334,30 @@ test('POST /api/* with correct Content-Type and Host passes the guard (reaches n
 // True first boot: no refresh has ever run, so state.snapshot is still null
 // and GET /api/data must fall back to the documented placeholder shape
 // (empty buckets, zeroed counters) instead of returning null to the client.
+// M4: the catch-all 500 must not leak runtime error details (e.g. an
+// absolute filesystem path from a readFileSync ENOENT) to the client — log
+// server-side, return a generic message.
+test('an internal throw returns a generic 500 with no absolute path in the body', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const emptyWebDist = join(dir, 'dist'); // no index.html here at all
+  mkdirSync(emptyWebDist);
+  const brokenServer = createServer({ config: makeConfig(), statePath: join(dir, 'state.json'), webDist: emptyWebDist });
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  await new Promise<void>(r => brokenServer.listen(0, () => r()));
+  try {
+    const brokenBase = `http://127.0.0.1:${(brokenServer.address() as AddressInfo).port}`;
+    const res = await fetch(`${brokenBase}/`);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'internal error' });
+    expect(JSON.stringify(body)).not.toContain(dir);
+    expect(errorSpy).toHaveBeenCalled(); // logged server-side instead
+  } finally {
+    errorSpy.mockRestore();
+    brokenServer.close();
+  }
+});
+
 test('GET /api/data returns the documented placeholder before any refresh has run', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const freshStatePath = join(dir, 'state.json');

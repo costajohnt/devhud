@@ -98,6 +98,21 @@ test('applyAction works with no snapshot yet (state.snapshot is null)', () => {
   expect(result).toEqual({ ok: true, bucket: null });
 });
 
+test('applyAction rejects prototype-pollution key names before ever reaching cardState', () => {
+  const state = stateWithItem();
+  for (const badKey of ['__proto__', 'constructor', 'prototype']) {
+    const result = applyAction({ state, config, type: 'ack', key: badKey });
+    expect(result).toEqual({ error: `key "${badKey}" is not allowed`, status: 400 });
+  }
+  // The sharpest check: Object.prototype itself must be untouched. Before
+  // the guard, `state.cards['__proto__'] ??= {...}` read back the live
+  // Object.prototype (never nullish, so `??=` never assigned) and
+  // subsequent `cs.lastSeenPr = horizon` landed as a real own-property on
+  // Object.prototype, inherited by every plain object in the process.
+  expect(({} as Record<string, unknown>).lastSeenPr).toBeUndefined();
+  expect(Object.keys(state.cards)).toEqual([]);
+});
+
 test('applyAction rejects a falsy or non-string key before touching state (covers all transports)', () => {
   const state = stateWithItem();
   for (const badKey of [undefined, null, '', 0, {}, ['P-1']]) {

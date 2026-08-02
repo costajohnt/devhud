@@ -3,7 +3,23 @@ import { dirname } from 'node:path';
 import type { State, CelebratedEntry, Snapshot } from './types.ts';
 
 export function emptyState(): State {
-  return { cards: {}, celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
+  // Null-prototype cards dict: defense in depth against prototype pollution
+  // (see the guard in actions.ts). Even with that guard rejecting
+  // '__proto__'/'constructor'/'prototype' before a key ever reaches here,
+  // a null-prototype object means `state.cards[anyKey]` can never resolve
+  // to an inherited accessor like Object.prototype.__proto__ in the first
+  // place — cardState()'s `??=` sees a real missing key and assigns
+  // normally, no matter what string reaches it.
+  return { cards: Object.create(null) as State['cards'], celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
+}
+
+// JSON.parse always produces normal-prototype objects, so the `cards` field
+// loaded off disk (or merged in from a parsed file below) needs its
+// null prototype re-established after every load — Object.create(null)
+// only protects state built fresh via emptyState().
+function withNullProtoCards(state: State): State {
+  state.cards = Object.assign(Object.create(null), state.cards) as State['cards'];
+  return state;
 }
 
 // Legacy state files stored `celebrated` as plain id strings ("org/repo#42").
@@ -37,11 +53,11 @@ export function loadState(path: string): State {
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
   catch { return emptyState(); }
-  try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) })); }
+  try { return withNullProtoCards(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) }))); }
   catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.warn(`simon-dash: state file at ${path} is unparseable (${message}); falling back to ${path}.bak`);
-    try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) })); }
+    try { return withNullProtoCards(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) }))); }
     catch { return emptyState(); }
   }
 }

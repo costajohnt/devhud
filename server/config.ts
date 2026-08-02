@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Config, JiraStatuses } from './types.ts';
 
@@ -26,6 +26,17 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
   catch { throw new Error(`config not found at ${path} — copy config.example.json to config.json and fill it in`); }
+  // config.json holds long-lived Jira/GitHub credentials (Basic auth token,
+  // Bearer token). Warn, don't throw, if it's group- or world-readable —
+  // this is a local single-user tool, so a wrong-but-working permission
+  // shouldn't block startup, but it's worth flagging since nothing else in
+  // the stack enforces this.
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if (mode & 0o077) {
+      console.warn(`simon-dash: ${path} is readable by group/other (mode ${mode.toString(8)}) and holds live credentials — run \`chmod 600 ${path}\``);
+    }
+  } catch { /* already handled by the readFileSync above if the file is genuinely missing */ }
   let c: RawConfig;
   try { c = JSON.parse(raw) as RawConfig; }
   catch (e) { throw new Error(`config at ${path} is not valid JSON: ${(e as Error).message}`); }

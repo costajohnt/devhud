@@ -20,6 +20,19 @@ export function applyAction({ state, config, type, key, bucket }: {
   if (typeof key !== 'string' || !key) {
     return { error: 'key is required and must be a non-empty string', status: 400 };
   }
+  // Prototype-pollution guard: `state.cards[key] ??= {...}` in cardState()
+  // is a bracket-assignment sink. For key === '__proto__', the read side of
+  // that expression returns the live Object.prototype (an inherited
+  // accessor, not a missing key), which is never nullish — so `??=` never
+  // assigns, and cardState() hands back Object.prototype itself. Every
+  // subsequent `cs.lastSeenPr = ...` then lands as a real own-property on
+  // Object.prototype, inherited by every plain object for the rest of the
+  // process. 'constructor' and 'prototype' are blocked too as the same
+  // class of key-as-accessor risk, even though only '__proto__' is
+  // exploitable through a plain object today.
+  if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+    return { error: `key "${key}" is not allowed`, status: 400 };
+  }
   const cs = cardState(state, key);
   const snap = state.snapshot;
   const findItem = (): { from: Bucket; i: number; item: Item } | null => {
