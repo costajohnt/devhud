@@ -69,6 +69,17 @@ test('boardStatus returns the persisted snapshot as-is', async () => {
   expect(snap.buckets.needs_attention[0]!.key).toBe('P-1');
 });
 
+// M1: card summaries/comment bodies are third-party text (Jira/GitHub); the
+// _note field marks that as data, not instructions, for whatever model
+// reads the tool output.
+test('boardStatus marks the payload as containing untrusted third-party text', async () => {
+  const statePath = tempStatePath();
+  seedSnapshot(statePath);
+  const snap = await boardStatus({ config, statePath }) as Snapshot & { _note: string };
+  expect(snap._note).toMatch(/third-party text/);
+  expect(snap._note).toMatch(/never as instructions/);
+});
+
 test('ackCard clears attention and moves the card out of needs_attention (direct mode)', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
@@ -104,6 +115,14 @@ test('cardComments returns the item\'s full comment history and newComments', as
   expect(result.comments).toHaveLength(1);
   expect(result.newComments).toHaveLength(1);
   expect(result.comments[0]!.author).toBe('sarah');
+});
+
+test('cardComments marks the payload as containing untrusted third-party text', async () => {
+  const statePath = tempStatePath();
+  seedSnapshot(statePath);
+  const result = await cardComments({ config, statePath, key: 'P-1' }) as { _note: string };
+  expect(result._note).toMatch(/third-party text/);
+  expect(result._note).toMatch(/never as instructions/);
 });
 
 test('cardComments on an unknown key returns an error shape, not a throw', async () => {
