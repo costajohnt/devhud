@@ -91,7 +91,7 @@ export function Detail({ item, onClose, act, actionInFlight }:
           </div>
         )}
 
-        {item.comments.length > 0 && (
+        {(item.comments?.length ?? 0) > 0 && (
           <div class="pr-detail-field">
             <span class="pr-detail-field-label">Comments</span>
             {item.comments.map((c) => (
