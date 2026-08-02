@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
-import { join, extname, normalize } from 'node:path';
+import { join, extname, normalize, resolve, sep } from 'node:path';
 import { loadConfig } from './config.js';
 import { loadState, saveState, cardState } from './state.js';
 import { refresh } from './refresh.js';
@@ -79,14 +79,15 @@ export function createServer({ config, statePath, webDist }) {
         return send(200, { ok: true });
       }
       // static
+      const root = resolve(webDist);
       let file = normalize(url.pathname).replace(/^([/\\])+/, '');
-      let p = join(webDist, file);
-      if (!p.startsWith(webDist)) { res.writeHead(403); return res.end(); }
+      let p = resolve(root, file);
+      if (p !== root && !p.startsWith(root + sep)) { res.writeHead(403); return res.end(); }
       try {
         const stat = statSync(p);
         if (!stat.isFile() || file === '') throw new Error();
       } catch {
-        p = join(webDist, 'index.html');
+        p = resolve(root, 'index.html');
       }
       const buf = readFileSync(p);
       res.writeHead(200, { 'content-type': MIME[extname(p)] ?? 'application/octet-stream' });
