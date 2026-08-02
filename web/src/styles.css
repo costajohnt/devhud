@@ -808,9 +808,20 @@ a:hover {
   padding: var(--sp-3) var(--sp-4);
   border-left: 3px solid transparent;
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: grab;
   margin-bottom: 2px;
   transition: all 0.15s var(--ease);
+}
+
+.pr-row:active {
+  cursor: grabbing;
+}
+
+.pr-section.drop-target-active {
+  background: var(--hover-bg);
+  outline: 1px dashed var(--border-hover);
+  outline-offset: 4px;
+  border-radius: var(--radius);
 }
 
 .pr-row::before {

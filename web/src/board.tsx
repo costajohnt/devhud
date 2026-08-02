@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import type { DashboardData, Item, Bucket } from './types.js';
 import { BUCKET_ORDER, BUCKET_LABEL } from './types.js';
 
@@ -32,9 +32,52 @@ const STAT_COLOR: Record<Bucket, string> = {
 // stat-card share the same hue (.pr-section-dot.<color> in styles.css).
 const DOT_COLOR: Record<Bucket, string> = STAT_COLOR;
 
-export function Board({ data, selectedKey, onSelect }:
-  { data: DashboardData; selectedKey: string | null; onSelect: (k: string | null) => void }) {
+// needs_attention is excluded: the server rejects moves into that bucket.
+const DROPPABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
+
+export function Board({ data, selectedKey, onSelect, act }:
+  { data: DashboardData; selectedKey: string | null; onSelect: (k: string | null) => void; act: (b: object) => Promise<void> }) {
   const [q, setQ] = useState('');
+  const [dragOverBucket, setDragOverBucket] = useState<Bucket | null>(null);
+  // dragenter/dragleave fire on every child element as the pointer crosses them;
+  // a per-bucket counter absorbs that churn so the highlight only clears once
+  // the drag has truly left the section (counter back to 0).
+  const dragCounters = useRef<Partial<Record<Bucket, number>>>({});
+
+  const onRowDragStart = (e: DragEvent, key: string) => {
+    e.dataTransfer?.setData('text/plain', key);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const onSectionDragEnter = (b: Bucket) => {
+    dragCounters.current[b] = (dragCounters.current[b] ?? 0) + 1;
+    setDragOverBucket(b);
+  };
+
+  const onSectionDragLeave = (b: Bucket) => {
+    const next = (dragCounters.current[b] ?? 0) - 1;
+    dragCounters.current[b] = next;
+    if (next <= 0) {
+      dragCounters.current[b] = 0;
+      setDragOverBucket(cur => (cur === b ? null : cur));
+    }
+  };
+
+  const onSectionDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  };
+
+  const onSectionDrop = (e: DragEvent, b: Bucket) => {
+    e.preventDefault();
+    dragCounters.current[b] = 0;
+    setDragOverBucket(cur => (cur === b ? null : cur));
+    const key = e.dataTransfer?.getData('text/plain');
+    if (!key) return;
+    const current = BUCKET_ORDER.find(bucket => data.buckets[bucket].some(i => i.key === key));
+    if (current === b) return;
+    void act({ type: 'move', key, bucket: b });
+  };
   const match = (i: Item) =>
     !q || i.key.toLowerCase().includes(q.toLowerCase()) || i.summary.toLowerCase().includes(q.toLowerCase());
   const total = BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].length, 0);
@@ -71,8 +114,17 @@ export function Board({ data, selectedKey, onSelect }:
         {BUCKET_ORDER.map(b => {
           const items = data.buckets[b].filter(match);
           if (!items.length) return null;
+          const droppable = DROPPABLE.includes(b);
           return (
-            <section key={b} id={b} class="pr-section">
+            <section
+              key={b}
+              id={b}
+              class={`pr-section ${droppable && dragOverBucket === b ? 'drop-target-active' : ''}`}
+              onDragEnter={droppable ? () => onSectionDragEnter(b) : undefined}
+              onDragLeave={droppable ? () => onSectionDragLeave(b) : undefined}
+              onDragOver={droppable ? onSectionDragOver : undefined}
+              onDrop={droppable ? (e: DragEvent) => onSectionDrop(e, b) : undefined}
+            >
               <div class="pr-section-header">
                 <span class={`pr-section-dot ${DOT_COLOR[b]}`} />
                 <span class="pr-section-title">{BUCKET_LABEL[b]}</span>
@@ -84,6 +136,8 @@ export function Board({ data, selectedKey, onSelect }:
                   <div
                     key={i.key}
                     class={`pr-row ${selectedKey === i.key ? 'pr-row--selected' : ''}`}
+                    draggable
+                    onDragStart={(e: DragEvent) => onRowDragStart(e, i.key)}
                     onClick={() => onSelect(i.key)}
                   >
                     <span class="pr-row-id">{i.key}</span>

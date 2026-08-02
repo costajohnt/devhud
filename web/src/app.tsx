@@ -91,7 +91,7 @@ export function App() {
                 path="/"
                 component={() => (
                   <>
-                    <Board data={data} selectedKey={selected} onSelect={setSelected} />
+                    <Board data={data} selectedKey={selected} onSelect={setSelected} act={act} />
                     {selectedItem && <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} />}
                     <Extras data={data} />
                   </>
