@@ -32,7 +32,11 @@ export function useData() {
   };
 
   const act = async (body: object) => {
-    await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) {
+      setConnError(`action ${res.status}`);
+      return;
+    }
     await get();
   };
 

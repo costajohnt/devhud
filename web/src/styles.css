@@ -773,6 +773,10 @@ a:hover {
   background: var(--amber, #d97706);
 }
 
+.pr-section-dot.teal {
+  background: var(--teal);
+}
+
 .pr-section-count {
   font-size: 0.6875rem;
   font-weight: 600;

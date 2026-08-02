@@ -27,20 +27,24 @@ export function MergedPage({ data }: { data: DashboardData }) {
               <th scope="col">Card</th>
               <th scope="col">PR</th>
               <th
-                class="sortable-th"
                 scope="col"
-                onClick={() => setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
-                  }
-                }}
-                tabIndex={0}
-                role="button"
                 aria-sort={sortDir === 'asc' ? 'ascending' : 'descending'}
               >
-                Date merged <span class="sort-arrow">{arrow}</span>
+                <span
+                  class="sortable-th"
+                  onClick={() => setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+                    }
+                  }}
+                  tabIndex={0}
+                  role="button"
+                  aria-label="Sort by date merged"
+                >
+                  Date merged <span class="sort-arrow">{arrow}</span>
+                </span>
               </th>
             </tr>
           </thead>

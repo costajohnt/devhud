@@ -28,13 +28,9 @@ const STAT_COLOR: Record<Bucket, string> = {
   in_qa: 'teal',
 };
 
-// .pr-section-dot only ships red/blue/amber/muted variants.
-const DOT_COLOR: Record<Bucket, string> = {
-  needs_attention: 'red',
-  in_progress: 'muted',
-  waiting_review: 'blue',
-  in_qa: 'amber',
-};
+// Kept in sync with STAT_COLOR above so a bucket's section dot and its
+// stat-card share the same hue (.pr-section-dot.<color> in styles.css).
+const DOT_COLOR: Record<Bucket, string> = STAT_COLOR;
 
 export function Board({ data, selectedKey, onSelect }:
   { data: DashboardData; selectedKey: string | null; onSelect: (k: string | null) => void }) {

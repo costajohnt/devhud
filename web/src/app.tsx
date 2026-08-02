@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { LocationProvider, Router, Route } from 'preact-iso';
 import { useData } from './use-data.js';
 import { Board } from './board.js';
@@ -12,13 +12,15 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [theme, setTheme] = useState(localStorage.getItem('jira-dash-theme') ?? 'dark');
   const [toast, setToast] = useState<string | null>(null);
+  const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     onRefreshed.current = (d) => {
       if (d.newlyMerged.length) {
         fireConfetti();
         setToast(`${d.newlyMerged.join(', ')} merged 🎉`);
-        setTimeout(() => setToast(null), 5000);
+        if (toastTimeout.current) clearTimeout(toastTimeout.current);
+        toastTimeout.current = setTimeout(() => setToast(null), 5000);
       }
     };
   }, []);

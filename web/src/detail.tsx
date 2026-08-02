@@ -76,8 +76,8 @@ export function Detail({ item, onClose, act }:
         {item.newComments.length > 0 && (
           <div class="pr-detail-field">
             <span class="pr-detail-field-label">New Comments</span>
-            {item.newComments.map((c, i) => (
-              <div class="pr-detail-comment" key={i}>
+            {item.newComments.map((c) => (
+              <div class="pr-detail-comment" key={`${c.source}-${c.createdAt}-${c.author}`}>
                 <div class="pr-detail-comment-header">
                   <div class="pr-detail-comment-avatar" />
                   <span class="pr-detail-comment-author">
