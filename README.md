@@ -43,10 +43,12 @@ Copy `config.example.json` to `config.json` and fill in, then `chmod 600 config.
 ### 2. Install
 
 ```bash
-npm i
-cd web && npm i
-cd ../mcp && npm i
+npm ci
+cd web && npm ci
+cd ../mcp && npm ci
 ```
+
+`npm ci` (not `npm i`) installs exactly what the lockfile pins, which matters here since this same install is also the deployment path on a machine that may hold write-enabled Jira/GitHub credentials.
 
 The third install is only needed if you plan to use the MCP server (see Claude integration below) — but do it now anyway: skipping it is the most common fresh-clone mistake and shows up as `ERR_MODULE_NOT_FOUND` the first time `mcp/index.ts` runs.
 
@@ -66,13 +68,13 @@ To run simon-dash at startup on macOS:
 cp launchd/com.johncosta.simon-dash.plist ~/Library/LaunchAgents/
 ```
 
-Edit the plist to replace `REPLACE_WITH_REPO_PATH` with the absolute path to this repo, then:
+Edit the plist to replace `REPLACE_WITH_REPO_PATH` with the absolute path to this repo, and `REPLACE_WITH_HOME` with your home directory (e.g. `/Users/you`) — launchd does not expand `~`, so both need a real absolute path. Then:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.johncosta.simon-dash.plist
 ```
 
-Logs go to `/tmp/simon-dash.log`. To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.simon-dash.plist`.
+Logs go to `~/Library/Logs/simon-dash.log` (not `/tmp`, which is world-readable and shared across users on the machine; server logs include every request path and Jira issue key). To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.simon-dash.plist`.
 
 ## CLI
 

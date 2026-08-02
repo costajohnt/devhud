@@ -134,3 +134,41 @@ test('loadConfig does not warn when config.json is already 0600', () => {
   expect(warnSpy).not.toHaveBeenCalled();
   warnSpy.mockRestore();
 });
+
+test('accepts a valid explicit port at both ends of the range, including 0 (OS-assigned)', () => {
+  const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' } };
+  const p0 = join(dir, 'port-zero.json');
+  // 0 is Node's own convention for "bind to any free port" (server.listen(0)),
+  // relied on throughout this suite's own test servers — not an edge case to reject.
+  writeFileSync(p0, JSON.stringify({ ...base, port: 0 }));
+  expect(loadConfig(p0).port).toBe(0);
+  const p1 = join(dir, 'port-min.json');
+  writeFileSync(p1, JSON.stringify({ ...base, port: 1 }));
+  expect(loadConfig(p1).port).toBe(1);
+  const p2 = join(dir, 'port-max.json');
+  writeFileSync(p2, JSON.stringify({ ...base, port: 65535 }));
+  expect(loadConfig(p2).port).toBe(65535);
+});
+
+test('throws a readable error for a port outside 0-65535', () => {
+  const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' } };
+  const p2 = join(dir, 'port-too-big.json');
+  writeFileSync(p2, JSON.stringify({ ...base, port: 65536 }));
+  expect(() => loadConfig(p2)).toThrow(/invalid "port"/);
+  const p3 = join(dir, 'port-negative.json');
+  writeFileSync(p3, JSON.stringify({ ...base, port: -1 }));
+  expect(() => loadConfig(p3)).toThrow(/invalid "port"/);
+});
+
+test('throws a readable error for a non-integer port (fraction or string)', () => {
+  const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' } };
+  const p1 = join(dir, 'port-fraction.json');
+  writeFileSync(p1, JSON.stringify({ ...base, port: 3010.5 }));
+  expect(() => loadConfig(p1)).toThrow(/invalid "port"/);
+  const p2 = join(dir, 'port-string.json');
+  writeFileSync(p2, JSON.stringify({ ...base, port: '3010' }));
+  expect(() => loadConfig(p2)).toThrow(/invalid "port"/);
+});

@@ -12,7 +12,7 @@
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
-  <key>StandardOutPath</key><string>/tmp/simon-dash.log</string>
-  <key>StandardErrorPath</key><string>/tmp/simon-dash.log</string>
+  <key>StandardOutPath</key><string>REPLACE_WITH_HOME/Library/Logs/simon-dash.log</string>
+  <key>StandardErrorPath</key><string>REPLACE_WITH_HOME/Library/Logs/simon-dash.log</string>
 </dict>
 </plist>

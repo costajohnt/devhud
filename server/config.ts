@@ -63,6 +63,17 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       if (!jira[key]) throw new Error(`config at ${path} is missing required key "jira.${key}"`);
     }
   }
+  // A corrupted or hand-edited config.json can hand back a non-numeric or
+  // out-of-range port; that value flows straight into `open`'s CLI command
+  // (server/cli.ts's `open`) and into the server's own listen() call, so
+  // catching it here with a readable error beats a confusing failure later.
+  // 0 is a valid value (not just an edge case): it's Node's own convention
+  // for "bind to any free port" (`server.listen(0, ...)`), used throughout
+  // this codebase's own tests and available to real config.json too.
+  const port = c.port ?? 3010;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`config at ${path} has an invalid "port" (${JSON.stringify(c.port)}); must be an integer between 0 and 65535`);
+  }
   // Off by default: write-back (Jira transitions/comments, PR comments) must
   // be explicitly opted into. See server/writeback.ts's checkWriteGate.
   return {
@@ -75,7 +86,7 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       token: github.token || process.env.GITHUB_TOKEN || '',
       org: github.org!, repos: github.repos ?? [], username: github.username!,
     },
-    port: c.port ?? 3010,
+    port,
     demo,
     writeEnabled: Boolean(c.writeEnabled),
   };

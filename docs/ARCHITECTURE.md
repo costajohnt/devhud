@@ -13,7 +13,18 @@
 - **classify.ts**: Given a card + its linked PR + its stored `cardState`, decides the bucket and attention flags.
 - **refresh.ts**: Orchestrates one refresh cycle: fetch (or demo-generate), link, classify, build the full snapshot payload (`buildSnapshot`), including `prLog` upsert and the `recentActivity`/`closedPrs` derivations. Also the fallback-to-last-known-good logic on partial fetch failure.
 - **demo.ts**: Canned cards/PRs shaped to match `jira.ts`/`github.ts` output, so demo mode runs the real `buildSnapshot` pipeline with no network.
+- **actions.ts**: `applyAction()` — shared ack/move logic used by the HTTP handler (`POST /api/action`) and the CLI's `ack`/`move` commands, so the two transports can't drift on semantics. Also exports `BUCKETS`, the list of buckets a manual move can target (excludes `needs_attention`).
+- **transport.ts**: Dual-transport primitives shared by the CLI and MCP server: `probeServer()` (is a real server answering on the configured port), `serverAppearsRunning()`/`saveStateGuarded()` (the split-brain guard for direct-mode writes — see Concurrency below).
+- **writeback.ts**: `performWrite()` — the single entry point for every write-back path (`POST /api/write`, the CLI's `transition`/`comment`/`pr-comment` commands, the MCP write tools). Builds the minimal ADF doc for Jira comments, re-reads `config.json` fresh on every call so `writeEnabled` takes effect without a restart, and refreshes the board after a successful write.
+- **cli.ts**: `simon-dash` CLI (`status`/`refresh`/`ack`/`move`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Same dual-transport rule as everything else: proxies through a running server's HTTP API when one's up, otherwise operates directly on `data/state.json` via the modules above.
 - **types.ts**: Shared types (Card, Pr, Item, Snapshot, State, Config, ActionResult, WriteResult) mirroring `web/src/types.ts`'s payload shapes.
+
+### MCP (`mcp/`, TypeScript, erasable-syntax only, no build step)
+
+A stdio MCP server exposing the board to Claude sessions, using the exact same dual-transport rule as the CLI (see `transport.ts` above and the Concurrency section below — MCP direct-mode writes go through the same split-brain guard).
+
+- **handlers.ts**: Tool handler functions (`boardStatus`, `doRefresh`, `ackCard`, `moveCard`, `cardComments`, `transitionCard`, `commentCard`, `commentPr`), kept separate from the stdio wiring so they're callable directly in tests without a real MCP transport. Each probes for a running server first, proxies through its HTTP API if one's up, and falls back to direct disk access (via `server/state.ts`/`refresh.ts`/`actions.ts`/`writeback.ts`) otherwise.
+- **index.ts**: Registers the 8 tools above on an `McpServer` and connects a `StdioServerTransport`. Read tools (`board_status`, `refresh`, `ack_card`, `move_card`, `card_comments`) are always available; the three write tools (`transition_card`, `comment_card`, `comment_pr`) are real mutations gated by `writeEnabled` and always a no-op in demo mode, and their tool descriptions explicitly instruct the calling model to draft content and get the user's approval before calling them.
 
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
 
@@ -39,7 +50,7 @@
 config.json ──► loadConfig()
                     │
 POST /api/refresh   ▼
-     │        fetchJiraCards() / fetchPrs()+enrichPr()   (or demo.js in demo mode)
+     │        fetchJiraCards() / fetchPrs()+enrichPr()   (or demo.ts in demo mode)
      │                    │
      │                    ▼
      │            linkPrsToCards()  : match PRs to cards
@@ -115,13 +126,13 @@ Before any bucket classification: cards with Jira status "To Do" are split into 
 
 `state.json` has three kinds of writer, with three different levels of protection:
 
-- **A single running server.** Fully safe. `index.js` loads `state.json` once into an in-memory closure and every request handler mutates that one object synchronously (no `await` between mutate and `saveState`), so two concurrent HTTP requests can't interleave a partial write — see the first bullet under "Design decisions worth knowing" below.
+- **A single running server.** Fully safe. `index.ts` loads `state.json` once into an in-memory closure and every request handler mutates that one object synchronously (no `await` between mutate and `saveState`), so two concurrent HTTP requests can't interleave a partial write — see the first bullet under "Design decisions worth knowing" below.
 - **The server plus a direct-mode CLI/MCP call.** Guarded, not eliminated. Direct mode (CLI/MCP with no server answering the probe) checks `serverAppearsRunning()` — is `data/server.pid` present and does that pid respond to `process.kill(pid, 0)` — both early (before doing any real work: a Jira/GitHub write, a full refresh) and again immediately before the actual `saveState()` call (`saveStateGuarded()` in `server/transport.ts`), closing the window where a server starts mid-operation. This stops the server and a direct-mode process from silently clobbering each other's save. It is **not** perfect: a pid can be reused by an unrelated process after the original server died (an accepted, deliberately-not-solved residual risk — see the comment on `serverAppearsRunning`).
 - **Two direct-mode processes running at the same time, no server at all.** **Unguarded.** Two `simon-dash ack PROJ-1` invocations launched back to back from two terminals (or two MCP tool calls landing concurrently with no server up) each `loadState()` their own in-memory copy, mutate it, and `saveState()` — last writer wins, silently. `serverAppearsRunning()` only detects an actual server (identified by `data/server.pid`); a sibling direct-mode process writes no pid file and is invisible to it. This is a known gap, not an oversight: closing it would need a lock file or similar cross-process coordination that direct mode's whole design (no daemon, no lock server, just read-mutate-write against a JSON file) doesn't have. In practice this matters only if you're scripting concurrent direct-mode calls; the common case (interactive CLI use, or a server running) doesn't hit it.
 
 ## Design decisions worth knowing
 
-- **In-memory shared state, write-through to disk.** `index.js` loads `state.json` once at server startup and holds it in a closure for the life of the process; every request handler mutates that same object and persists it. Reading from disk per-request would be safe but wasteful; the actual reason for the once-only load is to avoid a lost-update race between concurrent `/api/refresh` and `/api/action` calls. Since every handler's mutate+save section runs synchronously with no `await` in between, interleaving can only happen at an `await` boundary, at which point no partially-mutated state is ever visible to a different handler.
+- **In-memory shared state, write-through to disk.** `index.ts` loads `state.json` once at server startup and holds it in a closure for the life of the process; every request handler mutates that same object and persists it. Reading from disk per-request would be safe but wasteful; the actual reason for the once-only load is to avoid a lost-update race between concurrent `/api/refresh` and `/api/action` calls. Since every handler's mutate+save section runs synchronously with no `await` in between, interleaving can only happen at an `await` boundary, at which point no partially-mutated state is ever visible to a different handler.
 - **Loopback bind (`127.0.0.1`), not `0.0.0.0`.** There's no authentication on the API, so binding to all interfaces would expose card data and mutation endpoints to anything on the local network. This is a single-user local tool by design.
 - **Lazy-loaded chart chunk.** Chart.js is tens of KB gzipped. `chart-panel-lazy.tsx` defers importing the real `chart-panel.tsx` until it actually mounts (gated on `prLog.length > 0`), so a fresh install or a demo-mode-off/no-data state doesn't pay that download cost before first paint. A skeleton renders in the same slot while the chunk fetches, so there's no layout shift.
 - **`preact-iso`'s `useLocation()` instead of `<Router>`/`<Route>`.** `<Router>`/`<Route>` memoize the rendered route on `[url, JSON.stringify(matchProps)]` and freeze the *first* render's closure. An inline `component={() => (...)}` referencing outer state (`data`, `board`, `selected`) would never see later updates after that first freeze. Clicks, search, and refresh would silently stop working after mount. Reading `path` from `useLocation()` and branching in plain JS inside one component sidesteps that memoization entirely, at the cost of manually handling the "no route matched" case.
