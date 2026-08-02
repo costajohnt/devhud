@@ -11,6 +11,18 @@ const prView = (p) => p && {
   state: p.state, ciStatus: p.ciStatus, reviewState: p.reviewState,
 };
 
+// Full comment history for the detail panel's "Comments" section: last 10
+// comments merged from both sources, newest first, regardless of whether
+// classifyCard already flagged them as "new". Independent of newComments,
+// which is seen-horizon-filtered and drives attention/badges.
+const itemComments = (card, pr) => {
+  const fromPr = (pr?.comments ?? []).map(c => ({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
+  const fromJira = (card.comments ?? []).map(c => ({ source: 'jira', author: c.author || c.authorId, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
+  return [...fromPr, ...fromJira]
+    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
+    .slice(0, 10);
+};
+
 export function buildSnapshot({ cards, prs, state, config, errors }) {
   const { statuses } = config.jira;
   const username = config.github.username;
@@ -42,7 +54,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
     const lastTs = [card.updatedAt, pr?.updatedAt].filter(Boolean).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
-      bucket, attention, newComments, pr: prView(pr),
+      bucket, attention, newComments, comments: itemComments(card, pr), pr: prView(pr),
       createdAt: card.createdAt, updatedAt: card.updatedAt,
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
     });
@@ -80,11 +92,32 @@ export async function refresh({ config, state }) {
   try {
     const gh = await fetchPrs(config.github);
     prs = gh.prs;
-    if (gh.errors.length) errors.github = gh.errors.join('; ');
+    // fetchPrs isolates per-repo failures into "org/repo: msg" strings so one
+    // bad repo doesn't blank the others; splice that repo's last-known-good
+    // PRs back in from state.lastPrs so it doesn't vanish from the board.
+    if (gh.errors.length) {
+      errors.github = gh.errors.join('; ');
+      for (const err of gh.errors) {
+        const failedRepo = err.match(/^([^:]+):/)?.[1];
+        if (failedRepo) prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
+      }
+    }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
-    const results = await Promise.allSettled([...new Set(linked.values())].map(p => enrichPr(p, config.github)));
+    const toEnrich = [...new Set(linked.values())];
+    const results = await Promise.allSettled(toEnrich.map(p => enrichPr(p, config.github)));
     const failed = results.filter(r => r.status === 'rejected');
     if (failed.length) errors.github = [errors.github, ...failed.map(f => f.reason?.message)].filter(Boolean).join('; ');
+    // Replace any PR whose enrichment rejected with its last-known-good
+    // counterpart (matched by repo+number) so a transient detail-fetch
+    // failure doesn't strip CI/review/comment data the board already had.
+    results.forEach((r, i) => {
+      if (r.status !== 'rejected') return;
+      const pr = toEnrich[i];
+      const fallback = (state.lastPrs ?? []).find(lp => lp.repo === pr.repo && lp.number === pr.number);
+      if (!fallback) return;
+      const idx = prs.indexOf(pr);
+      if (idx >= 0) prs[idx] = fallback;
+    });
     state.lastPrs = prs;
   } catch (e) {
     errors.github = [errors.github, e.message].filter(Boolean).join('; ');

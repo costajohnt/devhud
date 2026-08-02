@@ -37,6 +37,20 @@ test('loadState warns and falls back to .bak on a corrupt main file', () => {
   warnSpy.mockRestore();
 });
 
+test('saveState skips rotating a corrupt current file, protecting the existing .bak', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const good = emptyState();
+  cardState(good, 'GOOD').override = 'in_qa';
+  writeFileSync(path + '.bak', JSON.stringify(good));
+  writeFileSync(path, '{ not json');
+  const s = emptyState();
+  cardState(s, 'NEW').override = 'in_progress';
+  saveState(path, s);
+  expect(JSON.parse(readFileSync(path + '.bak', 'utf8')).cards.GOOD.override).toBe('in_qa');
+  expect(JSON.parse(readFileSync(path, 'utf8')).cards.NEW.override).toBe('in_progress');
+});
+
 test('saveState rotates the previous file to .bak before writing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');

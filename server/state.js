@@ -20,10 +20,19 @@ export function loadState(path) {
   }
 }
 
+// Only rotate the current file into .bak when it actually parses as JSON.
+// Rotating a corrupt current file would overwrite a still-good .bak with
+// garbage, destroying the one fallback loadState relies on.
 export function saveState(path, state) {
   mkdirSync(dirname(path), { recursive: true });
-  try { renameSync(path, path + '.bak'); }
-  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  let current;
+  try { current = readFileSync(path, 'utf8'); }
+  catch (e) { if (e.code !== 'ENOENT') throw e; current = null; }
+  if (current !== null) {
+    let valid = true;
+    try { JSON.parse(current); } catch { valid = false; }
+    if (valid) renameSync(path, path + '.bak');
+  }
   const tmp = path + '.tmp';
   writeFileSync(tmp, JSON.stringify(state, null, 2));
   renameSync(tmp, path);

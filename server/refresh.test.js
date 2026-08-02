@@ -60,3 +60,50 @@ test('recentActivity lists merges within 7 days of now', () => {
   const p = buildSnapshot({ cards: [card({ key: 'PROJ-4', status: 'Done' })], prs, state: emptyState(), config, errors: {} });
   expect(p.recentActivity.some(e => e.type === 'merged')).toBe(true);
 });
+
+test('item comments merge both sources, newest first, capped at 10', () => {
+  const c = card({
+    comments: [
+      { author: 'jira-a', authorId: 'a', body: 'old jira', createdAt: '2026-07-01T00:00:00Z' },
+      { author: 'jira-b', authorId: 'b', body: 'new jira', createdAt: '2026-07-05T00:00:00Z' },
+    ],
+  });
+  const p1 = pr({
+    comments: [
+      { author: 'gh-a', body: 'gh comment', createdAt: '2026-07-03T00:00:00Z' },
+    ],
+  });
+  const snap = buildSnapshot({ cards: [c], prs: [p1], state: emptyState(), config, errors: {} });
+  // Unseen comments push this card into needs_attention.
+  const item = snap.buckets.needs_attention[0];
+  expect(item.comments.map(x => x.source)).toEqual(['jira', 'github', 'jira']);
+  expect(item.comments[0].body).toBe('new jira');
+  expect(item.comments).toHaveLength(3);
+});
+
+test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead of vanishing them', async () => {
+  const { fetchPrs } = await import('./github.js');
+  fetchPrs.mockResolvedValueOnce({ prs: [], errors: ['o/r: 500 boom'] });
+  const state = emptyState();
+  state.lastCards = [card()];
+  state.lastPrs = [pr()];
+  const payload = await refresh({ config, state });
+  expect(payload.errors.github).toContain('o/r: 500 boom');
+  expect(payload.buckets.in_progress[0]?.pr?.number).toBe(1);
+});
+
+test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart', async () => {
+  const { fetchPrs, enrichPr } = await import('./github.js');
+  const staleGoodPr = pr({ ciStatus: 'passing', reviewState: 'approved' });
+  const freshPr = pr({ ciStatus: 'unknown', reviewState: 'none' });
+  fetchPrs.mockResolvedValueOnce({ prs: [freshPr], errors: [] });
+  enrichPr.mockRejectedValueOnce(new Error('enrich failed'));
+  const state = emptyState();
+  state.lastCards = [card()];
+  state.lastPrs = [staleGoodPr];
+  const payload = await refresh({ config, state });
+  expect(payload.errors.github).toContain('enrich failed');
+  // staleGoodPr has reviewState 'approved', which buckets it into waiting_review.
+  expect(payload.buckets.waiting_review[0]?.pr?.ciStatus).toBe('passing');
+  expect(payload.buckets.waiting_review[0]?.pr?.reviewState).toBe('approved');
+});
