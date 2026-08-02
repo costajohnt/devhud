@@ -82,6 +82,17 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
 export async function refresh({ config, state }) {
   const errors = {};
   let cards, prs;
+  if (config.demo) {
+    // Demo mode: canned data through the real pipeline, no network.
+    const { demoCards, demoPrs } = await import('./demo.js');
+    cards = demoCards(config.jira);
+    prs = demoPrs(config.github);
+    const payload = buildSnapshot({ cards, prs, state, config, errors });
+    state.snapshot = payload;
+    state.lastRefreshAt = payload.updatedAt;
+    console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
+    return payload;
+  }
   try {
     cards = await fetchJiraCards(config.jira);
     state.lastCards = cards;

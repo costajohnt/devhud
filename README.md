@@ -2,6 +2,10 @@
 
 Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serves a Preact SPA that tracks card status and PR activity across projects.
 
+## Demo mode
+
+Set `"demo": true` in `config.json` (or run with `JIRA_DASH_DEMO=1`) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
+
 ## Setup
 
 ### 1. Configure

@@ -107,3 +107,22 @@ test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart'
   expect(payload.buckets.waiting_review[0]?.pr?.ciStatus).toBe('passing');
   expect(payload.buckets.waiting_review[0]?.pr?.reviewState).toBe('approved');
 });
+
+test('demo mode builds populated snapshot without network', async () => {
+  const { refresh } = await import('./refresh.js');
+  const state = emptyState();
+  const p = await refresh({ config: {
+    demo: true,
+    jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+    github: { username: 'costajohnt', org: 'acme' },
+  }, state });
+  const boardCount = Object.values(p.buckets).flat().length;
+  expect(boardCount).toBeGreaterThan(0);
+  expect(p.todo.length).toBeGreaterThan(0);
+  expect(p.buckets.needs_attention.length).toBeGreaterThan(0);
+  expect(p.buckets.in_qa.length).toBeGreaterThan(0);
+  expect(p.mergedCards.length).toBeGreaterThan(0);
+  expect(p.newlyMerged.length).toBeGreaterThan(0);
+  expect(p.unlinkedPrs.length).toBeGreaterThan(0);
+  expect(p.errors).toEqual({ jira: null, github: null });
+});

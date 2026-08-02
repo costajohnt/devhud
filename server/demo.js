@@ -1,0 +1,47 @@
+// Canned cards/PRs for demo mode (config.demo). Shapes match jira.js mapIssue
+// and github.js mapPr post-enrichment, so refresh() runs the real pipeline.
+const DAY = 86400000;
+const iso = (daysAgo) => new Date(Date.now() - daysAgo * DAY).toISOString();
+
+export function demoCards(cfg) {
+  const url = (k) => `${cfg.baseUrl?.startsWith('http') ? cfg.baseUrl : 'https://example.atlassian.net'}/browse/${k}`;
+  const card = (key, summary, status, age, comments = [], description = '') => ({
+    key, summary, status, description, url: url(key),
+    createdAt: iso(age + 10), updatedAt: iso(age),
+    myAccountId: cfg.accountId, comments,
+  });
+  return [
+    card('DEMO-101', 'Fix login redirect loop on SSO tenants', 'In Progress', 1, [
+      { author: 'Priya N', authorId: 'priya', body: 'QA blocked on this, any ETA?', createdAt: iso(0.3) },
+    ]),
+    card('DEMO-97', 'Migrate billing webhooks to v2 signatures', 'In Review', 3),
+    card('DEMO-104', 'Add rate limiting to public API', 'In Progress', 0),
+    card('DEMO-108', 'Refactor notification queue consumer', 'In Progress', 1),
+    card('DEMO-99', 'Support CSV export on reports page', 'In Review', 4),
+    card('DEMO-95', 'New onboarding checklist flow', 'In Test', 6),
+    card('DEMO-92', 'Dark mode for customer portal', 'Done', 2),
+    card('DEMO-112', 'Spike: evaluate feature flag providers', 'To Do', 1),
+    card('DEMO-113', 'Clean up deprecated user settings endpoints', 'To Do', 3),
+  ];
+}
+
+export function demoPrs(cfg) {
+  const org = cfg.org || 'acme';
+  const pr = (repo, number, branch, o) => ({
+    repo: `${org}/${repo}`, number, url: `https://github.com/${org}/${repo}/pull/${number}`,
+    title: '', body: '', branch, state: 'open', createdAt: iso(9), updatedAt: iso(1), mergedAt: null,
+    ciStatus: 'passing', reviewState: 'none', comments: [], ...o,
+  });
+  return [
+    pr('webapp', 482, 'DEMO-101-sso-redirect', {
+      ciStatus: 'failing', reviewState: 'changes_requested',
+      comments: [{ author: 'sarah-dev', body: 'The retry logic swallows the original error, can you preserve the stack?', createdAt: iso(0.2) }],
+    }),
+    pr('webapp', 475, 'DEMO-97-webhooks-v2', { state: 'merged', mergedAt: iso(0.1), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('api-gateway', 489, 'DEMO-104-rate-limit', { ciStatus: 'pending' }),
+    pr('webapp', 478, 'DEMO-99-csv-export', { reviewState: 'review_required' }),
+    pr('webapp', 470, 'DEMO-95-onboarding', { state: 'merged', mergedAt: iso(6), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('webapp', 465, 'DEMO-92-dark-mode', { state: 'merged', mergedAt: iso(2), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('webapp', 491, 'chore-bump-node-22', { title: 'chore: bump node to 22' }),
+  ];
+}

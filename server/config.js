@@ -19,6 +19,7 @@ export function loadConfig(path = new URL('../config.json', import.meta.url).pat
     if (!c.github[key]) throw new Error(`config at ${path} is missing required key "github.${key}"`);
   }
   c.port ??= 3010;
+  c.demo = Boolean(c.demo) || process.env.JIRA_DASH_DEMO === '1';
   c.jira.statuses = { ...DEFAULT_STATUSES, ...(c.jira.statuses ?? {}) };
   c.github.token ||= process.env.GITHUB_TOKEN || '';
   return c;

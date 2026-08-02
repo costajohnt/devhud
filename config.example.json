@@ -5,8 +5,20 @@
     "apiToken": "REPLACE",
     "projectKey": "PROJ",
     "accountId": "REPLACE",
-    "statuses": { "todo": "To Do", "inTest": "In Test", "done": "Done" }
+    "statuses": {
+      "todo": "To Do",
+      "inTest": "In Test",
+      "done": "Done"
+    }
   },
-  "github": { "token": "", "org": "YOURORG", "repos": ["repo1"], "username": "costajohnt" },
-  "port": 3010
+  "github": {
+    "token": "",
+    "org": "YOURORG",
+    "repos": [
+      "repo1"
+    ],
+    "username": "costajohnt"
+  },
+  "port": 3010,
+  "demo": false
 }
