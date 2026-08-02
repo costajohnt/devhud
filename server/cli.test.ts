@@ -1,26 +1,52 @@
 import { test, expect, beforeAll, afterAll } from 'vitest';
-import { run, formatStatus, probeServer } from './cli.js';
-import { createServer } from './index.js';
-import { loadState, saveState, emptyState } from './state.js';
+import { run, formatStatus, probeServer } from './cli.ts';
+import { createServer } from './index.ts';
+import { loadState, saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Config, Snapshot, Item } from './types.ts';
 
-const config = {
-  port: 39217, // unused by direct-mode tests; a port nothing is listening on
-  jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
-  github: { username: 'john' },
-};
+function makeConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    port: 39217, // unused by direct-mode tests; a port nothing is listening on
+    jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+    github: { username: 'john', org: 'o', token: '', repos: [] },
+    demo: false, writeEnabled: false,
+    ...overrides,
+  };
+}
+const config = makeConfig();
 
-function tempStatePath() {
+function needsAttentionItem(overrides: Partial<Item> = {}): Item {
+  return {
+    key: 'P-1', summary: 'S', jiraStatus: 'In Progress', jiraUrl: 'https://x/browse/P-1', bucket: 'needs_attention',
+    attention: ['ci_failing'], newComments: [], comments: [], pr: null,
+    createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
+    ...overrides,
+  };
+}
+
+function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
+  return {
+    updatedAt: 'x', errors: { jira: null, github: null },
+    buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+    closedPrs: [], prLog: [],
+    ...overrides,
+  };
+}
+
+function tempStatePath(): string {
   return join(mkdtempSync(join(tmpdir(), 'jd-cli-')), 'state.json');
 }
 
 // performWrite re-reads config from disk and fails CLOSED if that read
 // throws, so write-back tests need a real config.json on disk matching the
 // gate state they're exercising, not just an in-memory config passed to run().
-function tempConfigFile(overrides) {
+function tempConfigFile(overrides: { demo?: boolean; writeEnabled?: boolean }): string {
   const path = join(mkdtempSync(join(tmpdir(), 'jd-cli-cfg-')), 'config.json');
   writeFileSync(path, JSON.stringify({
     jira: { projectKey: 'PROJ', accountId: 'me', ...(overrides.demo ? {} : { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' }) },
@@ -45,9 +71,10 @@ test('status in direct mode against a fresh temp state file prints the empty-boa
 test('status --json in direct mode against a populated temp state file returns the snapshot', async () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-1', summary: 'Fix it', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: ['ci_failing'], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 3, newlyMerged: [], recentActivity: [] };
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], waiting_review: [], in_qa: [] },
+    mergedTotal: 3,
+  });
   saveState(statePath, state);
   const { code, out } = await run(['status', '--json'], { config, statePath });
   expect(code).toBe(0);
@@ -55,11 +82,11 @@ test('status --json in direct mode against a populated temp state file returns t
 });
 
 test('status human output includes needs-attention rows with key/summary/reasons', () => {
-  const out = formatStatus({
-    updatedAt: 'x',
-    buckets: { needs_attention: [{ key: 'P-1', summary: 'Fix it', attention: ['ci_failing'] }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [1, 2], mergedTotal: 5,
-  });
+  const out = formatStatus(makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem({ summary: 'Fix it' })], in_progress: [], waiting_review: [], in_qa: [] },
+    todo: [{ key: 'T-1', summary: '', jiraUrl: '', createdAt: null }, { key: 'T-2', summary: '', jiraUrl: '', createdAt: null }],
+    mergedTotal: 5,
+  }));
   expect(out).toContain('Needs Attention: 1');
   expect(out).toContain('TODO: 2  Merged: 5');
   expect(out).toContain('P-1  Fix it  [ci_failing]');
@@ -68,9 +95,10 @@ test('status human output includes needs-attention rows with key/summary/reasons
 test('ack via the shared action function persists a bucket change to disk (direct mode)', async () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.snapshot = { updatedAt: '2026-07-01T00:00:00Z', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-1', summary: 'S', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: ['ci_failing'], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+  state.snapshot = makeSnapshot({
+    updatedAt: '2026-07-01T00:00:00Z',
+    buckets: { needs_attention: [needsAttentionItem({ summary: 'S' })], in_progress: [], waiting_review: [], in_qa: [] },
+  });
   saveState(statePath, state);
 
   const { code, out } = await run(['ack', 'P-1'], { config, statePath });
@@ -78,16 +106,16 @@ test('ack via the shared action function persists a bucket change to disk (direc
   expect(out).toBe('P-1 -> in_progress');
 
   const reloaded = loadState(statePath);
-  expect(reloaded.cards['P-1'].lastSeenPr).toBe('2026-07-01T00:00:00Z');
+  expect(reloaded.cards['P-1']!.lastSeenPr).toBe('2026-07-01T00:00:00Z');
 });
 
 test('refresh --json in direct mode emits pure JSON on stdout (refresh()\'s own console.log must not leak in)', async () => {
   const statePath = tempStatePath();
-  const demoConfig = {
-    port: 39217, demo: true,
+  const demoConfig = makeConfig({
+    demo: true,
     jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
-    github: { username: 'costajohnt', org: 'acme' },
-  };
+    github: { username: 'costajohnt', org: 'acme', token: '', repos: [] },
+  });
   const { code, out } = await run(['refresh', '--json'], { config: demoConfig, statePath });
   expect(code).toBe(0);
   expect(() => JSON.parse(out)).not.toThrow();
@@ -96,9 +124,9 @@ test('refresh --json in direct mode emits pure JSON on stdout (refresh()\'s own 
 test('move --json in direct mode reports the resulting bucket', async () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [], in_progress: [{ key: 'P-2', summary: 'S', jiraStatus: 'In Progress', bucket: 'in_progress', attention: [], newComments: [] }], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [], in_progress: [needsAttentionItem({ key: 'P-2', bucket: 'in_progress', attention: [] })], waiting_review: [], in_qa: [] },
+  });
   saveState(statePath, state);
   const { code, out } = await run(['move', 'P-2', 'in_qa', '--json'], { config, statePath });
   expect(code).toBe(0);
@@ -122,9 +150,9 @@ test('move with an invalid bucket exits 1 with the server-side error', async () 
 test('direct-mode ack refuses when a server.pid exists for a live process (split-brain guard)', async () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-1', summary: 'S', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: [], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], waiting_review: [], in_qa: [] },
+  });
   saveState(statePath, state);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
 
@@ -154,9 +182,9 @@ test('status still works direct-mode even with a server.pid present (read-only)'
 test('a stale server.pid (dead process) does not block direct-mode writes', async () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-1', summary: 'S', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: [], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], waiting_review: [], in_qa: [] },
+  });
   saveState(statePath, state);
   // A pid essentially guaranteed not to be alive.
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: 999999, port: 39217, startedAt: 'x' }));
@@ -167,7 +195,7 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
 
 test('transition in direct mode against demo config prints a clean demo-refusal message (not an error)', async () => {
   const statePath = tempStatePath();
-  const demoConfig = { port: 39217, demo: true, jira: { statuses: {} }, github: {} };
+  const demoConfig = makeConfig({ demo: true });
   const configPath = tempConfigFile({ demo: true });
   const { code, out, err } = await run(['transition', 'FAKE-1', 'Done'], { config: demoConfig, statePath, configPath });
   expect(code).toBe(0);
@@ -177,7 +205,7 @@ test('transition in direct mode against demo config prints a clean demo-refusal 
 
 test('transition --json in direct mode against demo config returns the stub-success shape', async () => {
   const statePath = tempStatePath();
-  const demoConfig = { port: 39217, demo: true, jira: { statuses: {} }, github: {} };
+  const demoConfig = makeConfig({ demo: true });
   const configPath = tempConfigFile({ demo: true });
   const { code, out } = await run(['transition', 'FAKE-1', 'In', 'Review', '--json'], { config: demoConfig, statePath, configPath });
   expect(code).toBe(0);
@@ -208,7 +236,7 @@ test('pr-comment usage error when no comment text is given', async () => {
 
 test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', async () => {
   const statePath = tempStatePath();
-  const demoConfig = { port: 39217, demo: true, jira: {}, github: {} };
+  const demoConfig = makeConfig({ demo: true });
   const configPath = tempConfigFile({ demo: true });
   const { code, out } = await run(['pr-comment', 'acme/webapp#482', 'nice', 'work', '--json'], { config: demoConfig, statePath, configPath });
   expect(code).toBe(0);
@@ -217,7 +245,7 @@ test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', asy
 
 test('direct-mode transition refuses when a server.pid exists for a live process (split-brain guard)', async () => {
   const statePath = tempStatePath();
-  const writeEnabledConfig = { port: 39217, demo: false, writeEnabled: true, jira: { statuses: {} }, github: {} };
+  const writeEnabledConfig = makeConfig({ demo: false, writeEnabled: true });
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
   const { code, err } = await run(['transition', 'P-1', 'Done'], { config: writeEnabledConfig, statePath });
   expect(code).toBe(1);
@@ -257,7 +285,8 @@ test('--help / no command prints usage; exit 0 with --help, exit 1 with no comma
   expect(bare.out).toContain('Usage:');
 });
 
-let server, serverConfig;
+let server: http.Server;
+let serverConfig: Config;
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-cli-http-'));
   const statePath = join(dir, 'state.json');
@@ -265,14 +294,15 @@ beforeAll(async () => {
   mkdirSync(webDist);
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
   const state = emptyState();
-  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-9', summary: 'S', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: ['ci_failing'], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 7, newlyMerged: [], recentActivity: [] };
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem({ key: 'P-9', summary: 'S' })], in_progress: [], waiting_review: [], in_qa: [] },
+    mergedTotal: 7,
+  });
   saveState(statePath, state);
-  serverConfig = { port: 0, jira: { statuses: { inTest: 'In Test' } }, github: {} };
+  serverConfig = makeConfig({ port: 0 });
   server = createServer({ config: serverConfig, statePath, webDist });
-  await new Promise(r => server.listen(0, r));
-  serverConfig.port = server.address().port; // cli.js probes/talks to this port
+  await new Promise<void>(r => server.listen(0, () => r()));
+  serverConfig.port = (server.address() as AddressInfo).port; // cli.ts probes/talks to this port
 });
 afterAll(() => server.close());
 
@@ -300,9 +330,9 @@ test('refresh via the HTTP transport surfaces a non-2xx response as an error ins
     if (req.url === '/api/refresh') { res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'boom' })); }
     res.writeHead(404); res.end();
   });
-  await new Promise(r => badServer.listen(0, r));
+  await new Promise<void>(r => badServer.listen(0, () => r()));
   try {
-    const badConfig = { port: badServer.address().port, jira: {}, github: {} };
+    const badConfig = makeConfig({ port: (badServer.address() as AddressInfo).port });
     const { code, err } = await run(['refresh'], { config: badConfig, statePath: '/nonexistent/should-not-be-read.json' });
     expect(code).toBe(1);
     expect(err).toContain('HTTP 500');

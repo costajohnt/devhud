@@ -1,11 +1,14 @@
-// Canned cards/PRs for demo mode (config.demo). Shapes match jira.js mapIssue
-// and github.js mapPr post-enrichment, so refresh() runs the real pipeline.
-const DAY = 86400000;
-const iso = (daysAgo) => new Date(Date.now() - daysAgo * DAY).toISOString();
+import type { Card, Pr, JiraComment, JiraConfig, GithubConfig } from './types.ts';
 
-export function demoCards(cfg) {
-  const url = (k) => `${cfg.baseUrl?.startsWith('http') ? cfg.baseUrl : 'https://example.atlassian.net'}/browse/${k}`;
-  const card = (key, summary, status, age, comments = [], description = '') => ({
+// Canned cards/PRs for demo mode (config.demo). Shapes match jira.ts's
+// mapIssue and github.ts's mapPr post-enrichment, so refresh() runs the real
+// pipeline.
+const DAY = 86400000;
+const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * DAY).toISOString();
+
+export function demoCards(cfg: JiraConfig): Card[] {
+  const url = (k: string) => `${cfg.baseUrl?.startsWith('http') ? cfg.baseUrl : 'https://example.atlassian.net'}/browse/${k}`;
+  const card = (key: string, summary: string, status: string, age: number, comments: JiraComment[] = [], description = ''): Card => ({
     key, summary, status, description, url: url(key),
     createdAt: iso(age + 10), updatedAt: iso(age),
     myAccountId: cfg.accountId, comments,
@@ -34,9 +37,9 @@ export function demoCards(cfg) {
   ];
 }
 
-export function demoPrs(cfg) {
+export function demoPrs(cfg: GithubConfig): Pr[] {
   const org = cfg.org || 'acme';
-  const pr = (repo, number, branch, o) => ({
+  const pr = (repo: string, number: number, branch: string, o: Partial<Pr> = {}): Pr => ({
     repo: `${org}/${repo}`, number, url: `https://github.com/${org}/${repo}/pull/${number}`,
     title: '', body: '', branch, state: 'open', createdAt: iso(9), updatedAt: iso(1), mergedAt: null,
     ciStatus: 'passing', reviewState: 'none', comments: [], ...o,

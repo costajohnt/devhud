@@ -1,12 +1,13 @@
-import { cardState } from './state.js';
-import { linkPrsToCards, unlinked } from './link.js';
-import { classifyCard, isTodo, isDone } from './classify.js';
-import { fetchJiraCards } from './jira.js';
-import { fetchPrs, enrichPr } from './github.js';
+import { cardState } from './state.ts';
+import { linkPrsToCards, unlinked } from './link.ts';
+import { classifyCard, isTodo, isDone } from './classify.ts';
+import { fetchJiraCards } from './jira.ts';
+import { fetchPrs, enrichPr } from './github.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, ClosedPr, PrLogEntry, NewComment } from './types.ts';
 
 const DAY = 86400000;
 
-const prView = (p) => p && {
+const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
   state: p.state, ciStatus: p.ciStatus, reviewState: p.reviewState,
 };
@@ -15,9 +16,9 @@ const prView = (p) => p && {
 // comments merged from both sources, newest first, regardless of whether
 // classifyCard already flagged them as "new". Independent of newComments,
 // which is seen-horizon-filtered and drives attention/badges.
-const itemComments = (card, pr) => {
-  const fromPr = (pr?.comments ?? []).map(c => ({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
-  const fromJira = (card.comments ?? []).map(c => ({ source: 'jira', author: c.author || c.authorId, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
+const itemComments = (card: Card, pr: Pr | null): NewComment[] => {
+  const fromPr: NewComment[] = (pr?.comments ?? []).map(c => ({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt ?? null }));
+  const fromJira: NewComment[] = (card.comments ?? []).map(c => ({ source: 'jira', author: c.author || c.authorId || '', body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
   return [...fromPr, ...fromJira]
     .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
     .slice(0, 10);
@@ -28,7 +29,7 @@ const itemComments = (card, pr) => {
 // known state of every PR ever seen. Never deletes entries — history only.
 // closedAt only fires for closed-and-unmerged PRs; a merged PR gets mergedAt,
 // not closedAt, mirroring oss-autopilot's Opened/Merged/Closed series.
-function upsertPrLog(state, prs) {
+function upsertPrLog(state: State, prs: Pr[]): void {
   for (const p of prs) {
     const id = `${p.repo}#${p.number}`;
     state.prLog[id] = {
@@ -41,15 +42,17 @@ function upsertPrLog(state, prs) {
   }
 }
 
-export function buildSnapshot({ cards, prs, state, config, errors }) {
+export function buildSnapshot({ cards, prs, state, config, errors }: {
+  cards: Card[]; prs: Pr[]; state: State; config: Config; errors: { jira?: string; github?: string };
+}): Snapshot {
   const { statuses } = config.jira;
   const username = config.github.username;
   state.prLog ??= {};
   upsertPrLog(state, prs);
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
-  const buckets = { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] };
-  const todo = [], mergedCards = [], newlyMerged = [];
+  const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] };
+  const todo: Snapshot['todo'] = [], mergedCards: Snapshot['mergedCards'] = [], newlyMerged: string[] = [];
 
   for (const card of cards) {
     if (isTodo(card, statuses)) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
@@ -71,7 +74,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
     if (isDone(card, statuses)) continue;
 
     const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username });
-    const lastTs = [card.updatedAt, pr?.updatedAt].filter(Boolean).sort().pop();
+    const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
       bucket, attention, newComments, comments: itemComments(card, pr), pr: prView(pr),
@@ -82,21 +85,21 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
 
   const weekAgo = Date.now() - 7 * DAY;
 
-  const closedPrs = prs
+  const closedPrs: ClosedPr[] = prs
     .filter(p => p.state === 'closed' && !p.mergedAt)
     .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, closedAt: p.updatedAt }))
     .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
 
-  const mergedActivity = prs
+  const mergedActivity: ActivityEntry[] = prs
     .filter(p => p.mergedAt && Date.parse(p.mergedAt) > weekAgo)
-    .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt }));
-  const closedActivity = closedPrs
+    .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt! }));
+  const closedActivity: ActivityEntry[] = closedPrs
     .filter(p => p.closedAt && Date.parse(p.closedAt) > weekAgo)
     .map(p => ({ type: 'closed', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.closedAt }));
   // Comments surface from the board items just built above: each item's
   // newComments already carries source/author/createdAt, so no re-scan of
   // cards/prs is needed. url follows the comment's source (PR vs Jira card).
-  const commentActivity = [];
+  const commentActivity: ActivityEntry[] = [];
   for (const bucketItems of Object.values(buckets)) {
     for (const item of bucketItems) {
       for (const c of item.newComments) {
@@ -121,19 +124,19 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     mergedCards, mergedTotal: state.mergedTotal, newlyMerged, recentActivity,
     closedPrs,
-    prLog: Object.values(state.prLog),
+    prLog: Object.values(state.prLog) as PrLogEntry[],
   };
 }
 
 // On a source failure, reuse that source's last-known-good data instead of
 // blanking the board — a transient Jira/GitHub outage shouldn't wipe out
 // everything the user was tracking.
-export async function refresh({ config, state }) {
-  const errors = {};
-  let cards, prs;
+export async function refresh({ config, state }: { config: Config; state: State }): Promise<Snapshot> {
+  const errors: { jira?: string; github?: string } = {};
+  let cards: Card[], prs: Pr[];
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
-    const { demoCards, demoPrs } = await import('./demo.js');
+    const { demoCards, demoPrs } = await import('./demo.ts');
     cards = demoCards(config.jira);
     prs = demoPrs(config.github);
     const payload = buildSnapshot({ cards, prs, state, config, errors });
@@ -146,7 +149,7 @@ export async function refresh({ config, state }) {
     cards = await fetchJiraCards(config.jira);
     state.lastCards = cards;
   } catch (e) {
-    errors.jira = e.message;
+    errors.jira = (e as Error).message;
     cards = state.lastCards ?? [];
   }
   try {
@@ -166,13 +169,13 @@ export async function refresh({ config, state }) {
     const toEnrich = [...new Set(linked.values())];
     const results = await Promise.allSettled(toEnrich.map(p => enrichPr(p, config.github)));
     const failed = results.filter(r => r.status === 'rejected');
-    if (failed.length) errors.github = [errors.github, ...failed.map(f => f.reason?.message)].filter(Boolean).join('; ');
+    if (failed.length) errors.github = [errors.github, ...failed.map(f => (f as PromiseRejectedResult).reason?.message)].filter(Boolean).join('; ');
     // Replace any PR whose enrichment rejected with its last-known-good
     // counterpart (matched by repo+number) so a transient detail-fetch
     // failure doesn't strip CI/review/comment data the board already had.
     results.forEach((r, i) => {
       if (r.status !== 'rejected') return;
-      const pr = toEnrich[i];
+      const pr = toEnrich[i]!;
       const fallback = (state.lastPrs ?? []).find(lp => lp.repo === pr.repo && lp.number === pr.number);
       if (!fallback) return;
       const idx = prs.indexOf(pr);
@@ -180,7 +183,7 @@ export async function refresh({ config, state }) {
     });
     state.lastPrs = prs;
   } catch (e) {
-    errors.github = [errors.github, e.message].filter(Boolean).join('; ');
+    errors.github = [errors.github, (e as Error).message].filter(Boolean).join('; ');
     prs = state.lastPrs ?? [];
   }
   const payload = buildSnapshot({ cards, prs, state, config, errors });

@@ -1,12 +1,13 @@
 import { test, expect } from 'vitest';
-import { linkPrsToCards, unlinked } from './link.js';
+import { linkPrsToCards, unlinked } from './link.ts';
+import type { Card, Pr } from './types.ts';
 
-const card = (key, description = '') => ({ key, url: `https://x.atlassian.net/browse/${key}`, description });
-const pr = (o) => ({ repo: 'org/r', number: 1, url: 'https://github.com/org/r/pull/1', title: '', body: '', branch: '', state: 'open', updatedAt: '2026-08-01T00:00:00Z', ...o });
+const card = (key: string, description = ''): Card => ({ key, url: `https://x.atlassian.net/browse/${key}`, description, summary: '', status: '', myAccountId: '', createdAt: null, updatedAt: null, comments: [] });
+const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'org/r', number: 1, url: 'https://github.com/org/r/pull/1', title: '', body: '', branch: '', state: 'open', createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z', mergedAt: null, ciStatus: 'unknown', reviewState: 'none', comments: [], ...o });
 
 test('links by branch name, case-insensitive', () => {
   const m = linkPrsToCards([card('PROJ-12')], [pr({ branch: 'proj-12-fix-thing' })], 'PROJ');
-  expect(m.get('PROJ-12').number).toBe(1);
+  expect(m.get('PROJ-12')!.number).toBe(1);
 });
 
 test('does not partial-match PROJ-1 against PROJ-12 branch', () => {
@@ -30,7 +31,7 @@ test('prefers open PR over merged when both match', () => {
   const open = pr({ number: 2, url: 'u2', branch: 'PROJ-5-b', state: 'open' });
   const merged = pr({ number: 3, url: 'u3', branch: 'PROJ-5-a', state: 'merged' });
   const m = linkPrsToCards([card('PROJ-5')], [merged, open], 'PROJ');
-  expect(m.get('PROJ-5').number).toBe(2);
+  expect(m.get('PROJ-5')!.number).toBe(2);
 });
 
 test('card key with regex metacharacters does not throw and does not false-match', () => {

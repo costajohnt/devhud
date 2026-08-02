@@ -1,6 +1,6 @@
 // Write-back to Jira/GitHub: the only code in simon-dash that mutates
 // external systems. Everything else (refresh, ack, move) is read-only or
-// local-only. Plain fetch, same shape as jira.js/github.js — no deps,
+// local-only. Plain fetch, same shape as jira.ts/github.ts — no deps,
 // 30s timeouts, throws Error on a non-2xx response.
 //
 // Gated hard, on by nobody by default: config.writeEnabled must be true,
@@ -10,15 +10,21 @@
 // the MCP write tools) goes through performWrite() so the gate and the
 // post-write refresh can't drift between callers, mirroring applyAction's
 // role for ack/move.
-import { refresh } from './refresh.js';
-import { loadConfig } from './config.js';
+import { refresh } from './refresh.ts';
+import { loadConfig } from './config.ts';
+import type { Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
+
+interface JiraTransition {
+  id: string;
+  to?: { name?: string };
+}
 
 // One paragraph node's content: a blank-line-free run of text, hardBreak
 // nodes standing in for single \n line breaks within it. ADF has no notion
 // of a literal newline inside a text node — every \n has to become either a
 // paragraph boundary (blank line) or an explicit hardBreak node.
-function adfParagraph(paragraphText) {
-  const content = [];
+function adfParagraph(paragraphText: string) {
+  const content: Array<{ type: string; text?: string }> = [];
   paragraphText.split('\n').forEach((line, i) => {
     if (i > 0) content.push({ type: 'hardBreak' });
     if (line) content.push({ type: 'text', text: line });
@@ -33,7 +39,7 @@ function adfParagraph(paragraphText) {
  * multi-line comment/description readable in Jira's UI, not to support
  * markdown or rich text.
  */
-export function buildAdfDoc(text) {
+export function buildAdfDoc(text: string) {
   // Normalize Windows (\r\n) and old-Mac (\r) line endings to \n before
   // splitting, so a \r never ends up sitting inside an ADF text node (ADF
   // has no meaning for a literal \r any more than it does for \n).
@@ -45,7 +51,7 @@ export function buildAdfDoc(text) {
 // Case-insensitive match on transition.to.name (the workflow status a
 // transition leads to, not the transition's own name/id — "targetStatusName"
 // is what a caller thinks of as the destination status).
-export function findTransition(transitions, targetStatusName) {
+export function findTransition(transitions: JiraTransition[], targetStatusName: string | undefined): JiraTransition {
   const target = (targetStatusName ?? '').toLowerCase();
   const match = transitions.find(t => (t.to?.name ?? '').toLowerCase() === target);
   if (match) return match;
@@ -56,18 +62,18 @@ export function findTransition(transitions, targetStatusName) {
   );
 }
 
-function jiraAuth(cfg) {
+function jiraAuth(cfg: JiraConfig): string {
   return 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
 }
 
-export async function transitionCard(cfg, key, targetStatusName) {
+export async function transitionCard(cfg: JiraConfig, key: string, targetStatusName: string | undefined): Promise<{ transitionedTo: string }> {
   const auth = jiraAuth(cfg);
   // performWrite already validates key against KEY_RE before this is ever
   // called; encodeURIComponent here is belt-and-braces for any other caller.
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, cfg.baseUrl);
   const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
+  const data = await res.json() as { transitions?: JiraTransition[] };
   const transition = findTransition(data.transitions ?? [], targetStatusName);
   const postRes = await fetch(url, {
     method: 'POST',
@@ -76,10 +82,10 @@ export async function transitionCard(cfg, key, targetStatusName) {
     signal: AbortSignal.timeout(30_000),
   });
   if (!postRes.ok) throw new Error(`Jira ${postRes.status}: ${(await postRes.text()).slice(0, 200)}`);
-  return { transitionedTo: transition.to.name };
+  return { transitionedTo: transition.to?.name ?? '' };
 }
 
-export async function commentCard(cfg, key, body) {
+export async function commentCard(cfg: JiraConfig, key: string, body: string): Promise<Record<string, never>> {
   // See transitionCard: belt-and-braces encodeURIComponent, key is already
   // validated by performWrite before reaching this function.
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, cfg.baseUrl);
@@ -93,7 +99,7 @@ export async function commentCard(cfg, key, body) {
   return {};
 }
 
-export async function commentPr(cfg, repo, number, body) {
+export async function commentPr(cfg: GithubConfig, repo: string, number: number, body: string): Promise<Record<string, never>> {
   const res = await fetch(`https://api.github.com/repos/${repo}/issues/${number}/comments`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json', 'content-type': 'application/json' },
@@ -110,7 +116,7 @@ export async function commentPr(cfg, repo, number, body) {
 // rather than one that reads as a failure. writeEnabled: false outside demo
 // IS the user's explicit configuration blocking real writes, so that one
 // stays a real refusal.
-export function checkWriteGate(config) {
+export function checkWriteGate(config: Pick<Config, 'demo' | 'writeEnabled'>): WriteGateResult {
   if (config.demo) {
     return { blocked: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' };
   }
@@ -130,6 +136,29 @@ const KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 // "org/repo" — word chars, dots, and dashes only, exactly one slash.
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
+export interface PerformWriteArgs {
+  // Accepted but never read in the body below: every write path re-reads a
+  // fresh `liveConfig` from disk (see the comment above that re-read) as the
+  // sole source of truth for the gate, so a possibly-stale in-memory config
+  // is deliberately not trusted here. Kept in the signature only so callers
+  // (server/index.ts, cli.ts, mcp/handlers.ts) can pass their already-loaded
+  // config without a special case, mirroring applyAction's calling
+  // convention. Typed `unknown` rather than `Config` to reflect that
+  // honestly instead of demanding callers (and tests) construct a full
+  // Config just to satisfy a parameter nothing here looks at.
+  config: unknown;
+  state: State;
+  type: string;
+  key?: string;
+  repo?: string;
+  number?: number;
+  body?: string;
+  status?: string;
+  refreshFn?: typeof refresh;
+  configPath?: string;
+  loadConfigFn?: typeof loadConfig;
+}
+
 // Shared entry point for every write path. `state` is mutated in place by
 // the post-write refresh (same contract as applyAction) — callers persist
 // it themselves. `refreshFn` defaults to the real refresh() and exists so
@@ -147,7 +176,7 @@ const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 export async function performWrite({
   config, state, type, key, repo, number, body, status,
   refreshFn = refresh, configPath, loadConfigFn = loadConfig,
-}) {
+}: PerformWriteArgs): Promise<WriteResult> {
   if (!WRITE_TYPES.includes(type)) {
     return { error: `unknown write type "${type}"`, status: 400 };
   }
@@ -160,10 +189,10 @@ export async function performWrite({
   if (type === 'pr_comment' && (!repo || !number || !body)) {
     return { error: 'pr_comment requires repo, number, and body', status: 400 };
   }
-  if ((type === 'transition' || type === 'comment') && !KEY_RE.test(key)) {
+  if ((type === 'transition' || type === 'comment') && !KEY_RE.test(key ?? '')) {
     return { error: `invalid Jira issue key "${key}"`, status: 400 };
   }
-  if (type === 'pr_comment' && (!REPO_RE.test(repo) || !Number.isInteger(number))) {
+  if (type === 'pr_comment' && (!REPO_RE.test(repo ?? '') || !Number.isInteger(number))) {
     return { error: `invalid repo "${repo}" or PR number`, status: 400 };
   }
 
@@ -180,26 +209,26 @@ export async function performWrite({
   // a stale in-memory config on read failure would mean deleting
   // config.json (or making it briefly unreadable) doesn't actually stop a
   // long-running process from continuing to write.
-  let liveConfig;
+  let liveConfig: Config;
   try {
     liveConfig = loadConfigFn(configPath);
   } catch (e) {
-    return { error: `config re-read failed (${e.message}); refusing write`, status: 403 };
+    return { error: `config re-read failed (${(e as Error).message}); refusing write`, status: 403 };
   }
 
   const gate = checkWriteGate(liveConfig);
   if (gate.blocked) {
-    if (gate.demo) return { ok: true, demo: true, message: gate.message };
-    return { error: gate.message, status: 403 };
+    if (gate.demo) return { ok: true, demo: true, message: gate.message ?? '' };
+    return { error: gate.message ?? 'write-back disabled', status: 403 };
   }
 
-  let result;
+  let result: { transitionedTo?: string };
   try {
-    if (type === 'transition') result = await transitionCard(liveConfig.jira, key, status);
-    else if (type === 'comment') result = await commentCard(liveConfig.jira, key, body);
-    else result = await commentPr(liveConfig.github, repo, number, body);
+    if (type === 'transition') result = await transitionCard(liveConfig.jira, key!, status);
+    else if (type === 'comment') result = await commentCard(liveConfig.jira, key!, body!);
+    else result = await commentPr(liveConfig.github, repo!, number!, body!);
   } catch (e) {
-    return { error: e.message, status: 502 };
+    return { error: (e as Error).message, status: 502 };
   }
 
   // Board reflects the write immediately instead of waiting for the next
@@ -213,11 +242,11 @@ export async function performWrite({
   // field instead.
   const originalLog = console.log;
   console.log = () => {};
-  let refreshError;
+  let refreshError: string | undefined;
   try {
     await refreshFn({ config: liveConfig, state });
   } catch (e) {
-    refreshError = e.message;
+    refreshError = (e as Error).message;
   } finally {
     console.log = originalLog;
   }

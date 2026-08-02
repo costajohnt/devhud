@@ -1,27 +1,29 @@
 import { test, expect, vi } from 'vitest';
-import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.js';
-import { loadState, saveState, emptyState } from '../server/state.js';
+import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.ts';
+import { loadState, saveState, emptyState } from '../server/state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Config, Snapshot } from '../server/types.ts';
 
-// Same port convention as server/cli.test.js: nothing listens here, so every
+// Same port convention as server/cli.test.ts: nothing listens here, so every
 // handler in this file exercises the direct-mode (no running server) path.
-const config = {
+const config: Config = {
   port: 39218,
   jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
-  github: { username: 'costajohnt', org: 'acme' },
+  github: { username: 'costajohnt', org: 'acme', token: '', repos: [] },
   demo: true,
+  writeEnabled: false,
 };
 
-function tempStatePath() {
+function tempStatePath(): string {
   return join(mkdtempSync(join(tmpdir(), 'jd-mcp-')), 'state.json');
 }
 
 // performWrite re-reads config from disk and fails CLOSED if that read
 // throws, so write-back tests need a real config.json on disk matching the
 // gate state they're exercising, not just an in-memory config.
-function tempConfigFile(overrides) {
+function tempConfigFile(overrides: { demo?: boolean; writeEnabled?: boolean }): string {
   const path = join(mkdtempSync(join(tmpdir(), 'jd-mcp-cfg-')), 'config.json');
   writeFileSync(path, JSON.stringify({
     jira: { projectKey: 'DEMO', accountId: 'me', ...(overrides.demo ? {} : { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' }) },
@@ -31,27 +33,30 @@ function tempConfigFile(overrides) {
   return path;
 }
 
-function seedSnapshot(statePath) {
+function seedSnapshot(statePath: string) {
   const state = emptyState();
-  state.snapshot = {
+  const snapshot: Snapshot = {
     updatedAt: '2026-07-01T00:00:00Z', errors: { jira: null, github: null },
     buckets: {
       needs_attention: [{
-        key: 'P-1', summary: 'Fix it', jiraStatus: 'In Progress', bucket: 'needs_attention',
+        key: 'P-1', summary: 'Fix it', jiraStatus: 'In Progress', jiraUrl: 'https://x/browse/P-1', bucket: 'needs_attention',
         attention: ['ci_failing'], newComments: [{ source: 'github', author: 'sarah', body: 'ping', createdAt: '2026-07-01T00:00:00Z' }],
         comments: [{ source: 'github', author: 'sarah', body: 'ping', createdAt: '2026-07-01T00:00:00Z' }],
+        pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
       }],
       in_progress: [], waiting_review: [], in_qa: [],
     },
     todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 3, newlyMerged: [], recentActivity: [],
+    closedPrs: [], prLog: [],
   };
+  state.snapshot = snapshot;
   saveState(statePath, state);
   return state;
 }
 
 test('boardStatus returns the empty-board placeholder against a fresh state file', async () => {
   const statePath = tempStatePath();
-  const snap = await boardStatus({ config, statePath });
+  const snap = await boardStatus({ config, statePath }) as Snapshot;
   expect(snap.updatedAt).toBeNull();
   expect(snap.buckets.needs_attention).toEqual([]);
 });
@@ -59,9 +64,9 @@ test('boardStatus returns the empty-board placeholder against a fresh state file
 test('boardStatus returns the persisted snapshot as-is', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const snap = await boardStatus({ config, statePath });
+  const snap = await boardStatus({ config, statePath }) as Snapshot;
   expect(snap.mergedTotal).toBe(3);
-  expect(snap.buckets.needs_attention[0].key).toBe('P-1');
+  expect(snap.buckets.needs_attention[0]!.key).toBe('P-1');
 });
 
 test('ackCard clears attention and moves the card out of needs_attention (direct mode)', async () => {
@@ -70,8 +75,8 @@ test('ackCard clears attention and moves the card out of needs_attention (direct
   const result = await ackCard({ config, statePath, key: 'P-1' });
   expect(result).toEqual({ ok: true, bucket: 'in_progress' });
   const persisted = loadState(statePath);
-  expect(persisted.snapshot.buckets.needs_attention).toEqual([]);
-  expect(persisted.snapshot.buckets.in_progress[0].key).toBe('P-1');
+  expect(persisted.snapshot!.buckets.needs_attention).toEqual([]);
+  expect(persisted.snapshot!.buckets.in_progress[0]!.key).toBe('P-1');
 });
 
 test('moveCard pins the card to the requested bucket and persists the override', async () => {
@@ -80,37 +85,37 @@ test('moveCard pins the card to the requested bucket and persists the override',
   const result = await moveCard({ config, statePath, key: 'P-1', bucket: 'in_qa' });
   expect(result).toEqual({ ok: true, bucket: 'in_qa' });
   const persisted = loadState(statePath);
-  expect(persisted.cards['P-1'].override).toBe('in_qa');
-  expect(persisted.snapshot.buckets.in_qa[0].key).toBe('P-1');
+  expect(persisted.cards['P-1']!.override).toBe('in_qa');
+  expect(persisted.snapshot!.buckets.in_qa[0]!.key).toBe('P-1');
 });
 
 test('moveCard rejects an invalid bucket the same way the HTTP API does', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await moveCard({ config, statePath, key: 'P-1', bucket: 'needs_attention' });
+  const result = await moveCard({ config, statePath, key: 'P-1', bucket: 'needs_attention' }) as { error: string };
   expect(result.error).toContain('bucket must be one of');
 });
 
 test('cardComments returns the item\'s full comment history and newComments', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await cardComments({ config, statePath, key: 'P-1' });
+  const result = await cardComments({ config, statePath, key: 'P-1' }) as { key: string; comments: { author: string }[]; newComments: unknown[] };
   expect(result.key).toBe('P-1');
   expect(result.comments).toHaveLength(1);
   expect(result.newComments).toHaveLength(1);
-  expect(result.comments[0].author).toBe('sarah');
+  expect(result.comments[0]!.author).toBe('sarah');
 });
 
 test('cardComments on an unknown key returns an error shape, not a throw', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await cardComments({ config, statePath, key: 'NOPE-1' });
+  const result = await cardComments({ config, statePath, key: 'NOPE-1' }) as { error: string };
   expect(result.error).toContain('NOPE-1');
 });
 
 test('doRefresh in demo mode returns bucket counts, errors, and newlyMerged without touching the network', async () => {
   const statePath = tempStatePath();
-  const summary = await doRefresh({ config, statePath });
+  const summary = await doRefresh({ config, statePath }) as { counts: Record<string, number>; errors: unknown; newlyMerged: unknown[] };
   expect(summary.errors).toEqual({ jira: null, github: null });
   expect(Object.values(summary.counts).some(n => n > 0)).toBe(true);
   expect(Array.isArray(summary.newlyMerged)).toBe(true);
@@ -123,7 +128,7 @@ test('ackCard refuses a direct-mode write when a server.pid exists for a live pr
   const statePath = tempStatePath();
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
-  const result = await ackCard({ config, statePath, key: 'P-1' });
+  const result = await ackCard({ config, statePath, key: 'P-1' }) as { error: string };
   expect(result.error).toContain('appears to be running');
 });
 
@@ -150,7 +155,7 @@ test('commentPr against demo config returns the stub-success refusal', async () 
 
 test('transitionCard refuses a direct-mode write when a server.pid exists for a live process (split-brain guard)', async () => {
   const statePath = tempStatePath();
-  const writeEnabledConfig = { ...config, demo: false, writeEnabled: true };
+  const writeEnabledConfig: Config = { ...config, demo: false, writeEnabled: true };
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
   const result = await transitionCard({ config: writeEnabledConfig, statePath, key: 'P-1', status: 'Done' });
   expect(result.error).toContain('appears to be running');
@@ -158,7 +163,7 @@ test('transitionCard refuses a direct-mode write when a server.pid exists for a 
 
 test('transitionCard against a non-demo config with writeEnabled false refuses with a real error', async () => {
   const statePath = tempStatePath();
-  const nonDemoConfig = { ...config, demo: false, writeEnabled: false };
+  const nonDemoConfig: Config = { ...config, demo: false, writeEnabled: false };
   const configPath = tempConfigFile({ demo: false, writeEnabled: false });
   const result = await transitionCard({ config: nonDemoConfig, statePath, configPath, key: 'P-1', status: 'Done' });
   expect(result.error).toBe('write-back disabled; set writeEnabled: true in config.json');
@@ -170,9 +175,9 @@ test('transitionCard against a non-demo config with writeEnabled false refuses w
 // structured { error }, not a raw throw out of an MCP tool call.
 test('boardStatus returns a structured error instead of throwing when the fetch fails after a successful probe', async () => {
   const statePath = tempStatePath();
-  const viaServerConfig = { ...config, demo: false, port: 39220 };
+  const viaServerConfig: Config = { ...config, demo: false, port: 39220 };
   const fetchSpy = vi.spyOn(global, 'fetch')
-    .mockResolvedValueOnce({ ok: true }) // probeServer's own check
+    .mockResolvedValueOnce({ ok: true } as Response) // probeServer's own check
     .mockRejectedValueOnce(new Error('socket hang up')); // the real /api/data fetch
   const result = await boardStatus({ config: viaServerConfig, statePath });
   expect(result).toEqual({ error: 'socket hang up' });
@@ -181,9 +186,9 @@ test('boardStatus returns a structured error instead of throwing when the fetch 
 
 test('cardComments propagates a getSnapshot error instead of masking it as an unknown-key error', async () => {
   const statePath = tempStatePath();
-  const viaServerConfig = { ...config, demo: false, port: 39221 };
+  const viaServerConfig: Config = { ...config, demo: false, port: 39221 };
   const fetchSpy = vi.spyOn(global, 'fetch')
-    .mockResolvedValueOnce({ ok: true })
+    .mockResolvedValueOnce({ ok: true } as Response)
     .mockRejectedValueOnce(new Error('socket hang up'));
   const result = await cardComments({ config: viaServerConfig, statePath, key: 'P-1' });
   expect(result).toEqual({ error: 'socket hang up' });
@@ -192,10 +197,10 @@ test('cardComments propagates a getSnapshot error instead of masking it as an un
 
 test('doRefresh via the HTTP transport surfaces a non-2xx response as an error instead of parsing it as a snapshot', async () => {
   const statePath = tempStatePath();
-  const viaServerConfig = { ...config, demo: false, port: 39222 };
+  const viaServerConfig: Config = { ...config, demo: false, port: 39222 };
   const fetchSpy = vi.spyOn(global, 'fetch')
-    .mockResolvedValueOnce({ ok: true }) // probeServer's own check
-    .mockResolvedValueOnce({ ok: false, status: 500 }); // the real /api/refresh fetch
+    .mockResolvedValueOnce({ ok: true } as Response) // probeServer's own check
+    .mockResolvedValueOnce({ ok: false, status: 500 } as Response); // the real /api/refresh fetch
   const result = await doRefresh({ config: viaServerConfig, statePath });
   expect(result).toEqual({ error: 'HTTP 500' });
   fetchSpy.mockRestore();
@@ -205,6 +210,6 @@ test('boardStatus (read-only) still works direct-mode even with a server.pid pre
   const statePath = tempStatePath();
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
-  const snap = await boardStatus({ config, statePath });
+  const snap = await boardStatus({ config, statePath }) as Snapshot;
   expect(snap.mergedTotal).toBe(3);
 });

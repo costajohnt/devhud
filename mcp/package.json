@@ -2,7 +2,7 @@
   "name": "simon-dash-mcp",
   "private": true,
   "type": "module",
-  "bin": { "simon-dash-mcp": "./index.js" },
+  "bin": { "simon-dash-mcp": "./index.ts" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.25.0"

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Plain-JS ESM CLI, no deps. Dual transport: if a simon-dash server is
+// Plain-TS ESM CLI, no deps. Dual transport: if a simon-dash server is
 // already listening on the configured port, commands go through its HTTP
 // API (so a running server's in-memory state — the source of truth while
 // it's up — is what gets read/mutated); otherwise the CLI operates
-// directly on disk via the same server/*.js modules the server itself
+// directly on disk via the same server/*.ts modules the server itself
 // uses (loadState/saveState/refresh/applyAction), so behavior is identical
 // either way. Which transport was used is always printed to stderr in
 // human mode.
@@ -11,16 +11,17 @@ import { parseArgs } from 'node:util';
 import { spawnSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './config.js';
-import { loadState, emptySnapshot } from './state.js';
-import { refresh } from './refresh.js';
-import { applyAction, BUCKETS } from './actions.js';
-import { performWrite } from './writeback.js';
-import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.js';
+import { loadConfig } from './config.ts';
+import { loadState, emptySnapshot } from './state.ts';
+import { refresh } from './refresh.ts';
+import { applyAction, BUCKETS } from './actions.ts';
+import { performWrite } from './writeback.ts';
+import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
+import type { Config, Snapshot } from './types.ts';
 
-// Re-exported for backward compatibility: server/cli.test.js imports
-// probeServer from here, and server/transport.js is also used directly by
-// the MCP server (mcp/handlers.js) so all transports (HTTP proxy, direct
+// Re-exported for backward compatibility: server/cli.test.ts imports
+// probeServer from here, and server/transport.ts is also used directly by
+// the MCP server (mcp/handlers.ts) so all transports (HTTP proxy, direct
 // disk access, and the split-brain guard) can't drift between callers.
 export { probeServer };
 
@@ -46,7 +47,7 @@ data. Gated by writeEnabled in config.json (refuses otherwise) and always a
 no-op in demo mode. See the README's write-back section.
 `;
 
-export function formatStatus(payload) {
+export function formatStatus(payload: Snapshot): string {
   if (!payload.updatedAt) {
     return 'No data yet — run `simon-dash refresh` to fetch a snapshot.';
   }
@@ -65,10 +66,18 @@ export function formatStatus(payload) {
   return lines.join('\n');
 }
 
+export interface CliResult {
+  code: number;
+  out: string;
+  err: string;
+}
+
 // Runs one CLI invocation and returns { code, out, err } instead of touching
 // process.exit/console directly, so tests can call it in-process. The
 // script-entry block at the bottom does the actual printing/exit.
-export async function run(argv, { config, statePath, configPath }) {
+export async function run(argv: string[], { config, statePath, configPath }: {
+  config: Config; statePath: string; configPath?: string;
+}): Promise<CliResult> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -81,8 +90,8 @@ export async function run(argv, { config, statePath, configPath }) {
 
   if (cmd === 'serve') {
     // Foreground: inherit stdio and block until the server exits, mirroring
-    // `node server/index.js` run directly.
-    const result = spawnSync(process.execPath, [join(fileURLToPath(new URL('.', import.meta.url)), 'index.js')], { stdio: 'inherit' });
+    // `node server/index.ts` run directly.
+    const result = spawnSync(process.execPath, [join(fileURLToPath(new URL('.', import.meta.url)), 'index.ts')], { stdio: 'inherit' });
     return { code: result.status ?? 1, out: '', err: '' };
   }
   if (cmd === 'open') {
@@ -96,12 +105,12 @@ export async function run(argv, { config, statePath, configPath }) {
   const base = `http://127.0.0.1:${config.port}`;
 
   if (cmd === 'status' || cmd === 'refresh') {
-    let payload;
+    let payload: Snapshot;
     if (cmd === 'refresh') {
       if (viaServer) {
         const res = await fetch(`${base}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
         if (!res.ok) return { code: 1, out: '', err: [err, `HTTP ${res.status}`].join('\n') };
-        payload = await res.json();
+        payload = await res.json() as Snapshot;
       } else {
         const blockingPid = serverAppearsRunning(statePath);
         if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
@@ -122,12 +131,12 @@ export async function run(argv, { config, statePath, configPath }) {
         try {
           saveStateGuarded(statePath, state);
         } catch (e) {
-          return { code: 1, out: '', err: [err, e.message].join('\n') };
+          return { code: 1, out: '', err: [err, (e as Error).message].join('\n') };
         }
       }
     } else {
       payload = viaServer
-        ? await (await fetch(`${base}/api/data`)).json()
+        ? await (await fetch(`${base}/api/data`)).json() as Snapshot
         : (loadState(statePath).snapshot ?? emptySnapshot());
     }
     const out = values.json ? JSON.stringify(payload) : formatStatus(payload);
@@ -142,20 +151,20 @@ export async function run(argv, { config, statePath, configPath }) {
       return { code: 1, out: '', err: [err, usage].join('\n') };
     }
 
-    let result;
+    let result: { ok: true; bucket: string | null } | { error: string };
     if (viaServer) {
       const body = cmd === 'move' ? { type: 'move', key, bucket } : { type: 'ack', key };
       const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       // /api/action's own response already carries the resulting bucket —
       // no need for a second round-trip to /api/data just to look it up.
-      const j = await res.json().catch(() => ({}));
+      const j = await res.json().catch(() => ({})) as { bucket?: string | null; error?: string };
       result = res.ok ? { ok: true, bucket: j.bucket ?? null } : { error: j.error ?? `HTTP ${res.status}` };
     } else {
       const blockingPid = serverAppearsRunning(statePath);
       if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
       const state = loadState(statePath);
       const r = applyAction({ state, config, type: cmd, key, bucket });
-      if (r.error) {
+      if ('error' in r) {
         result = { error: r.error };
       } else {
         // Re-checked immediately before the write, not just the early guard
@@ -164,27 +173,27 @@ export async function run(argv, { config, statePath, configPath }) {
           saveStateGuarded(statePath, state);
           result = { ok: true, bucket: r.bucket };
         } catch (e) {
-          result = { error: e.message };
+          result = { error: (e as Error).message };
         }
       }
     }
 
     if (values.json) {
       const out = JSON.stringify(
-        result.error
+        'error' in result
           ? { ok: false, key, error: result.error }
           : { ok: true, key, bucket: result.bucket },
       );
-      return { code: result.error ? 1 : 0, out, err };
+      return { code: 'error' in result ? 1 : 0, out, err };
     }
-    if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
+    if ('error' in result) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
     const out = result.bucket ? `${key} -> ${result.bucket}` : `${key}: not currently on the board`;
     return { code: 0, out, err };
   }
 
   if (cmd === 'transition' || cmd === 'comment' || cmd === 'pr-comment') {
     const type = cmd === 'transition' ? 'transition' : cmd === 'comment' ? 'comment' : 'pr_comment';
-    let key, repoRef, number, body, status;
+    let key: string | undefined, repoRef: string | undefined, number: number | undefined, body: string | undefined, status: string | undefined;
 
     if (cmd === 'pr-comment') {
       const m = rest[0]?.match(/^(.+)#(\d+)$/);
@@ -205,10 +214,10 @@ export async function run(argv, { config, statePath, configPath }) {
     }
 
     const writeArgs = { type, key, repo: repoRef, number, body, status };
-    let result;
+    let result: Record<string, unknown>;
     if (viaServer) {
       const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs) });
-      result = await res.json().catch(() => ({}));
+      result = await res.json().catch(() => ({})) as Record<string, unknown>;
       if (!res.ok && !result.error) result.error = `HTTP ${res.status}`;
     } else {
       // The write call itself is a network call to Jira/GitHub with no
@@ -218,7 +227,7 @@ export async function run(argv, { config, statePath, configPath }) {
       const blockingPid = serverAppearsRunning(statePath);
       if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
       const state = loadState(statePath);
-      result = await performWrite({ config, state, ...writeArgs, configPath });
+      result = await performWrite({ config, state, ...writeArgs, configPath }) as unknown as Record<string, unknown>;
       if (result.ok && !result.demo) {
         // Re-checked immediately before the write, not just the early guard
         // above. The external Jira/GitHub write already went through by
@@ -229,7 +238,7 @@ export async function run(argv, { config, statePath, configPath }) {
         try {
           saveStateGuarded(statePath, state);
         } catch (e) {
-          result = { ...result, saveBlockedError: e.message };
+          result = { ...result, saveBlockedError: (e as Error).message };
         }
       }
     }
@@ -237,15 +246,15 @@ export async function run(argv, { config, statePath, configPath }) {
     if (values.json) {
       return { code: result.error ? 1 : 0, out: JSON.stringify(result), err };
     }
-    if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
-    if (result.demo) return { code: 0, out: result.message, err };
-    const out = result.transitionedTo ? `${key} -> ${result.transitionedTo}` : `${cmd} ok`;
+    if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error as string}`].join('\n') };
+    if (result.demo) return { code: 0, out: result.message as string, err };
+    const out = result.transitionedTo ? `${key} -> ${result.transitionedTo as string}` : `${cmd} ok`;
     // The write itself succeeded even if the post-write refresh failed, or
     // the local save got blocked — warnings, not errors: exit 0, success on
     // stdout, warning(s) on stderr.
-    const warnings = [];
-    if (result.refreshError) warnings.push(`Warning: board refresh after write failed: ${result.refreshError}`);
-    if (result.saveBlockedError) warnings.push(`Warning: local board save skipped: ${result.saveBlockedError}`);
+    const warnings: string[] = [];
+    if (result.refreshError) warnings.push(`Warning: board refresh after write failed: ${result.refreshError as string}`);
+    if (result.saveBlockedError) warnings.push(`Warning: local board save skipped: ${result.saveBlockedError as string}`);
     const finalErr = warnings.length ? [err, ...warnings].join('\n') : err;
     return { code: 0, out, err: finalErr };
   }
@@ -264,7 +273,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (out) console.log(out);
     process.exit(code);
   } catch (e) {
-    console.error(`error: ${e.message}`);
+    console.error(`error: ${(e as Error).message}`);
     process.exit(1);
   }
 }

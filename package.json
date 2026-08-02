@@ -2,12 +2,19 @@
   "name": "simon-dash",
   "private": true,
   "type": "module",
-  "bin": { "simon-dash": "server/cli.js" },
+  "bin": {
+    "simon-dash": "server/cli.ts"
+  },
   "scripts": {
-    "test": "vitest run",
-    "start": "node server/index.js",
-    "cli": "node server/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && vitest run",
+    "start": "node server/index.ts",
+    "cli": "node server/cli.ts",
     "build": "cd web && npm run build"
   },
-  "devDependencies": { "vitest": "^3.0.0" }
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2",
+    "vitest": "^3.0.0"
+  }
 }

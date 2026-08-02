@@ -1,9 +1,10 @@
 import { test, expect, vi } from 'vitest';
-import { loadState, saveState, cardState, emptyState, emptySnapshot } from './state.js';
-import { buildSnapshot } from './refresh.js';
+import { loadState, saveState, cardState, emptyState, emptySnapshot } from './state.ts';
+import { buildSnapshot } from './refresh.ts';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Config } from './types.ts';
 
 const p = join(mkdtempSync(join(tmpdir(), 'jd-')), 'state.json');
 
@@ -75,7 +76,7 @@ test('loadState tolerates a state file with no prLog field (pre-existing states)
 test('loadState backfills prLog from celebrated entries missing from it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');
-  const legacy = { ...emptyState(), celebrated: [{ id: 'org/repo#42', at: '2026-01-01T00:00:00Z' }] };
+  const legacy: Partial<ReturnType<typeof emptyState>> = { ...emptyState(), celebrated: [{ id: 'org/repo#42', at: '2026-01-01T00:00:00Z' }] };
   delete legacy.prLog;
   writeFileSync(path, JSON.stringify(legacy));
   const s = loadState(path);
@@ -98,7 +99,7 @@ test('loadState backfill does not clobber an existing prLog entry for the same i
 });
 
 test('emptySnapshot() has the same top-level keys as a real buildSnapshot payload', () => {
-  const config = { jira: { statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } }, github: { username: 'me' } };
+  const config: Config = { jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } }, github: { username: 'me', org: 'o', token: '', repos: [] }, port: 3010, demo: false, writeEnabled: false };
   const real = buildSnapshot({ cards: [], prs: [], state: emptyState(), config, errors: {} });
   expect(Object.keys(emptySnapshot()).sort()).toEqual(Object.keys(real).sort());
 });

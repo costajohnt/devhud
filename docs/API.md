@@ -2,7 +2,7 @@
 
 simon-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Three endpoints under `/api/`, plus static file serving for the SPA.
 
-There are two other ways to reach the same board: `server/cli.js` (a plain-JS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
+There are two other ways to reach the same board: `server/cli.ts` (a plain-TS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
 
 ## GET /api/data
 
@@ -78,7 +78,7 @@ On success, both action types respond `{ "ok": true, "bucket": string | null }` 
 
 ## POST /api/write
 
-The only endpoint that mutates Jira or GitHub. Off by default: gated by `writeEnabled` in `config.json` (see server/writeback.js's `checkWriteGate`). Body is JSON, one of:
+The only endpoint that mutates Jira or GitHub. Off by default: gated by `writeEnabled` in `config.json` (see server/writeback.ts's `checkWriteGate`). Body is JSON, one of:
 
 ```json
 { "type": "transition", "key": "PROJ-123", "status": "In Review" }
@@ -248,8 +248,8 @@ The server binds `127.0.0.1:<port>` (loopback only, not reachable from other hos
 
 ## CLI
 
-`server/cli.js` exposes `status`/`refresh`/`ack`/`move`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.js`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
+`server/cli.ts` exposes `status`/`refresh`/`ack`/`move`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
 
 ## Demo mode
 
-Set `"demo": true` in `config.json`, or run with `SIMON_DASH_DEMO=1` in the environment (`JIRA_DASH_DEMO=1` still works as a deprecated alias). In demo mode, `/api/refresh` skips Jira and GitHub entirely and imports canned data from `server/demo.js` (`demoCards`/`demoPrs`), shaped to match what `jira.js`'s `mapIssue` and `github.js`'s `mapPr` (post-enrichment) would produce. That canned data runs through the same `buildSnapshot` pipeline as real data (classification, linking, `prLog` upsert, everything), so demo mode exercises the real logic end to end with no network calls and no credentials required. `errors.jira`/`errors.github` are always `null` in demo mode.
+Set `"demo": true` in `config.json`, or run with `SIMON_DASH_DEMO=1` in the environment (`JIRA_DASH_DEMO=1` still works as a deprecated alias). In demo mode, `/api/refresh` skips Jira and GitHub entirely and imports canned data from `server/demo.ts` (`demoCards`/`demoPrs`), shaped to match what `jira.js`'s `mapIssue` and `github.js`'s `mapPr` (post-enrichment) would produce. That canned data runs through the same `buildSnapshot` pipeline as real data (classification, linking, `prLog` upsert, everything), so demo mode exercises the real logic end to end with no network calls and no credentials required. `errors.jira`/`errors.github` are always `null` in demo mode.

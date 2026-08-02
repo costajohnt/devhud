@@ -1,11 +1,12 @@
 import { test, expect } from 'vitest';
-import { classifyCard, isTodo } from './classify.js';
+import { classifyCard, isTodo } from './classify.ts';
+import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 
-const statuses = { todo: 'To Do', inTest: 'In Test', done: 'Done' };
+const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done' };
 const base = { username: 'john', statuses };
-const card = (o) => ({ key: 'P-1', status: 'In Progress', myAccountId: 'me', comments: [], ...o });
-const pr = (o) => ({ state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [], ...o });
-const cs = (o) => ({ lastSeenPr: '2026-07-01T00:00:00Z', lastSeenJira: '2026-07-01T00:00:00Z', override: null, ...o });
+const card = (o: Partial<Card> = {}): Card => ({ key: 'P-1', status: 'In Progress', myAccountId: 'me', comments: [], summary: '', description: '', url: '', createdAt: null, updatedAt: null, ...o });
+const pr = (o: Partial<Pr> = {}): Pr => ({ state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [], repo: 'o/r', number: 1, url: '', title: '', body: '', branch: '', createdAt: '', updatedAt: '', mergedAt: null, ...o });
+const cs = (o: Partial<CardState> = {}): CardState => ({ lastSeenPr: '2026-07-01T00:00:00Z', lastSeenJira: '2026-07-01T00:00:00Z', override: null, overrideAt: null, ...o });
 
 test('ci failing -> needs_attention', () => {
   const r = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing' }), cs: cs() });
@@ -38,21 +39,21 @@ test('review_required -> waiting_review; no PR -> in_progress; todo helper', () 
 });
 
 test('new jira comment by someone else since lastSeenJira', () => {
-  const c = card({ comments: [{ authorId: 'other', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
+  const c = card({ comments: [{ authorId: 'other', author: '', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
   const r = classifyCard({ ...base, card: c, pr: null, cs: cs() });
   expect(r.attention).toContain('new_jira_comments');
-  expect(r.newComments[0].source).toBe('jira');
+  expect(r.newComments[0]!.source).toBe('jira');
 });
 
 test('multi-comment sort: jira and github comments sorted descending by createdAt', () => {
-  const c = card({ comments: [{ authorId: 'other', body: 'jira comment', createdAt: '2026-07-02T00:00:00Z' }] });
+  const c = card({ comments: [{ authorId: 'other', author: '', body: 'jira comment', createdAt: '2026-07-02T00:00:00Z' }] });
   const p = pr({ comments: [{ author: 'reviewer', body: 'github comment', createdAt: '2026-07-03T00:00:00Z' }] });
   const r = classifyCard({ ...base, card: c, pr: p, cs: cs() });
   expect(r.newComments).toHaveLength(2);
-  expect(r.newComments[0].source).toBe('github');
-  expect(r.newComments[0].createdAt).toBe('2026-07-03T00:00:00Z');
-  expect(r.newComments[1].source).toBe('jira');
-  expect(r.newComments[1].createdAt).toBe('2026-07-02T00:00:00Z');
+  expect(r.newComments[0]!.source).toBe('github');
+  expect(r.newComments[0]!.createdAt).toBe('2026-07-03T00:00:00Z');
+  expect(r.newComments[1]!.source).toBe('jira');
+  expect(r.newComments[1]!.createdAt).toBe('2026-07-02T00:00:00Z');
 });
 
 test('merged with Done status excludes merged_not_in_test', () => {

@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { loadConfig } from './config.js';
+import { loadConfig } from './config.ts';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

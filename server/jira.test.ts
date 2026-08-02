@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapIssue, buildJql, adfToText, fetchJiraCards } from './jira.js';
+import { mapIssue, buildJql, adfToText, fetchJiraCards } from './jira.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -69,17 +69,18 @@ test('fetchJiraCards refetches the newest comments when the embedded list was tr
   const latestCommentsPayload = { comments: [
     { author: { accountId: 'a', displayName: 'A' }, body: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'newest' }] }] }, created: '2026-07-03T00:00:00.000+0000' },
   ] };
-  const fetchMock = vi.fn((url) => {
+  const fetchMock = vi.fn((url: string | URL) => {
     const u = String(url);
     if (u.includes('/comment?')) return Promise.resolve({ ok: true, json: () => Promise.resolve(latestCommentsPayload) });
     return Promise.resolve({ ok: true, json: () => Promise.resolve(searchPayload) });
   });
   vi.stubGlobal('fetch', fetchMock);
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const cfg = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'me' };
+  const cfg = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'me',
+    statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
   const cards = await fetchJiraCards(cfg);
-  expect(cards[0].comments).toHaveLength(1);
-  expect(cards[0].comments[0].body).toContain('newest');
+  expect(cards[0]!.comments).toHaveLength(1);
+  expect(cards[0]!.comments[0]!.body).toContain('newest');
   expect(warnSpy).toHaveBeenCalled();
   warnSpy.mockRestore();
 });

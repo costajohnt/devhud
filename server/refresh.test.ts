@@ -1,21 +1,23 @@
 import { test, expect, vi } from 'vitest';
-import { buildSnapshot, refresh } from './refresh.js';
-import { emptyState } from './state.js';
+import { buildSnapshot, refresh } from './refresh.ts';
+import { emptyState } from './state.ts';
+import type { Config, Card, Pr } from './types.ts';
 
-vi.mock('./jira.js', () => ({ fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))) }));
-vi.mock('./github.js', () => ({
+vi.mock('./jira.ts', () => ({ fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))) }));
+vi.mock('./github.ts', () => ({
   fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
-  enrichPr: vi.fn((p) => Promise.resolve(p)),
+  enrichPr: vi.fn((p: Pr) => Promise.resolve(p)),
 }));
 
-const config = {
+const config: Config = {
   jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
-  github: { username: 'john' },
+  github: { username: 'john', org: 'o', token: '', repos: [] },
+  port: 3010, demo: false, writeEnabled: false,
 };
-const card = (o) => ({ key: 'PROJ-1', summary: 'S', status: 'In Progress', description: '',
+const card = (o: Partial<Card> = {}): Card => ({ key: 'PROJ-1', summary: 'S', status: 'In Progress', description: '',
   url: 'https://x/browse/PROJ-1', createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z',
   myAccountId: 'me', comments: [], ...o });
-const pr = (o) => ({ repo: 'o/r', number: 1, url: 'https://gh/o/r/pull/1', title: '', body: '',
+const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'o/r', number: 1, url: 'https://gh/o/r/pull/1', title: '', body: '',
   branch: 'PROJ-1-x', state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [],
   createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-02T00:00:00Z', mergedAt: null, ...o });
 
@@ -30,8 +32,8 @@ test('todo cards split out, done cards with merged PR land in mergedCards + cele
   const cards = [card({ status: 'To Do', key: 'PROJ-2' }), card({ key: 'PROJ-3', status: 'Done' })];
   const prs = [pr({ branch: 'PROJ-3-x', state: 'merged', mergedAt: '2026-07-03T00:00:00Z' })];
   const p1 = buildSnapshot({ cards, prs, state, config, errors: {} });
-  expect(p1.todo[0].key).toBe('PROJ-2');
-  expect(p1.mergedCards[0].key).toBe('PROJ-3');
+  expect(p1.todo[0]!.key).toBe('PROJ-2');
+  expect(p1.mergedCards[0]!.key).toBe('PROJ-3');
   expect(p1.newlyMerged).toEqual(['PROJ-3']);
   expect(p1.mergedTotal).toBe(1);
   expect(p1.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]);
@@ -53,7 +55,7 @@ test('prLog upsert updates an existing entry rather than duplicating it', () => 
   buildSnapshot({ cards: [card()], prs: [pr({ repo: 'o/r', number: 1, reviewState: 'none' })], state, config, errors: {} });
   const p2 = buildSnapshot({ cards: [card()], prs: [pr({ repo: 'o/r', number: 1, state: 'merged', mergedAt: '2026-07-04T00:00:00Z' })], state, config, errors: {} });
   expect(p2.prLog).toHaveLength(1);
-  expect(p2.prLog[0].mergedAt).toBe('2026-07-04T00:00:00Z');
+  expect(p2.prLog[0]!.mergedAt).toBe('2026-07-04T00:00:00Z');
 });
 
 test('closed-unmerged PRs classify with closedAt set and mergedAt null', () => {
@@ -73,13 +75,13 @@ test('merged PRs never get closedAt set, even though state is not "closed"', () 
     prs: [pr({ repo: 'o/r', number: 3, state: 'merged', mergedAt: '2026-07-05T00:00:00Z' })],
     state, config, errors: {},
   });
-  expect(p.prLog[0].mergedAt).toBe('2026-07-05T00:00:00Z');
-  expect(p.prLog[0].closedAt).toBeNull();
+  expect(p.prLog[0]!.mergedAt).toBe('2026-07-05T00:00:00Z');
+  expect(p.prLog[0]!.closedAt).toBeNull();
 });
 
 test('unlinked PRs surface; errors pass through', () => {
   const p = buildSnapshot({ cards: [], prs: [pr({ branch: 'other' })], state: emptyState(), config, errors: { jira: 'boom' } });
-  expect(p.unlinkedPrs[0].number).toBe(1);
+  expect(p.unlinkedPrs[0]!.number).toBe(1);
   expect(p.errors.jira).toBe('boom');
 });
 
@@ -89,7 +91,7 @@ test('never blanks the board: jira error reuses lastCards, errors.jira is set', 
   const payload = await refresh({ config, state });
   expect(payload.errors.jira).toBe('jira down');
   expect(payload.buckets.in_progress).toHaveLength(1);
-  expect(payload.buckets.in_progress[0].key).toBe('PROJ-1');
+  expect(payload.buckets.in_progress[0]!.key).toBe('PROJ-1');
 });
 
 test('recentActivity lists merges within 7 days of now', () => {
@@ -105,8 +107,8 @@ test('recentActivity lists closed-unmerged PRs within 7 days of now', () => {
   const p = buildSnapshot({ cards: [], prs, state: emptyState(), config, errors: {} });
   const entry = p.recentActivity.find(e => e.type === 'closed');
   expect(entry).toBeDefined();
-  expect(entry.url).toBe(prs[0].url);
-  expect(entry.date).toBe(now);
+  expect(entry!.url).toBe(prs[0]!.url);
+  expect(entry!.date).toBe(now);
 });
 
 test('recentActivity lists new comments from board items within 7 days, with source-appropriate url', () => {
@@ -120,9 +122,9 @@ test('recentActivity lists new comments from board items within 7 days, with sou
   expect(comments).toHaveLength(2);
   const githubEntry = comments.find(e => e.label.includes('gh-a'));
   const jiraEntry = comments.find(e => e.label.includes('jira-a'));
-  expect(githubEntry.label).toBe('PROJ-1: comment from gh-a');
-  expect(githubEntry.url).toBe(p1.url);
-  expect(jiraEntry.url).toBe(c.url);
+  expect(githubEntry!.label).toBe('PROJ-1: comment from gh-a');
+  expect(githubEntry!.url).toBe(p1.url);
+  expect(jiraEntry!.url).toBe(c.url);
 });
 
 test('closedPrs: closed-unmerged PRs from the current fetch, newest first', () => {
@@ -134,8 +136,8 @@ test('closedPrs: closed-unmerged PRs from the current fetch, newest first', () =
   ];
   const p = buildSnapshot({ cards: [], prs, state: emptyState(), config, errors: {} });
   expect(p.closedPrs).toEqual([
-    { repo: 'o/r', number: 6, url: prs[1].url, title: 'newer', closedAt: '2026-07-10T00:00:00Z' },
-    { repo: 'o/r', number: 5, url: prs[0].url, title: 'older', closedAt: '2026-07-01T00:00:00Z' },
+    { repo: 'o/r', number: 6, url: prs[1]!.url, title: 'newer', closedAt: '2026-07-10T00:00:00Z' },
+    { repo: 'o/r', number: 5, url: prs[0]!.url, title: 'older', closedAt: '2026-07-01T00:00:00Z' },
   ]);
 });
 
@@ -153,15 +155,15 @@ test('item comments merge both sources, newest first, capped at 10', () => {
   });
   const snap = buildSnapshot({ cards: [c], prs: [p1], state: emptyState(), config, errors: {} });
   // Unseen comments push this card into needs_attention.
-  const item = snap.buckets.needs_attention[0];
+  const item = snap.buckets.needs_attention[0]!;
   expect(item.comments.map(x => x.source)).toEqual(['jira', 'github', 'jira']);
-  expect(item.comments[0].body).toBe('new jira');
+  expect(item.comments[0]!.body).toBe('new jira');
   expect(item.comments).toHaveLength(3);
 });
 
 test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead of vanishing them', async () => {
-  const { fetchPrs } = await import('./github.js');
-  fetchPrs.mockResolvedValueOnce({ prs: [], errors: ['o/r: 500 boom'] });
+  const { fetchPrs } = await import('./github.ts');
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: ['o/r: 500 boom'] });
   const state = emptyState();
   state.lastCards = [card()];
   state.lastPrs = [pr()];
@@ -171,11 +173,11 @@ test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead 
 });
 
 test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart', async () => {
-  const { fetchPrs, enrichPr } = await import('./github.js');
+  const { fetchPrs, enrichPr } = await import('./github.ts');
   const staleGoodPr = pr({ ciStatus: 'passing', reviewState: 'approved' });
   const freshPr = pr({ ciStatus: 'unknown', reviewState: 'none' });
-  fetchPrs.mockResolvedValueOnce({ prs: [freshPr], errors: [] });
-  enrichPr.mockRejectedValueOnce(new Error('enrich failed'));
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [freshPr], errors: [] });
+  vi.mocked(enrichPr).mockRejectedValueOnce(new Error('enrich failed'));
   const state = emptyState();
   state.lastCards = [card()];
   state.lastPrs = [staleGoodPr];
@@ -187,13 +189,15 @@ test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart'
 });
 
 test('demo mode builds populated snapshot without network', async () => {
-  const { refresh } = await import('./refresh.js');
+  const { refresh: realRefresh } = await import('./refresh.ts');
   const state = emptyState();
-  const p = await refresh({ config: {
+  const demoConfig: Config = {
     demo: true,
     jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
-    github: { username: 'costajohnt', org: 'acme' },
-  }, state });
+    github: { username: 'costajohnt', org: 'acme', token: '', repos: [] },
+    port: 3010, writeEnabled: false,
+  };
+  const p = await realRefresh({ config: demoConfig, state });
   const boardCount = Object.values(p.buckets).flat().length;
   expect(boardCount).toBeGreaterThan(0);
   expect(p.todo.length).toBeGreaterThan(0);

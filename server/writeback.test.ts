@@ -1,9 +1,10 @@
 import { test, expect } from 'vitest';
-import { buildAdfDoc, findTransition, checkWriteGate, performWrite } from './writeback.js';
-import { emptyState } from './state.js';
+import { buildAdfDoc, findTransition, checkWriteGate, performWrite } from './writeback.ts';
+import { emptyState } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Config } from './types.ts';
 
 // performWrite re-reads config from disk on every write and now fails
 // CLOSED if that re-read throws (see the fail-closed test below) — so tests
@@ -12,7 +13,20 @@ import { tmpdir } from 'node:os';
 // filesystem (and any real config.json that might happen to sit in the
 // repo root) entirely.
 const NO_CONFIG = '/nonexistent/writeback-test-config.json';
-const stubLoadConfig = (cfg) => () => cfg;
+const stubLoadConfig = (cfg: unknown) => () => cfg as Config;
+
+// performWrite's return type is a discriminated union; these tests probe
+// every branch (success, demo stub, and every error shape), so assertions
+// go through this loose shape rather than narrowing at each call site.
+interface LooseWrite {
+  ok?: boolean;
+  demo?: boolean;
+  message?: string;
+  error?: string;
+  status?: number;
+  refreshError?: string;
+  transitionedTo?: string;
+}
 
 test('buildAdfDoc wraps plain text in a minimal single-paragraph ADF doc', () => {
   expect(buildAdfDoc('hello world')).toEqual({
@@ -144,14 +158,14 @@ test('performWrite rejects a Jira key that looks like a path-traversal attempt',
 
 test('performWrite rejects a malformed repo for pr_comment', async () => {
   const config = { demo: false, writeEnabled: true };
-  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'not-a-repo', number: 1, body: 'hi', configPath: NO_CONFIG });
+  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'not-a-repo', number: 1, body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
   expect(result.status).toBe(400);
   expect(result.error).toContain('invalid repo');
 });
 
 test('performWrite rejects a non-integer PR number for pr_comment', async () => {
   const config = { demo: false, writeEnabled: true };
-  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'o/r', number: '1; rm -rf', body: 'hi', configPath: NO_CONFIG });
+  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'o/r', number: '1; rm -rf' as unknown as number, body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
   expect(result.status).toBe(400);
 });
 
@@ -179,7 +193,7 @@ test('performWrite fails CLOSED when the config re-read throws, even if the in-m
   // config. This is what stops a long-running process from continuing to
   // write after config.json is deleted or made briefly unreadable.
   const config = { demo: false, writeEnabled: true, jira: {}, github: {} };
-  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath: NO_CONFIG });
+  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
   expect(result.status).toBe(403);
   expect(result.error).toContain('config re-read failed');
   expect(result.error).toContain('refusing write');
@@ -188,7 +202,7 @@ test('performWrite fails CLOSED when the config re-read throws, even if the in-m
 
 test('performWrite: a successful write with a failing post-write refresh is still ok:true, with refreshError set', async () => {
   const config = { demo: false, writeEnabled: true, jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' } };
-  const fetchMock = () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  const fetchMock = () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
   const originalFetch = global.fetch;
   global.fetch = fetchMock;
   try {
@@ -196,7 +210,7 @@ test('performWrite: a successful write with a failing post-write refresh is stil
       config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi',
       refreshFn: () => { throw new Error('jira down mid-refresh'); },
       loadConfigFn: stubLoadConfig(config),
-    });
+    }) as LooseWrite;
     expect(result.ok).toBe(true);
     expect(result.error).toBeUndefined();
     expect(result.refreshError).toBe('jira down mid-refresh');

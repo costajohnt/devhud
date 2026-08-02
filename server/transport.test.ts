@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
-import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.js';
-import { emptyState, loadState } from './state.js';
+import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
+import { emptyState, loadState } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';

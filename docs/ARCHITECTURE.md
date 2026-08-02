@@ -2,17 +2,18 @@
 
 ## Module map
 
-### Server (`server/`, plain JS ESM, no framework, no build step)
+### Server (`server/`, TypeScript, erasable-syntax only, no build step — Node's native type stripping runs `.ts` files directly)
 
-- **index.js**: HTTP server (`node:http`). Routes `/api/data`, `/api/refresh`, `/api/action`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object and the single-instance guard.
-- **config.js**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses), reads `GITHUB_TOKEN` env var as a token fallback.
-- **state.js**: `data/state.json` load/save, migrations (`celebrated` string→object, `prLog` backfill), and `cardState` (per-card override/seen-horizon lookup, created lazily).
-- **jira.js**: Jira Cloud REST client: JQL search, ADF-to-plain-text flattening, comment pagination fallback for cards with more comments than the search endpoint embeds.
-- **github.js**: GitHub REST client: PR list per repo, PR detail enrichment (comments, reviews, check runs), CI/review-state derivation.
-- **link.js**: Matches PRs to Jira cards by branch name, PR title, PR body (`/browse/KEY` link), or card description (containing the PR URL); returns the unlinked leftovers.
-- **classify.js**: Given a card + its linked PR + its stored `cardState`, decides the bucket and attention flags.
-- **refresh.js**: Orchestrates one refresh cycle: fetch (or demo-generate), link, classify, build the full snapshot payload (`buildSnapshot`), including `prLog` upsert and the `recentActivity`/`closedPrs` derivations. Also the fallback-to-last-known-good logic on partial fetch failure.
-- **demo.js**: Canned cards/PRs shaped to match `jira.js`/`github.js` output, so demo mode runs the real `buildSnapshot` pipeline with no network.
+- **index.ts**: HTTP server (`node:http`). Routes `/api/data`, `/api/refresh`, `/api/action`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object and the single-instance guard.
+- **config.ts**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses), reads `GITHUB_TOKEN` env var as a token fallback.
+- **state.ts**: `data/state.json` load/save, migrations (`celebrated` string→object, `prLog` backfill), and `cardState` (per-card override/seen-horizon lookup, created lazily).
+- **jira.ts**: Jira Cloud REST client: JQL search, ADF-to-plain-text flattening, comment pagination fallback for cards with more comments than the search endpoint embeds.
+- **github.ts**: GitHub REST client: PR list per repo, PR detail enrichment (comments, reviews, check runs), CI/review-state derivation.
+- **link.ts**: Matches PRs to Jira cards by branch name, PR title, PR body (`/browse/KEY` link), or card description (containing the PR URL); returns the unlinked leftovers.
+- **classify.ts**: Given a card + its linked PR + its stored `cardState`, decides the bucket and attention flags.
+- **refresh.ts**: Orchestrates one refresh cycle: fetch (or demo-generate), link, classify, build the full snapshot payload (`buildSnapshot`), including `prLog` upsert and the `recentActivity`/`closedPrs` derivations. Also the fallback-to-last-known-good logic on partial fetch failure.
+- **demo.ts**: Canned cards/PRs shaped to match `jira.ts`/`github.ts` output, so demo mode runs the real `buildSnapshot` pipeline with no network.
+- **types.ts**: Shared types (Card, Pr, Item, Snapshot, State, Config, ActionResult, WriteResult) mirroring `web/src/types.ts`'s payload shapes.
 
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
 
@@ -115,7 +116,7 @@ Before any bucket classification: cards with Jira status "To Do" are split into 
 `state.json` has three kinds of writer, with three different levels of protection:
 
 - **A single running server.** Fully safe. `index.js` loads `state.json` once into an in-memory closure and every request handler mutates that one object synchronously (no `await` between mutate and `saveState`), so two concurrent HTTP requests can't interleave a partial write — see the first bullet under "Design decisions worth knowing" below.
-- **The server plus a direct-mode CLI/MCP call.** Guarded, not eliminated. Direct mode (CLI/MCP with no server answering the probe) checks `serverAppearsRunning()` — is `data/server.pid` present and does that pid respond to `process.kill(pid, 0)` — both early (before doing any real work: a Jira/GitHub write, a full refresh) and again immediately before the actual `saveState()` call (`saveStateGuarded()` in `server/transport.js`), closing the window where a server starts mid-operation. This stops the server and a direct-mode process from silently clobbering each other's save. It is **not** perfect: a pid can be reused by an unrelated process after the original server died (an accepted, deliberately-not-solved residual risk — see the comment on `serverAppearsRunning`).
+- **The server plus a direct-mode CLI/MCP call.** Guarded, not eliminated. Direct mode (CLI/MCP with no server answering the probe) checks `serverAppearsRunning()` — is `data/server.pid` present and does that pid respond to `process.kill(pid, 0)` — both early (before doing any real work: a Jira/GitHub write, a full refresh) and again immediately before the actual `saveState()` call (`saveStateGuarded()` in `server/transport.ts`), closing the window where a server starts mid-operation. This stops the server and a direct-mode process from silently clobbering each other's save. It is **not** perfect: a pid can be reused by an unrelated process after the original server died (an accepted, deliberately-not-solved residual risk — see the comment on `serverAppearsRunning`).
 - **Two direct-mode processes running at the same time, no server at all.** **Unguarded.** Two `simon-dash ack PROJ-1` invocations launched back to back from two terminals (or two MCP tool calls landing concurrently with no server up) each `loadState()` their own in-memory copy, mutate it, and `saveState()` — last writer wins, silently. `serverAppearsRunning()` only detects an actual server (identified by `data/server.pid`); a sibling direct-mode process writes no pid file and is invisible to it. This is a known gap, not an oversight: closing it would need a lock file or similar cross-process coordination that direct mode's whole design (no daemon, no lock server, just read-mutate-write against a JSON file) doesn't have. In practice this matters only if you're scripting concurrent direct-mode calls; the common case (interactive CLI use, or a server running) doesn't hit it.
 
 ## Design decisions worth knowing

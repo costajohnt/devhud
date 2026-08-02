@@ -2,16 +2,17 @@
 // on the configured port, callers (CLI, MCP server) should go through its
 // HTTP API so the running server's in-memory state — the source of truth
 // while it's up — is what gets read/mutated; otherwise they operate
-// directly on disk via the same server/*.js modules the server itself uses
+// directly on disk via the same server/*.ts modules the server itself uses
 // (loadState/saveState/refresh/applyAction), so behavior is identical
 // either way.
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { saveState } from './state.js';
+import { saveState } from './state.ts';
+import type { State } from './types.ts';
 
 // ~500ms budget: long enough that a live server on loopback always answers,
 // short enough that "no server running" doesn't make every command feel stuck.
-export async function probeServer(port, { timeoutMs = 500 } = {}) {
+export async function probeServer(port: number, { timeoutMs = 500 }: { timeoutMs?: number } = {}): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs) });
     return res.ok;
@@ -24,7 +25,7 @@ export async function probeServer(port, { timeoutMs = 500 } = {}) {
 // the probe above can time out while a real server is nonetheless alive
 // (slow response, momentary hiccup), and if direct mode writes state.json in
 // that window, the server's next save silently clobbers it (or vice versa)
-// since neither knows about the other's write. server/index.js writes
+// since neither knows about the other's write. server/index.ts writes
 // data/server.pid with { pid, ... } on successful bind and removes it on
 // shutdown, so a stale pid file (crash, kill -9) is the only false
 // positive — process.kill(pid, 0) still filters those out (ESRCH) unless
@@ -39,10 +40,10 @@ export async function probeServer(port, { timeoutMs = 500 } = {}) {
 // last-writer-wins race with no guard against it whatsoever. See
 // docs/ARCHITECTURE.md's "Concurrency" section for the full picture; don't
 // read this comment as covering that case too.
-export function serverAppearsRunning(statePath) {
-  let pid;
+export function serverAppearsRunning(statePath: string): number | null {
+  let pid: number | undefined;
   try {
-    pid = JSON.parse(readFileSync(join(dirname(statePath), 'server.pid'), 'utf8')).pid;
+    pid = (JSON.parse(readFileSync(join(dirname(statePath), 'server.pid'), 'utf8')) as { pid?: number }).pid;
   } catch {
     return null;
   }
@@ -55,7 +56,7 @@ export function serverAppearsRunning(statePath) {
   }
 }
 
-export const splitBrainError = (pid) =>
+export const splitBrainError = (pid: number): string =>
   `a server (pid ${pid}) appears to be running but did not answer the probe; retry, or stop it before using direct mode`;
 
 // TOCTOU-safe save: every direct-mode call site already checks
@@ -67,7 +68,7 @@ export const splitBrainError = (pid) =>
 // itself and throws (rather than returning a sentinel a caller could
 // forget to check) so no caller can accidentally skip straight to
 // saveState() after the gap.
-export function saveStateGuarded(statePath, state) {
+export function saveStateGuarded(statePath: string, state: State): void {
   const blockingPid = serverAppearsRunning(statePath);
   if (blockingPid) throw new Error(splitBrainError(blockingPid));
   saveState(statePath, state);

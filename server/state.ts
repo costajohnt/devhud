@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { State, CelebratedEntry, Snapshot } from './types.ts';
 
-export function emptyState() {
+export function emptyState(): State {
   return { cards: {}, celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
 }
 
@@ -9,8 +10,8 @@ export function emptyState() {
 // Migrate them to `{ id, at }` objects so buildSnapshot can report a merge
 // timestamp alongside the id; `at: null` marks entries with no known merge
 // time (pre-migration merges).
-function migrateCelebrated(state) {
-  state.celebrated = (state.celebrated ?? []).map(e => (
+function migrateCelebrated(state: State): State {
+  state.celebrated = (state.celebrated ?? []).map((e: CelebratedEntry | string) => (
     typeof e === 'string' ? { id: e, at: null } : e
   ));
   return state;
@@ -20,11 +21,11 @@ function migrateCelebrated(state) {
 // celebrated merge so the charts don't lose merge history that predates this
 // field. Real PR lifecycle data (openedAt/closedAt) stays unknown for these —
 // only mergedAt is recoverable from the celebrated timestamp.
-function migratePrLog(state) {
+function migratePrLog(state: State): State {
   state.prLog = state.prLog ?? {};
   for (const e of state.celebrated) {
     if (state.prLog[e.id]) continue;
-    state.prLog[e.id] = { id: e.id, repo: e.id.split('#')[0], openedAt: null, mergedAt: e.at, closedAt: null };
+    state.prLog[e.id] = { id: e.id, repo: e.id.split('#')[0] ?? e.id, openedAt: null, mergedAt: e.at, closedAt: null };
   }
   return state;
 }
@@ -32,13 +33,14 @@ function migratePrLog(state) {
 // A missing file is the normal first-run case (no warn). An existing but
 // unparseable file is a corruption signal: warn and fall back to the
 // rotating .bak written by saveState, rather than silently losing overrides.
-export function loadState(path) {
-  let raw;
+export function loadState(path: string): State {
+  let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
   catch { return emptyState(); }
   try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) })); }
   catch (e) {
-    console.warn(`simon-dash: state file at ${path} is unparseable (${e.message}); falling back to ${path}.bak`);
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn(`simon-dash: state file at ${path} is unparseable (${message}); falling back to ${path}.bak`);
     try { return migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) })); }
     catch { return emptyState(); }
   }
@@ -47,11 +49,11 @@ export function loadState(path) {
 // Only rotate the current file into .bak when it actually parses as JSON.
 // Rotating a corrupt current file would overwrite a still-good .bak with
 // garbage, destroying the one fallback loadState relies on.
-export function saveState(path, state) {
+export function saveState(path: string, state: State): void {
   mkdirSync(dirname(path), { recursive: true });
-  let current;
+  let current: string | null;
   try { current = readFileSync(path, 'utf8'); }
-  catch (e) { if (e.code !== 'ENOENT') throw e; current = null; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; current = null; }
   if (current !== null) {
     let valid = true;
     try { JSON.parse(current); } catch { valid = false; }
@@ -68,7 +70,7 @@ export function saveState(path, state) {
 // board.tsx and friends read fields like closedPrs.length unconditionally,
 // so a missing key here crashes the web client on true first boot rather
 // than just showing an empty state.
-export function emptySnapshot() {
+export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
@@ -77,6 +79,6 @@ export function emptySnapshot() {
   };
 }
 
-export function cardState(state, key) {
+export function cardState(state: State, key: string) {
   return (state.cards[key] ??= { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null });
 }

@@ -1,16 +1,47 @@
 import { test, expect, beforeAll, afterAll } from 'vitest';
-import { createServer } from './index.js';
-import { saveState, emptyState } from './state.js';
+import { createServer } from './index.ts';
+import { saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Config, Snapshot, Item } from './types.ts';
+
+function makeConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    port: 0,
+    jira: { projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+    github: { username: 'u', org: 'o', token: '', repos: [] },
+    demo: false, writeEnabled: false,
+    ...overrides,
+  };
+}
+
+function needsAttentionItem(overrides: Partial<Item> = {}): Item {
+  return {
+    key: 'P-1', summary: '', jiraStatus: 'open', jiraUrl: '', bucket: 'needs_attention',
+    attention: ['ci_failing'], newComments: [], comments: [], pr: null,
+    createdAt: null, updatedAt: null, daysSinceActivity: null,
+    ...overrides,
+  };
+}
+
+function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
+  return {
+    updatedAt: 'x', errors: { jira: null, github: null },
+    buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+    closedPrs: [], prLog: [],
+    ...overrides,
+  };
+}
 
 // fetch() (undici) treats "Host" as a forbidden header name and silently
 // derives it from the URL instead of honoring an override, so a spoofed-Host
 // test needs node:http directly (no such restriction) to actually exercise
 // guardMutation's Host check.
-function postWithHost(port, path, host) {
+function postWithHost(port: number, path: string, host: string): Promise<{ status: number | undefined; json: () => unknown }> {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, path, method: 'POST',
       headers: { 'content-type': 'application/json', host } }, (res) => {
@@ -23,7 +54,9 @@ function postWithHost(port, path, host) {
   });
 }
 
-let server, base, statePath;
+let server: http.Server;
+let base: string;
+let statePath: string;
 
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
@@ -33,13 +66,13 @@ beforeAll(async () => {
   mkdirSync(join(webDist, 'assets'));
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
   const state = emptyState();
-  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-1', attention: ['ci_failing'], newComments: [], jiraStatus: 'open', bucket: 'needs_attention' }], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], waiting_review: [], in_qa: [] },
     closedPrs: [{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }],
-    prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }] };
+    prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }],
+  });
   saveState(statePath, state);
-  const config = { port: 0, jira: {}, github: {} };
+  const config = makeConfig();
   // performWrite (used by POST /api/write) re-reads config from disk and
   // now fails CLOSED if that read throws — so the write-back tests below
   // need a real config.json on disk matching what they expect the gate to
@@ -52,8 +85,8 @@ beforeAll(async () => {
     writeEnabled: false, demo: false,
   }));
   server = createServer({ config, statePath, webDist, configPath });
-  await new Promise(r => server.listen(0, r));
-  base = `http://127.0.0.1:${server.address().port}`;
+  await new Promise<void>(r => server.listen(0, () => r()));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
 afterAll(() => server.close());
@@ -74,8 +107,8 @@ test('POST /api/action ack clears attention and persists lastSeen', async () => 
     body: JSON.stringify({ type: 'ack', key: 'P-1' }) });
   expect(res.status).toBe(200);
   const d = await (await fetch(`${base}/api/data`)).json();
-  const item = Object.values(d.buckets).flat().find(i => i.key === 'P-1');
-  expect(item.attention).toEqual([]);
+  const item = Object.values(d.buckets).flat().find((i): i is Item => (i as Item).key === 'P-1');
+  expect(item!.attention).toEqual([]);
 });
 
 test('POST /api/action move to needs_attention rejected', async () => {
@@ -116,13 +149,13 @@ test('ack keeps override', async () => {
   const moveRes = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'move', key: 'P-1', bucket: 'in_qa' }) });
   expect(moveRes.status).toBe(200);
-  const { loadState: loadStateFn } = await import('./state.js');
-  expect(loadStateFn(statePath).cards['P-1'].override).toBe('in_qa');
+  const { loadState: loadStateFn } = await import('./state.ts');
+  expect(loadStateFn(statePath).cards['P-1']!.override).toBe('in_qa');
   const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'ack', key: 'P-1' }) });
   expect(res.status).toBe(200);
   // Acking clears attention flags but does not undo a prior manual move.
-  expect(loadStateFn(statePath).cards['P-1'].override).toBe('in_qa');
+  expect(loadStateFn(statePath).cards['P-1']!.override).toBe('in_qa');
 });
 
 test('sequential POSTs both persist (no lost update)', async () => {
@@ -132,10 +165,10 @@ test('sequential POSTs both persist (no lost update)', async () => {
   const move = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'move', key: 'P-1', bucket: 'in_qa' }) });
   expect(move.status).toBe(200);
-  const { loadState: loadStateFn } = await import('./state.js');
+  const { loadState: loadStateFn } = await import('./state.ts');
   const state = loadStateFn(statePath);
-  expect(state.cards['P-1'].lastSeenJira).not.toBeNull();
-  expect(state.cards['P-1'].override).toBe('in_qa');
+  expect(state.cards['P-1']!.lastSeenJira).not.toBeNull();
+  expect(state.cards['P-1']!.override).toBe('in_qa');
 });
 
 // A card that's no longer on the board (merged away, or never fetched) is a
@@ -147,8 +180,8 @@ test('POST /api/action on an unknown key is a no-op that still succeeds', async 
     body: JSON.stringify({ type: 'ack', key: 'DOES-NOT-EXIST' }) });
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ ok: true, bucket: null });
-  const { loadState: loadStateFn } = await import('./state.js');
-  expect(loadStateFn(statePath).cards['DOES-NOT-EXIST'].lastSeenJira).not.toBeNull();
+  const { loadState: loadStateFn } = await import('./state.ts');
+  expect(loadStateFn(statePath).cards['DOES-NOT-EXIST']!.lastSeenJira).not.toBeNull();
 });
 
 test('POST /api/action with an unrecognized type returns 400', async () => {
@@ -211,10 +244,10 @@ test('POST /api/write in demo mode returns a 200 stub-success refusal, not a 403
     jira: { projectKey: 'PROJ', accountId: 'id' },
     github: { org: 'o', repos: ['r'], username: 'u' },
   }));
-  const demoServer = createServer({ config: { port: 0, demo: true, jira: {}, github: {} }, statePath: demoStatePath, webDist, configPath: demoConfigPath });
-  await new Promise(r => demoServer.listen(0, r));
+  const demoServer = createServer({ config: makeConfig({ demo: true }), statePath: demoStatePath, webDist, configPath: demoConfigPath });
+  await new Promise<void>(r => demoServer.listen(0, () => r()));
   try {
-    const demoBase = `http://127.0.0.1:${demoServer.address().port}`;
+    const demoBase = `http://127.0.0.1:${(demoServer.address() as AddressInfo).port}`;
     const res = await fetch(`${demoBase}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'transition', key: 'P-1', status: 'Done' }) });
     expect(res.status).toBe(200);
@@ -225,7 +258,7 @@ test('POST /api/write in demo mode returns a 200 stub-success refusal, not a 403
   }
 });
 
-// Drive-by cross-origin protection (guardMutation in index.js), applied to
+// Drive-by cross-origin protection (guardMutation in index.ts), applied to
 // every mutating POST /api/* endpoint. Bodies below are deliberately valid
 // JSON with harmless-looking fields so only the guard (not body parsing or
 // downstream validation) determines the response.
@@ -242,16 +275,16 @@ test('POST /api/* with a non-JSON Content-Type is refused 415, for every mutatin
 });
 
 test('POST /api/* with a spoofed Host header is refused 403, for every mutating endpoint', async () => {
-  const port = server.address().port;
+  const port = (server.address() as AddressInfo).port;
   for (const path of MUTATING_ENDPOINTS) {
     const res = await postWithHost(port, path, 'evil.example.com');
     expect(res.status, path).toBe(403);
-    expect(res.json().error).toBe('invalid Host header');
+    expect((res.json() as { error: string }).error).toBe('invalid Host header');
   }
 });
 
 test('POST /api/* with the right hostname but the wrong port is refused 403 (DNS-rebinding-adjacent)', async () => {
-  const port = server.address().port;
+  const port = (server.address() as AddressInfo).port;
   const res = await postWithHost(port, '/api/action', `127.0.0.1:${port + 1}`);
   expect(res.status).toBe(403);
 });
@@ -282,10 +315,10 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
   const webDist = join(dir, 'dist');
   mkdirSync(webDist);
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
-  const freshServer = createServer({ config: { port: 0, jira: {}, github: {} }, statePath: freshStatePath, webDist });
-  await new Promise(r => freshServer.listen(0, r));
+  const freshServer = createServer({ config: makeConfig(), statePath: freshStatePath, webDist });
+  await new Promise<void>(r => freshServer.listen(0, () => r()));
   try {
-    const freshBase = `http://127.0.0.1:${freshServer.address().port}`;
+    const freshBase = `http://127.0.0.1:${(freshServer.address() as AddressInfo).port}`;
     const d = await (await fetch(`${freshBase}/api/data`)).json();
     expect(d.updatedAt).toBeNull();
     expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] });

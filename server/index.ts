@@ -1,19 +1,21 @@
 import http from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './config.js';
-import { loadState, saveState, emptySnapshot } from './state.js';
-import { refresh } from './refresh.js';
-import { applyAction } from './actions.js';
-import { performWrite } from './writeback.js';
+import { loadConfig } from './config.ts';
+import { loadState, saveState, emptySnapshot } from './state.ts';
+import { refresh } from './refresh.ts';
+import { applyAction } from './actions.ts';
+import { performWrite } from './writeback.ts';
+import type { Config, State } from './types.ts';
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
 
-async function readBody(req) {
+async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   let s = ''; for await (const c of req) s += c;
-  return JSON.parse(s || '{}');
+  return JSON.parse(s || '{}') as Record<string, unknown>;
 }
 
 // Drive-by cross-origin protection for every mutating POST /api/* endpoint
@@ -30,8 +32,8 @@ async function readBody(req) {
 //     config.port — those can differ, e.g. config.port: 0 in tests).
 //     Stops DNS rebinding: an attacker domain re-pointed at 127.0.0.1
 //     still sends its own Host header, not "127.0.0.1"/"localhost".
-function guardMutation(req) {
-  const contentType = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+function guardMutation(req: IncomingMessage): { status: number; error: string } | null {
+  const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
   if (contentType !== 'application/json') {
     return { status: 415, error: 'Content-Type must be application/json' };
   }
@@ -43,7 +45,9 @@ function guardMutation(req) {
   return null;
 }
 
-export function createServer({ config, statePath, webDist, configPath }) {
+export function createServer({ config, statePath, webDist, configPath }: {
+  config: Config; statePath: string; webDist: string; configPath?: string;
+}): http.Server {
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
   // once here (instead of per-request) avoids a lost-update race between
@@ -52,15 +56,15 @@ export function createServer({ config, statePath, webDist, configPath }) {
   // runs synchronously (no `await` in between), so interleaving can only
   // happen at an `await` boundary, at which point no partial mutation is
   // ever visible to the next handler.
-  const state = loadState(statePath);
-  return http.createServer(async (req, res) => {
+  const state: State = loadState(statePath);
+  return http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const start = Date.now();
     res.on('finish', () => {
       console.log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - start}ms`);
     });
-    const send = (code, obj) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    const send = (code: number, obj: unknown) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
-      const url = new URL(req.url, 'http://x');
+      const url = new URL(req.url ?? '/', 'http://x');
       if (url.pathname === '/api/data' && req.method === 'GET') {
         return send(200, state.snapshot ?? emptySnapshot());
       }
@@ -74,22 +78,22 @@ export function createServer({ config, statePath, webDist, configPath }) {
       if (url.pathname === '/api/action' && req.method === 'POST') {
         const guardErr = guardMutation(req);
         if (guardErr) return send(guardErr.status, { error: guardErr.error });
-        let body;
+        let body: Record<string, unknown>;
         try {
           body = await readBody(req);
         } catch {
           return send(400, { error: 'invalid JSON body' });
         }
-        const { type, key, bucket } = body;
-        const result = applyAction({ state, config, type, key, bucket });
-        if (result.error) return send(result.status ?? 400, { error: result.error });
+        const { type, key, bucket } = body as { type?: string; key?: unknown; bucket?: string };
+        const result = applyAction({ state, config, type: type ?? '', key, bucket });
+        if ('error' in result) return send(result.status ?? 400, { error: result.error });
         saveState(statePath, state);
         return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {
         const guardErr = guardMutation(req);
         if (guardErr) return send(guardErr.status, { error: guardErr.error });
-        let body;
+        let body: Record<string, unknown>;
         try {
           body = await readBody(req);
         } catch {
@@ -98,10 +102,12 @@ export function createServer({ config, statePath, webDist, configPath }) {
         // Explicit destructure, not `...body`: a spread would let a client
         // smuggle arbitrary keys (e.g. "config"/"state") into performWrite's
         // named parameters, potentially overriding config/state entirely.
-        const { type, key, repo, number, body: text, status } = body;
-        const result = await performWrite({ config, state, type, key, repo, number, body: text, status, configPath });
-        if (result.error) return send(result.status ?? 400, { error: result.error });
-        if (!result.demo) saveState(statePath, state);
+        const { type, key, repo, number, body: text, status } = body as {
+          type?: string; key?: string; repo?: string; number?: number; body?: string; status?: string;
+        };
+        const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath });
+        if ('error' in result) return send(result.status ?? 400, { error: result.error });
+        if (!('demo' in result && result.demo)) saveState(statePath, state);
         return send(200, result);
       }
       if (url.pathname.startsWith('/api/')) {
@@ -109,7 +115,7 @@ export function createServer({ config, statePath, webDist, configPath }) {
       }
       // static
       const root = resolve(webDist);
-      let file = normalize(url.pathname).replace(/^([/\\])+/, '');
+      const file = normalize(url.pathname).replace(/^([/\\])+/, '');
       let p = resolve(root, file);
       if (p !== root && !p.startsWith(root + sep)) { res.writeHead(403); return res.end(); }
       try {
@@ -122,7 +128,7 @@ export function createServer({ config, statePath, webDist, configPath }) {
       res.writeHead(200, { 'content-type': MIME[extname(p)] ?? 'application/octet-stream' });
       res.end(buf);
     } catch (e) {
-      send(500, { error: e.message });
+      send(500, { error: (e as Error).message });
     }
   });
 }
@@ -137,7 +143,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative
   // after a crash, or false-positive if the pid was reused).
-  server.on('error', (e) => {
+  server.on('error', (e: NodeJS.ErrnoException) => {
     if (e.code === 'EADDRINUSE') {
       console.error(`already running on port ${config.port}`);
       process.exit(1);

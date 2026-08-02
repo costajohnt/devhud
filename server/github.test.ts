@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { mapPr, ciFromCheckRuns, reviewStateFrom } from './github.js';
+import { mapPr, ciFromCheckRuns, reviewStateFrom } from './github.ts';
 
 test('mapPr basic fields + merged state', () => {
   const raw = { number: 7, html_url: 'u', title: 'T', body: 'B', head: { ref: 'PROJ-1-x' },

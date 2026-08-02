@@ -1,5 +1,16 @@
+import type { Card, JiraConfig, JiraComment } from './types.ts';
+
+// Minimal ADF (Atlassian Document Format) node shape — a recursive tree of
+// text/paragraph/mention/hardBreak nodes. Only the fields adfToText reads.
+export interface AdfNode {
+  type?: string;
+  text?: string;
+  attrs?: { text?: string };
+  content?: AdfNode[];
+}
+
 // Flatten Atlassian Document Format to plain text (links + text nodes only).
-export function adfToText(node) {
+export function adfToText(node: AdfNode | string | null | undefined): string {
   if (!node) return '';
   if (typeof node === 'string') return node;
   if (node.type === 'text') return node.text ?? '';
@@ -9,15 +20,35 @@ export function adfToText(node) {
   return node.type === 'paragraph' ? inner + '\n' : inner;
 }
 
-const iso = (t) => t ? new Date(t).toISOString() : null;
+const iso = (t: string | undefined | null): string | null => t ? new Date(t).toISOString() : null;
 
 // Done cards within 14 days are fetched so merged+Done cards flow to
 // mergedCards/celebration once before aging out.
-export function buildJql(cfg) {
+export function buildJql(cfg: JiraConfig): string {
   return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
 }
 
-export function mapIssue(issue, cfg) {
+// Minimal shape for the slice of the raw Jira REST API issue response this
+// file reads — not the full API type, just what's used below.
+interface RawJiraIssue {
+  key: string;
+  fields: {
+    summary?: string;
+    status?: { name?: string };
+    description?: AdfNode;
+    created?: string;
+    updated?: string;
+    comment?: { comments?: RawJiraComment[]; total?: number };
+  };
+}
+
+interface RawJiraComment {
+  author?: { displayName?: string; accountId?: string };
+  body?: AdfNode;
+  created?: string;
+}
+
+export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
   const f = issue.fields;
   return {
     key: issue.key,
@@ -28,7 +59,7 @@ export function mapIssue(issue, cfg) {
     createdAt: iso(f.created),
     updatedAt: iso(f.updated),
     myAccountId: cfg.accountId,
-    comments: (f.comment?.comments ?? []).map(c => ({
+    comments: (f.comment?.comments ?? []).map((c): JiraComment => ({
       author: c.author?.displayName ?? '',
       authorId: c.author?.accountId ?? '',
       body: adfToText(c.body).trim(),
@@ -40,14 +71,14 @@ export function mapIssue(issue, cfg) {
 // When a card has more comments than fields.comment returned (Jira caps the
 // embedded comment list), refetch the newest 50 from the dedicated comment
 // endpoint so attention-worthy recent comments aren't silently dropped.
-async function fetchLatestComments(key, cfg, auth) {
+async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): Promise<JiraComment[]> {
   const url = new URL(`/rest/api/3/issue/${key}/comment`, cfg.baseUrl);
   url.searchParams.set('orderBy', '-created');
   url.searchParams.set('maxResults', '50');
   const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
-  return (data.comments ?? []).map(c => ({
+  const data = await res.json() as { comments?: RawJiraComment[] };
+  return (data.comments ?? []).map((c): JiraComment => ({
     author: c.author?.displayName ?? '',
     authorId: c.author?.accountId ?? '',
     body: adfToText(c.body).trim(),
@@ -55,11 +86,11 @@ async function fetchLatestComments(key, cfg, auth) {
   }));
 }
 
-export async function fetchJiraCards(cfg) {
+export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
   const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
   const fields = 'summary,status,description,created,updated,comment';
-  const cards = [];
-  let nextPageToken;
+  const cards: Card[] = [];
+  let nextPageToken: string | undefined;
   do {
     const url = new URL('/rest/api/3/search/jql', cfg.baseUrl);
     url.searchParams.set('jql', buildJql(cfg));
@@ -68,14 +99,14 @@ export async function fetchJiraCards(cfg) {
     if (nextPageToken) url.searchParams.set('nextPageToken', nextPageToken);
     const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const data = await res.json();
+    const data = await res.json() as { issues?: RawJiraIssue[]; nextPageToken?: string };
     for (const issue of data.issues ?? []) {
       const mapped = mapIssue(issue, cfg);
       const total = issue.fields?.comment?.total ?? mapped.comments.length;
       if (total > mapped.comments.length) {
         console.warn(`simon-dash: ${issue.key} has ${total} comments but only ${mapped.comments.length} were returned; refetching latest 50`);
         try { mapped.comments = await fetchLatestComments(issue.key, cfg, auth); }
-        catch (e) { console.warn(`simon-dash: refetch of ${issue.key} comments failed: ${e.message}`); }
+        catch (e) { console.warn(`simon-dash: refetch of ${issue.key} comments failed: ${(e as Error).message}`); }
       }
       cards.push(mapped);
     }
