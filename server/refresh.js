@@ -76,7 +76,7 @@ export async function refresh({ config, state }) {
     const results = await Promise.allSettled([...new Set(linked.values())].map(p => enrichPr(p, config.github)));
     const failed = results.filter(r => r.status === 'rejected');
     if (failed.length) errors.github = [errors.github, ...failed.map(f => f.reason?.message)].filter(Boolean).join('; ');
-  } catch (e) { errors.github = e.message; }
+  } catch (e) { errors.github = [errors.github, e.message].filter(Boolean).join('; '); }
   const payload = buildSnapshot({ cards, prs, state, config, errors });
   state.snapshot = payload;
   state.lastRefreshAt = payload.updatedAt;
