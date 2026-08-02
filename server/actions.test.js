@@ -80,3 +80,13 @@ test('applyAction works with no snapshot yet (state.snapshot is null)', () => {
   const result = applyAction({ state, config, type: 'ack', key: 'P-1' });
   expect(result).toEqual({ ok: true, bucket: null });
 });
+
+test('applyAction rejects a falsy or non-string key before touching state (covers all transports)', () => {
+  const state = stateWithItem();
+  for (const badKey of [undefined, null, '', 0, {}, ['P-1']]) {
+    const result = applyAction({ state, config, type: 'ack', key: badKey });
+    expect(result).toEqual({ error: 'key is required and must be a non-empty string', status: 400 });
+  }
+  // Nothing got written into state.cards for any of these.
+  expect(Object.keys(state.cards)).toEqual([]);
+});

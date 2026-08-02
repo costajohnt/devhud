@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { readFileSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { loadState, saveState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
@@ -127,9 +128,9 @@ export function createServer({ config, statePath, webDist }) {
 }
 
 // main
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
-  const root = new URL('..', import.meta.url).pathname;
+  const root = fileURLToPath(new URL('..', import.meta.url));
   const pidPath = join(root, 'data', 'server.pid');
   const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist') });
   // Single-instance guard: let the OS decide via the listen() call itself

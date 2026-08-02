@@ -33,7 +33,10 @@ Copy `config.example.json` to `config.json` and fill in:
 ```bash
 npm i
 cd web && npm i
+cd ../mcp && npm i
 ```
+
+The third install is only needed if you plan to use the MCP server (see Claude integration below) — but do it now anyway: skipping it is the most common fresh-clone mistake and shows up as `ERR_MODULE_NOT_FOUND` the first time `mcp/index.js` runs.
 
 ### 3. Run
 

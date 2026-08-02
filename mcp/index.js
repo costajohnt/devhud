@@ -7,6 +7,7 @@
 // config.json is missing, loadConfig()'s error is surfaced as a clear MCP
 // startup failure rather than a silent crash.
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -21,7 +22,7 @@ try {
   console.error(`simon-dash-mcp: failed to load config.json: ${e.message}`);
   process.exit(1);
 }
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const statePath = join(root, 'data', 'state.json');
 const ctx = { config, statePath };
 
@@ -111,7 +112,10 @@ server.registerTool(
       'Returns one card\'s comment history: the full last-10 comments merged from Jira and GitHub ' +
       '(newest first), plus `newComments` — the subset that\'s unseen since the last ack/move and ' +
       'currently driving its attention flags. Use this to read what a reviewer or teammate actually ' +
-      'said on a card before deciding whether to ack it.',
+      'said on a card before deciding whether to ack it. Only works for cards still on the active ' +
+      'board (any of the four buckets); a card that has already merged and moved into mergedCards is ' +
+      'found but returns empty comments/newComments arrays — that history isn\'t carried into the ' +
+      'merged-card record.',
     inputSchema: { key: z.string().describe('Jira issue key, e.g. "PROJ-123"') },
   },
   async ({ key }) => {

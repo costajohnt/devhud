@@ -11,6 +11,12 @@ export const BUCKETS = ['in_progress', 'waiting_review', 'in_qa'];
 // board (a valid no-op: it may have merged away or never been fetched) — or
 // `{ error, status }` on failure.
 export function applyAction({ state, config, type, key, bucket }) {
+  // Validated once here so every transport (HTTP, CLI direct mode, MCP
+  // direct mode) gets the same rejection instead of cardState() silently
+  // creating a `state.cards["undefined"]` (or similar) entry for a bad key.
+  if (typeof key !== 'string' || !key) {
+    return { error: 'key is required and must be a non-empty string', status: 400 };
+  }
   const cs = cardState(state, key);
   const snap = state.snapshot;
   const findItem = () => {

@@ -89,3 +89,22 @@ test('throws when github.username or github.org missing', () => {
   }));
   expect(() => loadConfig(p)).toThrow(/missing required key "github.username"/);
 });
+
+test('throws when jira.baseUrl/email/apiToken missing outside demo mode', () => {
+  const p = join(dir, 'missing-jira-creds.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  expect(() => loadConfig(p)).toThrow(/missing required key "jira.baseUrl"/);
+});
+
+test('jira.baseUrl/email/apiToken are not required in demo mode', () => {
+  const p = join(dir, 'demo-no-creds.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+    demo: true,
+  }));
+  expect(loadConfig(p).demo).toBe(true);
+});

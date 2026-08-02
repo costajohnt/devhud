@@ -31,9 +31,9 @@ Usage:
   simon-dash refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
   simon-dash ack <KEY> [--json]            Acknowledge a card's attention flags
   simon-dash move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
-  simon-dash transition <KEY> <status...>  Transition a Jira card to a workflow status
-  simon-dash comment <KEY> <text...>       Comment on a Jira card
-  simon-dash pr-comment <repo#num> <text...>  Comment on a GitHub PR
+  simon-dash transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status
+  simon-dash comment <KEY> <text...> [--json]       Comment on a Jira card
+  simon-dash pr-comment <repo#num> <text...> [--json]  Comment on a GitHub PR
   simon-dash serve                         Run the dashboard server in the foreground
   simon-dash open                          Open the dashboard in your browser
   simon-dash --help                        Show this help
@@ -82,7 +82,7 @@ export async function run(argv, { config, statePath }) {
   if (cmd === 'serve') {
     // Foreground: inherit stdio and block until the server exits, mirroring
     // `node server/index.js` run directly.
-    const result = spawnSync(process.execPath, [join(new URL('.', import.meta.url).pathname, 'index.js')], { stdio: 'inherit' });
+    const result = spawnSync(process.execPath, [join(fileURLToPath(new URL('.', import.meta.url)), 'index.js')], { stdio: 'inherit' });
     return { code: result.status ?? 1, out: '', err: '' };
   }
   if (cmd === 'open') {
@@ -144,14 +144,10 @@ export async function run(argv, { config, statePath }) {
     if (viaServer) {
       const body = cmd === 'move' ? { type: 'move', key, bucket } : { type: 'ack', key };
       const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        result = { error: j.error ?? `HTTP ${res.status}` };
-      } else {
-        const data = await (await fetch(`${base}/api/data`)).json();
-        const item = Object.values(data.buckets).flat().find(i => i.key === key);
-        result = { ok: true, bucket: item?.bucket ?? null };
-      }
+      // /api/action's own response already carries the resulting bucket —
+      // no need for a second round-trip to /api/data just to look it up.
+      const j = await res.json().catch(() => ({}));
+      result = res.ok ? { ok: true, bucket: j.bucket ?? null } : { error: j.error ?? `HTTP ${res.status}` };
     } else {
       const blockingPid = serverAppearsRunning(statePath);
       if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
@@ -258,7 +254,7 @@ export async function run(argv, { config, statePath }) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const config = loadConfig();
-    const root = new URL('..', import.meta.url).pathname;
+    const root = fileURLToPath(new URL('..', import.meta.url));
     const statePath = join(root, 'data', 'state.json');
     const { code, out, err } = await run(process.argv.slice(2), { config, statePath });
     if (err) console.error(err);

@@ -40,7 +40,11 @@ export async function doRefresh({ config, statePath }) {
   const viaServer = await probeServer(config.port);
   let payload;
   if (viaServer) {
-    payload = await (await fetch(`http://127.0.0.1:${config.port}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
+    try {
+      payload = await (await fetch(`http://127.0.0.1:${config.port}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
+    } catch (e) {
+      return { error: e.message };
+    }
   } else {
     const blockingPid = serverAppearsRunning(statePath);
     if (blockingPid) return { error: splitBrainError(blockingPid) };
@@ -71,16 +75,18 @@ async function doAction({ config, statePath, type, key, bucket }) {
   const viaServer = await probeServer(config.port);
   if (viaServer) {
     const body = type === 'move' ? { type: 'move', key, bucket } : { type: 'ack', key };
-    const res = await fetch(`http://127.0.0.1:${config.port}/api/action`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      return { error: j.error ?? `HTTP ${res.status}` };
+    let res;
+    try {
+      res = await fetch(`http://127.0.0.1:${config.port}/api/action`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+    } catch (e) {
+      return { error: e.message };
     }
-    const data = await (await fetch(`http://127.0.0.1:${config.port}/api/data`)).json();
-    const item = Object.values(data.buckets).flat().find(i => i.key === key);
-    return { ok: true, bucket: item?.bucket ?? null };
+    // /api/action's own response already carries the resulting bucket — no
+    // need for a second round-trip to /api/data just to look it up.
+    const j = await res.json().catch(() => ({}));
+    return res.ok ? { ok: true, bucket: j.bucket ?? null } : { error: j.error ?? `HTTP ${res.status}` };
   }
   const blockingPid = serverAppearsRunning(statePath);
   if (blockingPid) return { error: splitBrainError(blockingPid) };
@@ -114,9 +120,14 @@ async function doWrite({ config, statePath, type, key, repo, number, body, statu
   const viaServer = await probeServer(config.port);
   const writeArgs = { type, key, repo, number, body, status };
   if (viaServer) {
-    const res = await fetch(`http://127.0.0.1:${config.port}/api/write`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs),
-    });
+    let res;
+    try {
+      res = await fetch(`http://127.0.0.1:${config.port}/api/write`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs),
+      });
+    } catch (e) {
+      return { error: e.message };
+    }
     const j = await res.json().catch(() => ({}));
     if (!res.ok) return { error: j.error ?? `HTTP ${res.status}` };
     return j;
