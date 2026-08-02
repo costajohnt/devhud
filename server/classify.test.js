@@ -43,3 +43,20 @@ test('new jira comment by someone else since lastSeenJira', () => {
   expect(r.attention).toContain('new_jira_comments');
   expect(r.newComments[0].source).toBe('jira');
 });
+
+test('multi-comment sort: jira and github comments sorted descending by createdAt', () => {
+  const c = card({ comments: [{ authorId: 'other', body: 'jira comment', createdAt: '2026-07-02T00:00:00Z' }] });
+  const p = pr({ comments: [{ author: 'reviewer', body: 'github comment', createdAt: '2026-07-03T00:00:00Z' }] });
+  const r = classifyCard({ ...base, card: c, pr: p, cs: cs() });
+  expect(r.newComments).toHaveLength(2);
+  expect(r.newComments[0].source).toBe('github');
+  expect(r.newComments[0].createdAt).toBe('2026-07-03T00:00:00Z');
+  expect(r.newComments[1].source).toBe('jira');
+  expect(r.newComments[1].createdAt).toBe('2026-07-02T00:00:00Z');
+});
+
+test('merged with Done status excludes merged_not_in_test', () => {
+  const m = pr({ state: 'merged' });
+  const r = classifyCard({ ...base, card: card({ status: 'Done' }), pr: m, cs: cs() });
+  expect(r.attention).not.toContain('merged_not_in_test');
+});
