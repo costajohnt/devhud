@@ -12,10 +12,11 @@ beforeAll(async () => {
   statePath = join(dir, 'state.json');
   const webDist = join(dir, 'dist');
   mkdirSync(webDist);
+  mkdirSync(join(webDist, 'assets'));
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
   const state = emptyState();
   state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [{ key: 'P-1', attention: ['ci_failing'], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [{ key: 'P-1', attention: ['ci_failing'], newComments: [], jiraStatus: 'open', bucket: 'needs_attention' }], in_progress: [], waiting_review: [], in_qa: [] },
     todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
   saveState(statePath, state);
   const config = { port: 0, jira: {}, github: {} };
@@ -49,4 +50,32 @@ test('POST /api/action move to needs_attention rejected', async () => {
 test('serves index.html for SPA routes', async () => {
   const res = await fetch(`${base}/merged`);
   expect(await res.text()).toContain('app');
+});
+
+test('GET subdirectory path falls back to index.html', async () => {
+  const res = await fetch(`${base}/assets`);
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain('app');
+});
+
+test('POST /api/action with invalid JSON returns 400', async () => {
+  const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: 'not json' });
+  expect(res.status).toBe(400);
+  const d = await res.json();
+  expect(d.error).toContain('invalid JSON body');
+});
+
+test('ack clears override', async () => {
+  const { loadState: loadStateFn } = await import('./state.js');
+  let state = loadStateFn(statePath);
+  state.cards['P-1'] = state.cards['P-1'] || {};
+  state.cards['P-1'].override = 'in_qa';
+  const { saveState: saveStateFn } = await import('./state.js');
+  saveStateFn(statePath, state);
+  const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ack', key: 'P-1' }) });
+  expect(res.status).toBe(200);
+  state = loadStateFn(statePath);
+  expect(state.cards['P-1'].override).toBeNull();
 });

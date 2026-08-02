@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
 import { join, extname, normalize } from 'node:path';
 import { loadConfig } from './config.js';
 import { loadState, saveState, cardState } from './state.js';
@@ -17,7 +17,7 @@ async function readBody(req) {
 
 export function createServer({ config, statePath, webDist }) {
   return http.createServer(async (req, res) => {
-    const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    const send = (code, obj) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname === '/api/data' && req.method === 'GET') {
@@ -33,7 +33,13 @@ export function createServer({ config, statePath, webDist }) {
         return send(200, payload);
       }
       if (url.pathname === '/api/action' && req.method === 'POST') {
-        const { type, key, bucket } = await readBody(req);
+        let body;
+        try {
+          body = await readBody(req);
+        } catch {
+          return send(400, { error: 'invalid JSON body' });
+        }
+        const { type, key, bucket } = body;
         const state = loadState(statePath);
         const cs = cardState(state, key);
         const snap = state.snapshot;
@@ -46,14 +52,14 @@ export function createServer({ config, statePath, webDist }) {
         };
         if (type === 'ack') {
           cs.lastSeenPr = cs.lastSeenJira = new Date().toISOString();
+          cs.override = null;
           const loc = findItem();
           if (loc) {
             loc.item.attention = [];
             loc.item.newComments = [];
             if (loc.from === 'needs_attention') {
               snap.buckets.needs_attention.splice(loc.i, 1);
-              const dest = cs.override && BUCKETS.includes(cs.override) ? cs.override
-                : loc.item.jiraStatus === config.jira?.statuses?.inTest ? 'in_qa' : 'in_progress';
+              const dest = loc.item.jiraStatus === config.jira?.statuses?.inTest ? 'in_qa' : 'in_progress';
               loc.item.bucket = dest;
               snap.buckets[dest].push(loc.item);
             }
@@ -76,9 +82,15 @@ export function createServer({ config, statePath, webDist }) {
       let file = normalize(url.pathname).replace(/^([/\\])+/, '');
       let p = join(webDist, file);
       if (!p.startsWith(webDist)) { res.writeHead(403); return res.end(); }
-      if (!existsSync(p) || file === '') p = join(webDist, 'index.html');
+      try {
+        const stat = statSync(p);
+        if (!stat.isFile() || file === '') throw new Error();
+      } catch {
+        p = join(webDist, 'index.html');
+      }
+      const buf = readFileSync(p);
       res.writeHead(200, { 'content-type': MIME[extname(p)] ?? 'application/octet-stream' });
-      res.end(readFileSync(p));
+      res.end(buf);
     } catch (e) {
       send(500, { error: e.message });
     }
