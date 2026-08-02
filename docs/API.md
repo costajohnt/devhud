@@ -76,6 +76,31 @@ An action against an unknown `key` (a card not present in any bucket, or never s
 
 On success, both action types respond `{ "ok": true }` and persist `data/state.json` before returning.
 
+## POST /api/write
+
+The only endpoint that mutates Jira or GitHub. Off by default: gated by `writeEnabled` in `config.json` (see server/writeback.js's `checkWriteGate`). Body is JSON, one of:
+
+```json
+{ "type": "transition", "key": "PROJ-123", "status": "In Review" }
+{ "type": "comment", "key": "PROJ-123", "body": "plain text comment" }
+{ "type": "pr_comment", "repo": "acme/webapp", "number": 482, "body": "plain text comment" }
+```
+
+- `type: "transition"` — fetches the card's available Jira transitions and posts the one whose destination status (`to.name`) matches `status`, case-insensitively. Errors (400) if no transition to that status is available, listing the available destination status names.
+- `type: "comment"` — posts `body` as a Jira comment, wrapped in a minimal ADF (Atlassian Document Format) doc (a single paragraph, no formatting).
+- `type: "pr_comment"` — posts `body` as a plain-text comment on the given PR via GitHub's issue-comments API.
+
+Gate semantics:
+
+- `writeEnabled: false` (the default) outside demo mode: `403`, `{ "error": "write-back disabled; set writeEnabled: true in config.json" }`. Nothing is written, nothing is refreshed.
+- Demo mode: **always** refuses, regardless of `writeEnabled` — there's nothing real to write to. Unlike the case above this is `200`, not `403`: `{ "ok": true, "demo": true, "message": "demo mode: write-back is a no-op (nothing real to write to)" }`. It's a stub success, not an error, because nothing is misconfigured.
+- Unknown `type`, or missing required fields for the given `type`: `400`.
+- The underlying Jira/GitHub call failing (bad key, no matching transition, network error): `502`, with the upstream error message.
+
+On a real success (`writeEnabled: true`, not demo, the write succeeded), the server immediately runs the same refresh pipeline `/api/refresh` uses (so the board reflects the change without waiting for the next poll), persists `data/state.json`, and responds `{ "ok": true, ...writeSpecificFields }` — e.g. `{ "ok": true, "transitionedTo": "In Review" }` for a transition.
+
+The CLI (`jira-dash transition|comment|pr-comment`) and the MCP write tools (`transition_card`/`comment_card`/`comment_pr`) both go through this same endpoint when a server is running, and through the same `performWrite()` function directly on disk when one isn't — so gate semantics and the post-write refresh can't drift between the three surfaces.
+
 ## Payload shape
 
 The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:

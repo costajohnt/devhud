@@ -12,7 +12,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from '../server/config.js';
 import { BUCKETS } from '../server/actions.js';
-import { boardStatus, doRefresh, ackCard, moveCard, cardComments } from './handlers.js';
+import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.js';
 
 let config;
 try {
@@ -113,6 +113,82 @@ server.registerTool(
   },
   async ({ key }) => {
     const result = await cardComments({ ...ctx, key });
+    return result.error ? errorText(result.error) : text(result);
+  },
+);
+
+// --- Write-back tools ---
+// These are REAL mutations of Jira/GitHub, gated by writeEnabled in
+// config.json (server/writeback.js's checkWriteGate refuses otherwise) and
+// always a no-op in demo mode. Because this is an MCP tool, not a UI with a
+// confirm dialog, the approval gate has to be behavioral: every description
+// below explicitly tells the model to draft the content, show it to the
+// user, and wait for explicit approval in conversation before calling the
+// tool — never call these speculatively or as a side effect of some other
+// request (mirrors oss-autopilot's draft-then-post pattern for PR/issue
+// comments).
+
+server.registerTool(
+  'transition_card',
+  {
+    title: 'Transition a Jira card',
+    description:
+      'Moves a Jira issue to a different workflow status (e.g. "In Review", "Done") via the Jira ' +
+      'transitions API. This is a REAL write to Jira — gated by writeEnabled in config.json (refuses ' +
+      'with a clear error otherwise) and always a no-op in demo mode. Before calling this tool, state ' +
+      'the exact target status to the user and only call it after they explicitly approve it in ' +
+      'conversation. Never transition a card speculatively or as a side effect of answering some other ' +
+      'question.',
+    inputSchema: {
+      key: z.string().describe('Jira issue key, e.g. "PROJ-123"'),
+      status: z.string().describe('Target workflow status name, e.g. "In Review" — must match one of the card\'s available transitions'),
+    },
+  },
+  async ({ key, status }) => {
+    const result = await transitionCard({ ...ctx, key, status });
+    return result.error ? errorText(result.error) : text(result);
+  },
+);
+
+server.registerTool(
+  'comment_card',
+  {
+    title: 'Comment on a Jira card',
+    description:
+      'Posts a plain-text comment on a Jira issue. This is a REAL write to Jira — gated by writeEnabled ' +
+      'in config.json (refuses with a clear error otherwise) and always a no-op in demo mode. Draft the ' +
+      'exact comment text and show it to the user in your response before calling this tool; only call ' +
+      'it after the user has explicitly approved that exact wording in conversation. Never post ' +
+      'speculatively.',
+    inputSchema: {
+      key: z.string().describe('Jira issue key, e.g. "PROJ-123"'),
+      body: z.string().describe('Plain-text comment body (wrapped in a minimal ADF doc before posting)'),
+    },
+  },
+  async ({ key, body }) => {
+    const result = await commentCard({ ...ctx, key, body });
+    return result.error ? errorText(result.error) : text(result);
+  },
+);
+
+server.registerTool(
+  'comment_pr',
+  {
+    title: 'Comment on a GitHub PR',
+    description:
+      'Posts a plain-text comment on a GitHub pull request (issue-comments API). This is a REAL write ' +
+      'to GitHub — gated by writeEnabled in config.json (refuses with a clear error otherwise) and ' +
+      'always a no-op in demo mode. Draft the exact comment text and show it to the user in your ' +
+      'response before calling this tool; only call it after the user has explicitly approved that ' +
+      'exact wording in conversation. Never post speculatively.',
+    inputSchema: {
+      repo: z.string().describe('org/repo, e.g. "acme/webapp"'),
+      number: z.number().describe('PR number'),
+      body: z.string().describe('Plain-text comment body'),
+    },
+  },
+  async ({ repo, number, body }) => {
+    const result = await commentPr({ ...ctx, repo, number, body });
     return result.error ? errorText(result.error) : text(result);
   },
 );

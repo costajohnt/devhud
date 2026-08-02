@@ -20,5 +20,6 @@
     "username": "costajohnt"
   },
   "port": 3010,
-  "demo": false
+  "demo": false,
+  "writeEnabled": false
 }

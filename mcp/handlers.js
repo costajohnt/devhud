@@ -10,6 +10,7 @@
 import { loadState, saveState, emptySnapshot } from '../server/state.js';
 import { refresh } from '../server/refresh.js';
 import { applyAction } from '../server/actions.js';
+import { performWrite } from '../server/writeback.js';
 import { probeServer, serverAppearsRunning, splitBrainError } from '../server/transport.js';
 
 async function getSnapshot({ config, statePath }) {
@@ -80,6 +81,40 @@ export async function ackCard({ config, statePath, key }) {
 
 export async function moveCard({ config, statePath, key, bucket }) {
   return await doAction({ config, statePath, type: 'move', key, bucket });
+}
+
+// Write-back (transition/comment/pr_comment): not split-brain-guarded like
+// doAction, since the write itself is a network call to Jira/GitHub, not a
+// local state.json mutation — performWrite's own post-write refresh accepts
+// the same residual risk direct mode always has. Gate refusal (writeEnabled
+// false, or demo mode) is handled entirely inside performWrite.
+async function doWrite({ config, statePath, type, key, repo, number, body, status }) {
+  const viaServer = await probeServer(config.port);
+  const writeArgs = { type, key, repo, number, body, status };
+  if (viaServer) {
+    const res = await fetch(`http://127.0.0.1:${config.port}/api/write`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: j.error ?? `HTTP ${res.status}` };
+    return j;
+  }
+  const state = loadState(statePath);
+  const result = await performWrite({ config, state, ...writeArgs });
+  if (result.ok && !result.demo) saveState(statePath, state);
+  return result;
+}
+
+export async function transitionCard({ config, statePath, key, status }) {
+  return await doWrite({ config, statePath, type: 'transition', key, status });
+}
+
+export async function commentCard({ config, statePath, key, body }) {
+  return await doWrite({ config, statePath, type: 'comment', key, body });
+}
+
+export async function commentPr({ config, statePath, repo, number, body }) {
+  return await doWrite({ config, statePath, type: 'pr_comment', repo, number, body });
 }
 
 export async function cardComments(ctx) {

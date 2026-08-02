@@ -15,6 +15,17 @@ test('loads config and applies defaults', () => {
   const c = loadConfig(p);
   expect(c.port).toBe(3010);
   expect(c.jira.statuses.inTest).toBe('In Test');
+  expect(c.writeEnabled).toBe(false); // off by default
+});
+
+test('writeEnabled: true is normalized through untouched', () => {
+  const p = join(dir, 'write-enabled.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+    writeEnabled: true,
+  }));
+  expect(loadConfig(p).writeEnabled).toBe(true);
 });
 
 test('throws readable error when missing', () => {

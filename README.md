@@ -13,6 +13,7 @@ See [docs/API.md](docs/API.md) for the full HTTP API reference and [docs/ARCHITE
 - **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
 - **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
 - **Celebration**: confetti and a toast the first time a PR is observed merged.
+- **Write-back** (opt-in, off by default): transition a Jira card, comment on a card, or comment on a PR via the CLI or MCP tools. See the Write-back section below.
 
 ## Demo mode
 
@@ -74,6 +75,11 @@ node server/cli.js ack PROJ-123          # clear attention flags on a card
 node server/cli.js move PROJ-123 in_qa   # pin a card to a bucket
 node server/cli.js serve                 # run the server in the foreground
 node server/cli.js open                  # open the dashboard in your browser
+
+# Write-back (mutates real Jira/GitHub — see the Write-back section below)
+node server/cli.js transition PROJ-123 "In Review"
+node server/cli.js comment PROJ-123 "picking this back up today"
+node server/cli.js pr-comment acme/webapp#482 "looks good, one nit inline"
 ```
 
 Also runnable as `npm run cli -- status`, or (once linked/installed) as the
@@ -115,10 +121,20 @@ Tools exposed:
 - `ack_card`: acknowledge a card's attention flags.
 - `move_card`: pin a card to a bucket.
 - `card_comments`: one card's comment history and unseen comments.
+- `transition_card`, `comment_card`, `comment_pr`: write-back tools — see the Write-back section below. Their descriptions instruct Claude to draft the content, show it to you, and only call the tool after you approve it in conversation.
+
+## Write-back
+
+jira-dash can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
+
+- Set `"writeEnabled": true` in `config.json`. The default (`false`, matching `config.example.json`) makes every write path refuse with a clear error: `write-back disabled; set writeEnabled: true in config.json`.
+- Demo mode **always** refuses writes, regardless of `writeEnabled` — there's nothing real for canned demo data to write to. That refusal is a "stub success" (not an error), so scripting against the CLI/MCP doesn't need special-case error handling for demo mode.
+- The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Writes only happen via an explicit CLI command (`transition`/`comment`/`pr-comment`) or an explicit MCP tool call, both of which require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose. Nothing in jira-dash writes to Jira or GitHub automatically or on a timer.
+- All three write paths (the CLI, the MCP tools, and `POST /api/write` itself) funnel through the same `performWrite()` function (`server/writeback.js`), so the gate and the "refresh the board after a successful write" behavior can't drift between them. See [docs/API.md](docs/API.md#post-apiwrite) for the endpoint and gate semantics in full.
 
 ## API
 
-Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the last snapshot from memory, `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds it, `POST /api/action` applies an `ack` or `move` to one card. All manual moves and acknowledgements are stored locally in `data/state.json`; Jira and GitHub are never written to.
+Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the last snapshot from memory, `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds it, `POST /api/action` applies an `ack` or `move` to one card, `POST /api/write` (gated, off by default) transitions a card, comments on a card, or comments on a PR. Manual moves and acknowledgements are stored locally in `data/state.json`; Jira and GitHub are read-only unless you've explicitly enabled write-back.
 
 ## Buckets
 

@@ -151,6 +151,61 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
   expect(out).toBe('P-1 -> in_progress');
 });
 
+test('transition in direct mode against demo config prints a clean demo-refusal message (not an error)', async () => {
+  const statePath = tempStatePath();
+  const demoConfig = { port: 39217, demo: true, jira: { statuses: {} }, github: {} };
+  const { code, out, err } = await run(['transition', 'FAKE-1', 'Done'], { config: demoConfig, statePath });
+  expect(code).toBe(0);
+  expect(err).toBe('direct');
+  expect(out).toBe('demo mode: write-back is a no-op (nothing real to write to)');
+});
+
+test('transition --json in direct mode against demo config returns the stub-success shape', async () => {
+  const statePath = tempStatePath();
+  const demoConfig = { port: 39217, demo: true, jira: { statuses: {} }, github: {} };
+  const { code, out } = await run(['transition', 'FAKE-1', 'In', 'Review', '--json'], { config: demoConfig, statePath });
+  expect(code).toBe(0);
+  expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
+});
+
+test('comment in direct mode refuses with the real gate error when writeEnabled is false (non-demo)', async () => {
+  const statePath = tempStatePath();
+  const { code, err } = await run(['comment', 'P-1', 'looks', 'good'], { config, statePath });
+  expect(code).toBe(1);
+  expect(err).toContain('write-back disabled; set writeEnabled: true in config.json');
+});
+
+test('pr-comment usage error when the repo#num ref is malformed', async () => {
+  const statePath = tempStatePath();
+  const { code, err } = await run(['pr-comment', 'not-a-ref', 'nice', 'work'], { config, statePath });
+  expect(code).toBe(1);
+  expect(err).toContain('usage: jira-dash pr-comment <repo#num> <text...>');
+});
+
+test('pr-comment usage error when no comment text is given', async () => {
+  const statePath = tempStatePath();
+  const { code, err } = await run(['pr-comment', 'acme/webapp#482'], { config, statePath });
+  expect(code).toBe(1);
+  expect(err).toContain('usage: jira-dash pr-comment <repo#num> <text...>');
+});
+
+test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', async () => {
+  const statePath = tempStatePath();
+  const demoConfig = { port: 39217, demo: true, jira: {}, github: {} };
+  const { code, out } = await run(['pr-comment', 'acme/webapp#482', 'nice', 'work', '--json'], { config: demoConfig, statePath });
+  expect(code).toBe(0);
+  expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
+});
+
+test('transition/comment usage errors when KEY or status/text is missing', async () => {
+  const t = await run(['transition', 'P-1'], { config, statePath: tempStatePath() });
+  expect(t.code).toBe(1);
+  expect(t.err).toContain('usage: jira-dash transition <KEY> <status...>');
+  const c = await run(['comment'], { config, statePath: tempStatePath() });
+  expect(c.code).toBe(1);
+  expect(c.err).toContain('usage: jira-dash comment <KEY> <text...>');
+});
+
 test('exit code 1 for an unknown command', async () => {
   const { code, err } = await run(['bogus'], { config, statePath: tempStatePath() });
   expect(code).toBe(1);

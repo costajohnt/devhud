@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { boardStatus, doRefresh, ackCard, moveCard, cardComments } from './handlers.js';
+import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.js';
 import { loadState, saveState, emptyState } from '../server/state.js';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -112,6 +112,31 @@ test('ackCard refuses a direct-mode write when a server.pid exists for a live pr
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
   const result = await ackCard({ config, statePath, key: 'P-1' });
   expect(result.error).toContain('appears to be running');
+});
+
+test('transitionCard against demo config returns the stub-success refusal, not an error', async () => {
+  const statePath = tempStatePath();
+  const result = await transitionCard({ config, statePath, key: 'P-1', status: 'Done' });
+  expect(result).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
+});
+
+test('commentCard against demo config returns the stub-success refusal', async () => {
+  const statePath = tempStatePath();
+  const result = await commentCard({ config, statePath, key: 'P-1', body: 'looks good' });
+  expect(result.demo).toBe(true);
+});
+
+test('commentPr against demo config returns the stub-success refusal', async () => {
+  const statePath = tempStatePath();
+  const result = await commentPr({ config, statePath, repo: 'acme/webapp', number: 482, body: 'nice work' });
+  expect(result.demo).toBe(true);
+});
+
+test('transitionCard against a non-demo config with writeEnabled false refuses with a real error', async () => {
+  const statePath = tempStatePath();
+  const nonDemoConfig = { ...config, demo: false, writeEnabled: false };
+  const result = await transitionCard({ config: nonDemoConfig, statePath, key: 'P-1', status: 'Done' });
+  expect(result.error).toBe('write-back disabled; set writeEnabled: true in config.json');
 });
 
 test('boardStatus (read-only) still works direct-mode even with a server.pid present', async () => {

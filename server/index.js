@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { loadState, saveState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
 import { applyAction } from './actions.js';
+import { performWrite } from './writeback.js';
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
@@ -52,6 +53,18 @@ export function createServer({ config, statePath, webDist }) {
         if (result.error) return send(result.status ?? 400, { error: result.error });
         saveState(statePath, state);
         return send(200, { ok: true });
+      }
+      if (url.pathname === '/api/write' && req.method === 'POST') {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch {
+          return send(400, { error: 'invalid JSON body' });
+        }
+        const result = await performWrite({ config, state, ...body });
+        if (result.error) return send(result.status ?? 400, { error: result.error });
+        if (!result.demo) saveState(statePath, state);
+        return send(200, result);
       }
       if (url.pathname.startsWith('/api/')) {
         return send(404, { error: 'not found' });

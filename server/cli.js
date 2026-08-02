@@ -15,6 +15,7 @@ import { loadConfig } from './config.js';
 import { loadState, saveState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
 import { applyAction, BUCKETS } from './actions.js';
+import { performWrite } from './writeback.js';
 import { probeServer, serverAppearsRunning, splitBrainError } from './transport.js';
 
 // Re-exported for backward compatibility: server/cli.test.js imports
@@ -30,12 +31,19 @@ Usage:
   jira-dash refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
   jira-dash ack <KEY> [--json]            Acknowledge a card's attention flags
   jira-dash move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
+  jira-dash transition <KEY> <status...>  Transition a Jira card to a workflow status
+  jira-dash comment <KEY> <text...>       Comment on a Jira card
+  jira-dash pr-comment <repo#num> <text...>  Comment on a GitHub PR
   jira-dash serve                         Run the dashboard server in the foreground
   jira-dash open                          Open the dashboard in your browser
   jira-dash --help                        Show this help
 
 If a jira-dash server is already running on the configured port, commands
 go through its HTTP API; otherwise they operate directly on data/state.json.
+
+transition/comment/pr-comment are write-back: they mutate real Jira/GitHub
+data. Gated by writeEnabled in config.json (refuses otherwise) and always a
+no-op in demo mode. See the README's write-back section.
 `;
 
 export function formatStatus(payload) {
@@ -161,6 +169,53 @@ export async function run(argv, { config, statePath }) {
     }
     if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
     const out = result.bucket ? `${key} -> ${result.bucket}` : `${key}: not currently on the board`;
+    return { code: 0, out, err };
+  }
+
+  if (cmd === 'transition' || cmd === 'comment' || cmd === 'pr-comment') {
+    const type = cmd === 'transition' ? 'transition' : cmd === 'comment' ? 'comment' : 'pr_comment';
+    let key, repoRef, number, body, status;
+
+    if (cmd === 'pr-comment') {
+      const m = rest[0]?.match(/^(.+)#(\d+)$/);
+      body = rest.slice(1).join(' ');
+      if (!m || !body) {
+        return { code: 1, out: '', err: [err, 'usage: jira-dash pr-comment <repo#num> <text...>'].join('\n') };
+      }
+      repoRef = m[1];
+      number = Number(m[2]);
+    } else {
+      key = rest[0];
+      const rest2 = rest.slice(1).join(' ');
+      if (cmd === 'transition') status = rest2; else body = rest2;
+      if (!key || !rest2) {
+        const usage = cmd === 'transition' ? 'usage: jira-dash transition <KEY> <status...>' : 'usage: jira-dash comment <KEY> <text...>';
+        return { code: 1, out: '', err: [err, usage].join('\n') };
+      }
+    }
+
+    const writeArgs = { type, key, repo: repoRef, number, body, status };
+    let result;
+    if (viaServer) {
+      const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs) });
+      result = await res.json().catch(() => ({}));
+      if (!res.ok && !result.error) result.error = `HTTP ${res.status}`;
+    } else {
+      // Not split-brain-guarded: the write itself touches no local state
+      // (it's a network call to Jira/GitHub), and performWrite's post-write
+      // refresh either goes through this same probe on its next command or
+      // accepts the same residual risk the rest of direct mode does.
+      const state = loadState(statePath);
+      result = await performWrite({ config, state, ...writeArgs });
+      if (result.ok && !result.demo) saveState(statePath, state);
+    }
+
+    if (values.json) {
+      return { code: result.error ? 1 : 0, out: JSON.stringify(result), err };
+    }
+    if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
+    if (result.demo) return { code: 0, out: result.message, err };
+    const out = result.transitionedTo ? `${key} -> ${result.transitionedTo}` : `${cmd} ok`;
     return { code: 0, out, err };
   }
 

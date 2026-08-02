@@ -135,6 +135,50 @@ test('unknown /api/* path returns 404 JSON instead of falling through to the SPA
   expect((await res.json()).error).toBe('not found');
 });
 
+test('POST /api/write is refused 403 when writeEnabled is false (the default)', async () => {
+  const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'comment', key: 'P-1', body: 'hi' }) });
+  expect(res.status).toBe(403);
+  const d = await res.json();
+  expect(d.error).toBe('write-back disabled; set writeEnabled: true in config.json');
+});
+
+test('POST /api/write with an unknown type returns 400 even when write-back is disabled', async () => {
+  const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'delete', key: 'P-1' }) });
+  expect(res.status).toBe(400);
+  expect((await res.json()).error).toContain('unknown write type');
+});
+
+test('POST /api/write with invalid JSON returns 400', async () => {
+  const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json' });
+  expect(res.status).toBe(400);
+  expect((await res.json()).error).toContain('invalid JSON body');
+});
+
+// Demo mode always refuses writes (nothing real to write to) regardless of
+// writeEnabled, but as a 200 "stub success" rather than a 403 — nothing is
+// misconfigured, there's just no external system for demo data to write to.
+test('POST /api/write in demo mode returns a 200 stub-success refusal, not a 403', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const demoStatePath = join(dir, 'state.json');
+  const webDist = join(dir, 'dist');
+  mkdirSync(webDist);
+  writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
+  const demoServer = createServer({ config: { port: 0, demo: true, jira: {}, github: {} }, statePath: demoStatePath, webDist });
+  await new Promise(r => demoServer.listen(0, r));
+  try {
+    const demoBase = `http://127.0.0.1:${demoServer.address().port}`;
+    const res = await fetch(`${demoBase}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'transition', key: 'P-1', status: 'Done' }) });
+    expect(res.status).toBe(200);
+    const d = await res.json();
+    expect(d).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
+  } finally {
+    demoServer.close();
+  }
+});
+
 // True first boot: no refresh has ever run, so state.snapshot is still null
 // and GET /api/data must fall back to the documented placeholder shape
 // (empty buckets, zeroed counters) instead of returning null to the client.
