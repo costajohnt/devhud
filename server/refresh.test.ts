@@ -213,3 +213,42 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.closedPrs.length).toBeGreaterThan(0);
   expect(p.closedPrs[0]).toEqual(expect.objectContaining({ repo: expect.any(String), number: expect.any(Number), closedAt: expect.any(String) }));
 });
+
+// M7: concurrent /api/refresh calls (two browser tabs, CLI + the web timer)
+// have no ordering guarantee — the slower call can be the one with fresher
+// upstream data. "Last buildSnapshot to finish wins" would let a refresh
+// that started earlier (and fetched newer data) get clobbered by one that
+// started later but finished first with staler data. The sequence guard
+// must make the opposite true: whichever refresh *completes* with the
+// highest sequence number keeps the write; a later-arriving completion
+// from an earlier-started, lower-sequence call must not overwrite it.
+test('a later-sequenced refresh that completes first is not overwritten by an earlier-sequenced one that finishes after it', async () => {
+  const { fetchPrs } = await import('./github.ts');
+  const state = emptyState();
+  state.lastCards = [card()];
+
+  let resolveFirstCallPrs!: (v: { prs: Pr[]; errors: string[] }) => void;
+  const firstCallPrsPromise = new Promise<{ prs: Pr[]; errors: string[] }>((resolve) => { resolveFirstCallPrs = resolve; });
+
+  // Call A starts first (gets the lower sequence number) but its PR fetch
+  // hangs until we resolve it manually below — it will finish LAST.
+  vi.mocked(fetchPrs).mockImplementationOnce(() => firstCallPrsPromise);
+  const callA = refresh({ config, state });
+
+  // Call B starts second (higher sequence number) and resolves immediately
+  // with the default mock — it finishes FIRST.
+  const callB = refresh({ config, state });
+  const payloadB = await callB;
+  expect(state.snapshot).toBe(payloadB); // B, the only completed call so far, has written
+
+  // Now let A's PR fetch resolve, so it finishes after B already completed.
+  resolveFirstCallPrs({ prs: [], errors: [] });
+  const payloadA = await callA;
+
+  // A still gets its own payload back (its caller's own request/response is
+  // unaffected), but the shared board state must still reflect B — the
+  // later-sequenced, earlier-completing call — not regress to A's.
+  expect(payloadA).not.toBe(payloadB);
+  expect(state.snapshot).toBe(payloadB);
+  expect(state.snapshot).not.toBe(payloadA);
+});

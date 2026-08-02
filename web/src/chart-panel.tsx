@@ -55,24 +55,40 @@ function getChartColors(theme: string) {
   };
 }
 
-/** Ascending 'YYYY-MM' keys for the last `n` months, ending this month. */
-function lastNMonths(n: number): string[] {
+/**
+ * Ascending 'YYYY-MM' keys for the last `n` months, ending this month, in
+ * UTC. monthlyCounts() below buckets events by `at.slice(0, 7)` — the UTC
+ * year-month embedded in an ISO timestamp string — so the bucket keys built
+ * here have to be computed in UTC too, not local calendar time: a local
+ * getFullYear()/getMonth() version would put "this month"'s boundary at
+ * local midnight instead of UTC midnight, and at a large positive UTC
+ * offset an event landing just after UTC midnight but still "yesterday"
+ * locally would fall one bucket earlier than monthlyCounts places it,
+ * undercounting the current month (or dropping silently off the window's
+ * edge).
+ */
+export function lastNMonths(n: number): string[] {
   const out: string[] = [];
-  const d = new Date();
-  d.setDate(1);
+  const now = new Date();
   for (let i = n - 1; i >= 0; i--) {
-    const m = new Date(d.getFullYear(), d.getMonth() - i, 1);
-    out.push(`${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}`);
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
   }
   return out;
 }
 
-function monthLabel(key: string): string {
+// Renders a 'YYYY-MM' key (already UTC, from lastNMonths above) as a short
+// label. Built and formatted entirely in UTC (Date.UTC + timeZone: 'UTC')
+// so there's no local-timezone round-trip that could shift the displayed
+// month away from the key it's labeling — a `new Date(y, m-1, 1)` local
+// constructor would render "Dec '25" for a key that's actually "2026-01"
+// for anyone west of UTC.
+export function monthLabel(key: string): string {
   const [y, m] = key.split('-').map(Number);
-  return new Date(y!, m! - 1, 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
+  return new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
 }
 
-function monthlyCounts(dates: (string | null)[], months: string[]): number[] {
+export function monthlyCounts(dates: (string | null)[], months: string[]): number[] {
   const counts = new Map<string, number>();
   for (const at of dates) {
     if (!at) continue;
@@ -82,7 +98,7 @@ function monthlyCounts(dates: (string | null)[], months: string[]): number[] {
   return months.map(m => counts.get(m) ?? 0);
 }
 
-function topRepos(prLog: PrLogEntry[], limit = 10): { repo: string; active: number; merged: number; closed: number }[] {
+export function topRepos(prLog: PrLogEntry[], limit = 10): { repo: string; active: number; merged: number; closed: number }[] {
   const byRepo = new Map<string, { active: number; merged: number; closed: number }>();
   for (const e of prLog) {
     const bucket = byRepo.get(e.repo) ?? { active: 0, merged: 0, closed: 0 };

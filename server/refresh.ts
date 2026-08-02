@@ -128,10 +128,28 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
   };
 }
 
+// Module-level, single-process monotonic sequence for concurrent refreshes
+// (two browser tabs, or the CLI plus the web UI's own poll timer). Neither
+// fetch nor buildSnapshot has any ordering guarantee — the slower call can
+// easily be the one with fresher upstream data, so "last buildSnapshot to
+// finish wins" would let a call that started earlier (and fetched newer
+// data) get clobbered by one that started later but happened to finish
+// first with staler data. Each refresh() call grabs the next number at
+// entry; the actual state.snapshot/lastRefreshAt write near the end of the
+// function only happens if no later-sequenced call has already completed
+// one. Card-state and celebration mutations inside buildSnapshot are NOT
+// gated by this — they run unconditionally on every call regardless of
+// ordering, verified safe: a merge is celebrated once no matter which
+// refresh notices it first, and cardState/override mutations are
+// idempotent writes keyed by card key, not append-only history.
+let refreshSeq = 0;
+let lastCompletedRefreshSeq = 0;
+
 // On a source failure, reuse that source's last-known-good data instead of
 // blanking the board — a transient Jira/GitHub outage shouldn't wipe out
 // everything the user was tracking.
 export async function refresh({ config, state }: { config: Config; state: State }): Promise<Snapshot> {
+  const seq = ++refreshSeq;
   const errors: { jira?: string; github?: string } = {};
   let cards: Card[], prs: Pr[];
   if (config.demo) {
@@ -140,8 +158,11 @@ export async function refresh({ config, state }: { config: Config; state: State 
     cards = demoCards(config.jira);
     prs = demoPrs(config.github);
     const payload = buildSnapshot({ cards, prs, state, config, errors });
-    state.snapshot = payload;
-    state.lastRefreshAt = payload.updatedAt;
+    if (seq > lastCompletedRefreshSeq) {
+      lastCompletedRefreshSeq = seq;
+      state.snapshot = payload;
+      state.lastRefreshAt = payload.updatedAt;
+    }
     console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
     return payload;
   }
@@ -187,8 +208,11 @@ export async function refresh({ config, state }: { config: Config; state: State 
     prs = state.lastPrs ?? [];
   }
   const payload = buildSnapshot({ cards, prs, state, config, errors });
-  state.snapshot = payload;
-  state.lastRefreshAt = payload.updatedAt;
+  if (seq > lastCompletedRefreshSeq) {
+    lastCompletedRefreshSeq = seq;
+    state.snapshot = payload;
+    state.lastRefreshAt = payload.updatedAt;
+  }
   console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
   return payload;
 }

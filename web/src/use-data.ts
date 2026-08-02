@@ -13,9 +13,21 @@ export function useData() {
   // effect-setup time — always see the current in-flight status rather than
   // a stale snapshot from whenever the effect ran.
   const refreshInFlight = useRef(false);
+  // Monotonic request counter: get()/refresh() each grab the next value
+  // before awaiting their fetch, then compare against the current value
+  // right before applying the result. refreshInFlight only stops two
+  // refreshes from overlapping each other — it says nothing about a plain
+  // get() racing a refresh() (or a second get()). Without this, a slow
+  // get() that started before a refresh() but resolves after it completes
+  // would overwrite the fresh refreshed snapshot with stale data, and the
+  // UI would silently revert until the next poll. If a newer request has
+  // been issued by the time this one resolves, its result is discarded.
+  const requestSeq = useRef(0);
 
   const get = async () => {
+    const seq = ++requestSeq.current;
     const d = await (await fetch('/api/data')).json();
+    if (seq !== requestSeq.current) return; // superseded by a newer request
     setData(d);
     setLoading(false);
   };
@@ -24,15 +36,18 @@ export function useData() {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     setRefreshing(true);
+    const seq = ++requestSeq.current;
     try {
       const res = await fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' } });
       if (!res.ok) throw new Error(`refresh ${res.status}`);
       const d: DashboardData = await res.json();
-      setData(d);
-      setConnError(null);
-      onRefreshed.current(d);
+      if (seq === requestSeq.current) {
+        setData(d);
+        setConnError(null);
+        onRefreshed.current(d);
+      }
     } catch (e) {
-      setConnError((e as Error).message);
+      if (seq === requestSeq.current) setConnError((e as Error).message);
     } finally {
       refreshInFlight.current = false;
       setRefreshing(false);
