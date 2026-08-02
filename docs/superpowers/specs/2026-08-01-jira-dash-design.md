@@ -89,12 +89,12 @@ Visual design copied from the oss-autopilot dashboard (verified live at localhos
 Layout, top to bottom (mirrors oss-autopilot exactly):
 
 - **Header**: centered logo + app title; below it a summary strip — left: "N in flight · N merged" (colored figures); right: "Updated Xm ago", theme toggle, 🎉 celebrate icon button, Refresh button.
-- **Stats bar**: clickable stat cards with colored left borders — Needs Attention (red), In Progress, Waiting in Review (blue), In QA (purple), TODO, Merged (purple). Click scrolls to section or routes to /merged. Animated count-up on load.
+- **Stats bar**: clickable stat cards with colored left borders — Needs Attention (red), In Progress (blue), Waiting in Review (amber), In QA (teal), TODO, Merged (purple). Click scrolls to section or routes to /merged. Animated count-up on load.
 - **Filter bar**: status dropdown, repo dropdown, free-text search, "Showing X of Y cards" on the right.
 - **Sections** (bucket lists, not side-by-side columns — oss-autopilot stacks them vertically): colored dot + section label + count chip. Needs Attention, In Progress, Waiting in Review, In QA. Row = colored status dot, monospace `PROJ-123` key, truncated summary, linked `repo#num`, status pill right-aligned (CI red / "N new comments" / merged), "Nd ago". Selected row gets a left accent border. Empty sections hidden.
 - **Detail panel** on row click: sticky right-side panel, list shrinks left. Contents: card summary (title), status pill, `PROJ-123` + `repo#num` links out; labeled mini-sections in caps — JIRA STATUS, CI STATUS, REVIEW, NEW COMMENTS (recent comments from both Jira and GitHub with author + age), DAYS SINCE ACTIVITY, CREATED, UPDATED; bottom action buttons: **Acknowledge** and **Move to…** (bucket dropdown). Close ×.
 - **TODO section** below buckets: plain list of To Do cards.
-- **Recent Activity (Last 7 Days)** panel at the bottom: events grouped by type (Merged / Comments / Status changes), each row with pill + title + link + date.
+- **Recent Activity (Last 7 Days)** panel at the bottom: merged-PR events with pill + title + link + date. (Comment/status event groups deferred.)
 - **/merged route**: Back button + sortable table (Card, PR, repo, date merged) like oss-autopilot's Merged PRs page.
 
 ## Gamification
@@ -117,7 +117,6 @@ Layout, top to bottom (mirrors oss-autopilot exactly):
 ## Out of scope (v1)
 
 - Writing to Jira or GitHub (transitions, comments, replies).
-- Drag-and-drop.
 - Charts (oss-autopilot's Monthly Activity / Top Repos chart.js panel — natural v1.1 once state accumulates history).
 - Streaks, multi-user, auth on the local server.
 - Claude integration (possible later: a skill that reads state.json and drafts replies).
