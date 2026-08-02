@@ -1,15 +1,28 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { LocationProvider, Router, Route } from 'preact-iso';
 import { useData } from './use-data.js';
 import { Board } from './board.js';
 import { Detail } from './detail.js';
 import { Extras } from './extras.js';
 import { MergedPage } from './merged.js';
+import { fireConfetti } from './celebrate.js';
 
 export function App() {
-  const { data, loading, refreshing, connError, refresh, act } = useData();
+  const { data, loading, refreshing, connError, refresh, act, onRefreshed } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [theme, setTheme] = useState(localStorage.getItem('jira-dash-theme') ?? 'dark');
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    onRefreshed.current = (d) => {
+      if (d.newlyMerged.length) {
+        fireConfetti();
+        setToast(`${d.newlyMerged.join(', ')} merged 🎉`);
+        setTimeout(() => setToast(null), 5000);
+      }
+    };
+  }, []);
+
   const flipTheme = () => {
     const t = theme === 'dark' ? 'light' : 'dark';
     setTheme(t);
@@ -53,6 +66,9 @@ export function App() {
             <span class="last-updated">
               {data.updatedAt ? `Updated ${new Date(data.updatedAt).toLocaleTimeString()}` : 'Never refreshed'}
             </span>
+            <button class="celebrate-btn" onClick={() => { fireConfetti(); }} type="button" aria-label="Celebrate" title="Celebrate">
+              🎉
+            </button>
             <button class="theme-toggle" onClick={flipTheme} type="button" aria-label="Toggle theme">
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
@@ -84,6 +100,14 @@ export function App() {
           </LocationProvider>
         </div>
       </main>
+      {toast && (
+        <div class="celebration-toast" role="status" aria-live="polite">
+          <span class="celebration-toast-message">{toast}</span>
+          <button type="button" class="celebration-toast-dismiss" aria-label="Dismiss celebration" onClick={() => setToast(null)}>
+            &times;
+          </button>
+        </div>
+      )}
     </div>
   );
 }
