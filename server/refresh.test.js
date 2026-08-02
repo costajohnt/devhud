@@ -34,9 +34,11 @@ test('todo cards split out, done cards with merged PR land in mergedCards + cele
   expect(p1.mergedCards[0].key).toBe('PROJ-3');
   expect(p1.newlyMerged).toEqual(['PROJ-3']);
   expect(p1.mergedTotal).toBe(1);
+  expect(p1.mergedLog).toEqual([{ id: 'o/r#1', at: '2026-07-03T00:00:00Z' }]);
   const p2 = buildSnapshot({ cards, prs, state, config, errors: {} });
   expect(p2.newlyMerged).toEqual([]);   // celebrated already
   expect(p2.mergedTotal).toBe(1);
+  expect(p2.mergedLog).toEqual([{ id: 'o/r#1', at: '2026-07-03T00:00:00Z' }]); // no duplicate on re-run
 });
 
 test('unlinked PRs surface; errors pass through', () => {
@@ -125,4 +127,6 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.newlyMerged.length).toBeGreaterThan(0);
   expect(p.unlinkedPrs.length).toBeGreaterThan(0);
   expect(p.errors).toEqual({ jira: null, github: null });
+  expect(p.mergedLog.length).toBeGreaterThan(0);
+  expect(p.mergedLog[0]).toEqual(expect.objectContaining({ id: expect.any(String) }));
 });

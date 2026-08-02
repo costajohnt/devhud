@@ -22,6 +22,15 @@ export function demoCards(cfg) {
     card('DEMO-92', 'Dark mode for customer portal', 'Done', 2),
     card('DEMO-112', 'Spike: evaluate feature flag providers', 'To Do', 1),
     card('DEMO-113', 'Clean up deprecated user settings endpoints', 'To Do', 3),
+    // Older Done cards behind the last 5 months of merged PRs (chart demo data).
+    card('DEMO-80', 'Add retry backoff to job queue', 'Done', 20),
+    card('DEMO-81', 'Switch mobile push provider', 'Done', 35),
+    card('DEMO-82', 'API gateway rate-limit headers', 'Done', 42),
+    card('DEMO-83', 'Webapp: lazy-load dashboard charts', 'Done', 55),
+    card('DEMO-84', 'Mobile: offline draft sync', 'Done', 68),
+    card('DEMO-85', 'API gateway auth token rotation', 'Done', 80),
+    card('DEMO-86', 'Webapp: accessibility pass on nav', 'Done', 105),
+    card('DEMO-87', 'Mobile: crash reporting integration', 'Done', 130),
   ];
 }
 
@@ -43,5 +52,15 @@ export function demoPrs(cfg) {
     pr('webapp', 470, 'DEMO-95-onboarding', { state: 'merged', mergedAt: iso(6), reviewState: 'approved', ciStatus: 'unknown' }),
     pr('webapp', 465, 'DEMO-92-dark-mode', { state: 'merged', mergedAt: iso(2), reviewState: 'approved', ciStatus: 'unknown' }),
     pr('webapp', 491, 'chore-bump-node-22', { title: 'chore: bump node to 22' }),
+    // Older merges spread over the past ~5 months, varied repos, so the
+    // charts panel (merged per month / merged by repo) has real spread.
+    pr('api-gateway', 412, 'DEMO-80-job-retry-backoff', { state: 'merged', mergedAt: iso(19), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('mobile', 220, 'DEMO-81-push-provider', { state: 'merged', mergedAt: iso(34), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('api-gateway', 398, 'DEMO-82-ratelimit-headers', { state: 'merged', mergedAt: iso(41), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('webapp', 458, 'DEMO-83-lazy-load-charts', { state: 'merged', mergedAt: iso(54), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('mobile', 205, 'DEMO-84-offline-draft-sync', { state: 'merged', mergedAt: iso(67), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('api-gateway', 371, 'DEMO-85-token-rotation', { state: 'merged', mergedAt: iso(79), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('webapp', 431, 'DEMO-86-a11y-nav', { state: 'merged', mergedAt: iso(104), reviewState: 'approved', ciStatus: 'unknown' }),
+    pr('mobile', 188, 'DEMO-87-crash-reporting', { state: 'merged', mergedAt: iso(129), reviewState: 'approved', ciStatus: 'unknown' }),
   ];
 }

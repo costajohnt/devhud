@@ -7,6 +7,7 @@
     "preact": "^10.25.0",
     "preact-iso": "^2.9.0",
     "canvas-confetti": "^1.9.4",
+    "chart.js": "^4.4.8",
     "@fontsource/plus-jakarta-sans": "^5.0.0",
     "@fontsource/jetbrains-mono": "^5.0.0"
   },

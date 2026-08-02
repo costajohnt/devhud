@@ -38,8 +38,8 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
 
     if (pr?.state === 'merged') {
       const id = `${pr.repo}#${pr.number}`;
-      if (!state.celebrated.includes(id)) {
-        state.celebrated.push(id);
+      if (!state.celebrated.some(e => e.id === id)) {
+        state.celebrated.push({ id, at: pr.mergedAt ?? new Date().toISOString() });
         state.mergedTotal += 1;
         newlyMerged.push(card.key);
       }
@@ -73,6 +73,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }) {
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     mergedCards, mergedTotal: state.mergedTotal, newlyMerged, recentActivity,
+    mergedLog: state.celebrated.map(e => ({ id: e.id, at: e.at })),
   };
 }
 

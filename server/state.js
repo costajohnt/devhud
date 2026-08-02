@@ -5,6 +5,17 @@ export function emptyState() {
   return { cards: {}, celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null };
 }
 
+// Legacy state files stored `celebrated` as plain id strings ("org/repo#42").
+// Migrate them to `{ id, at }` objects so buildSnapshot can report a merge
+// timestamp alongside the id; `at: null` marks entries with no known merge
+// time (pre-migration merges).
+function migrateCelebrated(state) {
+  state.celebrated = (state.celebrated ?? []).map(e => (
+    typeof e === 'string' ? { id: e, at: null } : e
+  ));
+  return state;
+}
+
 // A missing file is the normal first-run case (no warn). An existing but
 // unparseable file is a corruption signal: warn and fall back to the
 // rotating .bak written by saveState, rather than silently losing overrides.
@@ -12,10 +23,10 @@ export function loadState(path) {
   let raw;
   try { raw = readFileSync(path, 'utf8'); }
   catch { return emptyState(); }
-  try { return { ...emptyState(), ...JSON.parse(raw) }; }
+  try { return migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) }); }
   catch (e) {
     console.warn(`jira-dash: state file at ${path} is unparseable (${e.message}); falling back to ${path}.bak`);
-    try { return { ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) }; }
+    try { return migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) }); }
     catch { return emptyState(); }
   }
 }

@@ -7,6 +7,7 @@ import { Extras } from './extras.js';
 import { MergedPage } from './merged.js';
 import { fireConfetti } from './celebrate.js';
 import { SkeletonLoader } from './skeleton-loader.js';
+import { LazyChartPanel } from './chart-panel-lazy.js';
 
 // How often the header re-renders so the relative "Updated Xm ago" label
 // ticks — purely cosmetic, no network calls ride this interval.
@@ -155,6 +156,11 @@ function AppContent() {
                 <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} actionInFlight={actionInFlight} />
               )}
             </div>
+            {data.mergedLog.length > 0 && (
+              <div class="animate-in delay-4">
+                <LazyChartPanel mergedLog={data.mergedLog} theme={theme} />
+              </div>
+            )}
             <div class="animate-in delay-4">
               <Extras data={data} />
             </div>

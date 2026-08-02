@@ -51,6 +51,17 @@ test('saveState skips rotating a corrupt current file, protecting the existing .
   expect(JSON.parse(readFileSync(path, 'utf8')).cards.NEW.override).toBe('in_progress');
 });
 
+test('loadState migrates legacy string celebrated entries to { id, at: null }', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify({ ...emptyState(), celebrated: ['org/repo#42', { id: 'org/repo#43', at: '2026-01-01T00:00:00Z' }] }));
+  const s = loadState(path);
+  expect(s.celebrated).toEqual([
+    { id: 'org/repo#42', at: null },
+    { id: 'org/repo#43', at: '2026-01-01T00:00:00Z' },
+  ]);
+});
+
 test('saveState rotates the previous file to .bak before writing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');
