@@ -12,6 +12,12 @@ export function loadConfig(path = new URL('../config.json', import.meta.url).pat
   for (const key of ['jira', 'github']) {
     if (!c[key]) throw new Error(`config at ${path} is missing required key "${key}"`);
   }
+  for (const key of ['projectKey', 'accountId']) {
+    if (!c.jira[key]) throw new Error(`config at ${path} is missing required key "jira.${key}"`);
+  }
+  for (const key of ['username', 'org']) {
+    if (!c.github[key]) throw new Error(`config at ${path} is missing required key "github.${key}"`);
+  }
   c.port ??= 3010;
   c.jira.statuses = { ...DEFAULT_STATUSES, ...(c.jira.statuses ?? {}) };
   c.github.token ||= process.env.GITHUB_TOKEN || '';

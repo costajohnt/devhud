@@ -1,8 +1,10 @@
-// key must be followed by a non-digit so PROJ-1 doesn't match PROJ-12
+// key must be preceded by a non-alphanumeric/dash and followed by a
+// non-digit, so PROJ-1 doesn't match PROJ-12 and APP-12 doesn't match
+// WEBAPP-12-fix.
 function mentions(text, key) {
   if (!text) return false;
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`${escaped}(?![0-9])`, 'i').test(text);
+  return new RegExp(`(?<![A-Za-z0-9-])${escaped}(?![0-9])`, 'i').test(text);
 }
 
 function prMatchesCard(p, c) {

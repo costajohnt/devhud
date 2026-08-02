@@ -32,3 +32,21 @@ test('throws readable error when jira or github key missing', () => {
   writeFileSync(p, JSON.stringify({ github: { org: 'o', repos: ['r'], username: 'u' } }));
   expect(() => loadConfig(p)).toThrow(/missing required key "jira"/);
 });
+
+test('throws when jira.projectKey or jira.accountId missing', () => {
+  const p = join(dir, 'missing-jira-fields.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  expect(() => loadConfig(p)).toThrow(/missing required key "jira.projectKey"/);
+});
+
+test('throws when github.username or github.org missing', () => {
+  const p = join(dir, 'missing-github-fields.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { repos: ['r'] },
+  }));
+  expect(() => loadConfig(p)).toThrow(/missing required key "github.username"/);
+});

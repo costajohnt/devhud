@@ -14,6 +14,11 @@ test('does not partial-match PROJ-1 against PROJ-12 branch', () => {
   expect(m.get('PROJ-1')).toBeUndefined();
 });
 
+test('does not match APP-12 as a substring of WEBAPP-12-fix', () => {
+  const m = linkPrsToCards([card('APP-12')], [pr({ branch: 'WEBAPP-12-fix' })], 'APP');
+  expect(m.get('APP-12')).toBeUndefined();
+});
+
 test('links by card URL in PR body and PR URL in card description', () => {
   const m1 = linkPrsToCards([card('PROJ-3')], [pr({ body: 'closes https://x.atlassian.net/browse/PROJ-3' })], 'PROJ');
   expect(m1.get('PROJ-3')).toBeDefined();
