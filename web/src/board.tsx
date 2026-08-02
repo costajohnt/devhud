@@ -35,8 +35,12 @@ const DOT_COLOR: Record<Bucket, string> = STAT_COLOR;
 // needs_attention is excluded: the server rejects moves into that bucket.
 const DROPPABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
 
-export function Board({ data, selectedKey, onSelect, act }:
-  { data: DashboardData; selectedKey: string | null; onSelect: (k: string | null) => void; act: (b: object) => Promise<void> }) {
+// Owns the search text, drag-and-drop state, and derived filter counts that
+// the stats bar, filter bar, and section list all need to share. Lifted out
+// of a single Board component (and up into App, not into the Route's inline
+// component) so search/drag state survives re-renders instead of resetting
+// whenever a new anonymous route-component identity gets mounted.
+export function useBoardFilter(data: DashboardData | null, act: (b: object) => Promise<void>) {
   const [q, setQ] = useState('');
   const [dragOverBucket, setDragOverBucket] = useState<Bucket | null>(null);
   // dragenter/dragleave fire on every child element as the pointer crosses them;
@@ -73,89 +77,108 @@ export function Board({ data, selectedKey, onSelect, act }:
     dragCounters.current[b] = 0;
     setDragOverBucket(cur => (cur === b ? null : cur));
     const key = e.dataTransfer?.getData('text/plain');
-    if (!key) return;
+    if (!key || !data) return;
     const current = BUCKET_ORDER.find(bucket => data.buckets[bucket].some(i => i.key === key));
     if (current === b) return;
     void act({ type: 'move', key, bucket: b });
   };
+
   const match = (i: Item) =>
     !q || i.key.toLowerCase().includes(q.toLowerCase()) || i.summary.toLowerCase().includes(q.toLowerCase());
-  const total = BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].length, 0);
-  const shown = BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].filter(match).length, 0);
+  const total = data ? BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].length, 0) : 0;
+  const shown = data ? BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].filter(match).length, 0) : 0;
 
+  return {
+    q, setQ, dragOverBucket, match, total, shown,
+    onRowDragStart, onSectionDragEnter, onSectionDragLeave, onSectionDragOver, onSectionDrop,
+  };
+}
+
+export type BoardFilter = ReturnType<typeof useBoardFilter>;
+
+export function BoardStats({ data }: { data: DashboardData }) {
+  return (
+    <div class="stats-bar animate-in delay-1">
+      {BUCKET_ORDER.map(b => (
+        <a key={b} class={`stat-card ${STAT_COLOR[b]}`} href={`#${b}`}>
+          <span class="stat-value">{data.buckets[b].length}</span>
+          <span class="stat-label">{BUCKET_LABEL[b]}</span>
+        </a>
+      ))}
+      <a class="stat-card muted" href="#todo">
+        <span class="stat-value">{data.todo.length}</span>
+        <span class="stat-label">TODO</span>
+      </a>
+      <a class="stat-card purple" href="/merged">
+        <span class="stat-value">{data.mergedTotal}</span>
+        <span class="stat-label">Merged</span>
+      </a>
+    </div>
+  );
+}
+
+export function BoardFilterBar({ board }: { board: BoardFilter }) {
+  return (
+    <div class="filter-bar animate-in delay-2">
+      <input
+        class="filter-input"
+        placeholder="Search cards…"
+        value={board.q}
+        onInput={e => board.setQ((e.target as HTMLInputElement).value)}
+      />
+      <span class="filter-count">Showing {board.shown} of {board.total} cards</span>
+    </div>
+  );
+}
+
+export function BoardList({ data, selectedKey, onSelect, board }:
+  { data: DashboardData; selectedKey: string | null; onSelect: (k: string | null) => void; board: BoardFilter }) {
   return (
     <div class="pr-list">
-      <div class="stats-bar animate-in delay-1">
-        {BUCKET_ORDER.map(b => (
-          <a key={b} class={`stat-card ${STAT_COLOR[b]}`} href={`#${b}`}>
-            <span class="stat-value">{data.buckets[b].length}</span>
-            <span class="stat-label">{BUCKET_LABEL[b]}</span>
-          </a>
-        ))}
-        <a class="stat-card muted" href="#todo">
-          <span class="stat-value">{data.todo.length}</span>
-          <span class="stat-label">TODO</span>
-        </a>
-        <a class="stat-card purple" href="/merged">
-          <span class="stat-value">{data.mergedTotal}</span>
-          <span class="stat-label">Merged</span>
-        </a>
-      </div>
-      <div class="filter-bar animate-in delay-2">
-        <input
-          class="filter-input"
-          placeholder="Search cards…"
-          value={q}
-          onInput={e => setQ((e.target as HTMLInputElement).value)}
-        />
-        <span class="filter-count">Showing {shown} of {total} cards</span>
-      </div>
-      <div class="animate-in delay-3">
-        {BUCKET_ORDER.map(b => {
-          const items = data.buckets[b].filter(match);
-          if (!items.length) return null;
-          const droppable = DROPPABLE.includes(b);
-          return (
-            <section
-              key={b}
-              id={b}
-              class={`pr-section ${droppable && dragOverBucket === b ? 'drop-target-active' : ''}`}
-              onDragEnter={droppable ? () => onSectionDragEnter(b) : undefined}
-              onDragLeave={droppable ? () => onSectionDragLeave(b) : undefined}
-              onDragOver={droppable ? onSectionDragOver : undefined}
-              onDrop={droppable ? (e: DragEvent) => onSectionDrop(e, b) : undefined}
-            >
-              <div class="pr-section-header">
-                <span class={`pr-section-dot ${DOT_COLOR[b]}`} />
-                <span class="pr-section-title">{BUCKET_LABEL[b]}</span>
-                <span class="pr-section-count">{items.length}</span>
-              </div>
-              {items.map(i => {
-                const p = pill(i);
-                return (
-                  <div
-                    key={i.key}
-                    class={`pr-row ${selectedKey === i.key ? 'pr-row--selected' : ''}`}
-                    draggable
-                    onDragStart={(e: DragEvent) => onRowDragStart(e, i.key)}
-                    onClick={() => onSelect(i.key)}
-                  >
-                    <span class="pr-row-id">{i.key}</span>
-                    <span class="pr-row-title">{i.summary}</span>
-                    {i.pr && (
-                      <a class="pr-row-id" href={i.pr.url} target="_blank" onClick={e => e.stopPropagation()}>
-                        {i.pr.repo.split('/')[1]}#{i.pr.number}
-                      </a>
-                    )}
-                    {p && <span class={p.cls}>{p.text}</span>}
-                    <span class="pr-row-age">{ago(i.updatedAt)}</span>
-                  </div>
-                );
-              })}
-            </section>
-          );
-        })}
-      </div>
+      {BUCKET_ORDER.map(b => {
+        const items = data.buckets[b].filter(board.match);
+        if (!items.length) return null;
+        const droppable = DROPPABLE.includes(b);
+        return (
+          <section
+            key={b}
+            id={b}
+            class={`pr-section ${droppable && board.dragOverBucket === b ? 'drop-target-active' : ''}`}
+            onDragEnter={droppable ? () => board.onSectionDragEnter(b) : undefined}
+            onDragLeave={droppable ? () => board.onSectionDragLeave(b) : undefined}
+            onDragOver={droppable ? board.onSectionDragOver : undefined}
+            onDrop={droppable ? (e: DragEvent) => board.onSectionDrop(e, b) : undefined}
+          >
+            <div class="pr-section-header">
+              <span class={`pr-section-dot ${DOT_COLOR[b]}`} />
+              <span class="pr-section-title">{BUCKET_LABEL[b]}</span>
+              <span class="pr-section-count">{items.length}</span>
+            </div>
+            {items.map(i => {
+              const p = pill(i);
+              return (
+                <div
+                  key={i.key}
+                  class={`pr-row ${selectedKey === i.key ? 'pr-row--selected' : ''}`}
+                  draggable
+                  onDragStart={(e: DragEvent) => board.onRowDragStart(e, i.key)}
+                  onClick={() => onSelect(i.key)}
+                >
+                  <span class="pr-row-id">{i.key}</span>
+                  <span class="pr-row-title">{i.summary}</span>
+                  {i.pr && (
+                    <a class="pr-row-id" href={i.pr.url} target="_blank" onClick={e => e.stopPropagation()}>
+                      {i.pr.repo.split('/')[1]}#{i.pr.number}
+                    </a>
+                  )}
+                  {p && <span class={p.cls}>{p.text}</span>}
+                  <span class="pr-row-age">{ago(i.updatedAt)}</span>
+                </div>
+              );
+            })}
+          </section>
+        );
+      })}
     </div>
   );
 }

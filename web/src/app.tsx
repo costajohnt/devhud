@@ -1,15 +1,24 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { LocationProvider, Router, Route } from 'preact-iso';
+import { LocationProvider, useLocation } from 'preact-iso';
 import { useData } from './use-data.js';
-import { Board } from './board.js';
+import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.js';
 import { Detail } from './detail.js';
 import { Extras } from './extras.js';
 import { MergedPage } from './merged.js';
 import { fireConfetti } from './celebrate.js';
 
-export function App() {
-  const { data, loading, refreshing, connError, refresh, act, onRefreshed } = useData();
+// preact-iso's <Router>/<Route> memoize the rendered route on
+// [url, JSON.stringify(matchProps)] and freeze the FIRST render's closure —
+// an inline `component={() => (...)}` referencing outer state (data, board,
+// selected) never sees later updates, so clicks/search/refresh silently do
+// nothing after mount. Reading `path` from useLocation() and branching in
+// plain JS (as the reference dashboard this app follows does) sidesteps
+// that memoization entirely.
+function AppContent() {
+  const { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed } = useData();
   const [selected, setSelected] = useState<string | null>(null);
+  const board = useBoardFilter(data, act);
+  const { path } = useLocation();
   const [theme, setTheme] = useState(localStorage.getItem('jira-dash-theme') ?? 'dark');
   const [toast, setToast] = useState<string | null>(null);
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,26 +90,27 @@ export function App() {
         </div>
       </header>
       {connError && <div class="error-banner" role="alert"><span>Refresh failed ({connError}) — showing last data.</span></div>}
+      {actionError && <div class="error-banner" role="alert"><span>{actionError}</span></div>}
       {data.errors.jira && <div class="partial-banner" role="status"><span>Jira fetch failed: {data.errors.jira}</span></div>}
       {data.errors.github && <div class="partial-banner" role="status"><span>GitHub fetch failed: {data.errors.github}</span></div>}
       <main class="dashboard-main">
-        <div class="dashboard-content">
-          <LocationProvider>
-            <Router>
-              <Route
-                path="/"
-                component={() => (
-                  <>
-                    <Board data={data} selectedKey={selected} onSelect={setSelected} act={act} />
-                    {selectedItem && <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} />}
-                    <Extras data={data} />
-                  </>
-                )}
-              />
-              <Route path="/merged" component={() => <MergedPage data={data} />} />
-            </Router>
-          </LocationProvider>
-        </div>
+        {path === '/merged' ? (
+          <MergedPage data={data} />
+        ) : (
+          <>
+            <BoardStats data={data} />
+            <BoardFilterBar board={board} />
+            <div class="dashboard-content animate-in delay-3">
+              <BoardList data={data} selectedKey={selected} onSelect={setSelected} board={board} />
+              {selectedItem && (
+                <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} actionInFlight={actionInFlight} />
+              )}
+            </div>
+            <div class="animate-in delay-4">
+              <Extras data={data} />
+            </div>
+          </>
+        )}
       </main>
       {toast && (
         <div class="celebration-toast" role="status" aria-live="polite">
@@ -111,5 +121,13 @@ export function App() {
         </div>
       )}
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <LocationProvider>
+      <AppContent />
+    </LocationProvider>
   );
 }

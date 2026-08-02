@@ -22,8 +22,8 @@ function reviewDotClass(state: string): string {
   }
 }
 
-export function Detail({ item, onClose, act }:
-  { item: Item; onClose: () => void; act: (b: object) => Promise<void> }) {
+export function Detail({ item, onClose, act, actionInFlight }:
+  { item: Item; onClose: () => void; act: (b: object) => Promise<void>; actionInFlight: boolean }) {
   return (
     <div class="pr-detail">
       <div class="pr-detail-header">
@@ -108,12 +108,17 @@ export function Detail({ item, onClose, act }:
       </div>
 
       <div class="action-bar">
-        <button class="action-btn action-btn--override" onClick={() => act({ type: 'ack', key: item.key })}>
+        <button
+          class="action-btn action-btn--override"
+          disabled={actionInFlight}
+          onClick={() => act({ type: 'ack', key: item.key })}
+        >
           Acknowledge
         </button>
         <select
           class="filter-select"
           value=""
+          disabled={actionInFlight}
           onChange={e => {
             const b = (e.target as HTMLSelectElement).value as Bucket;
             if (b) act({ type: 'move', key: item.key, bucket: b });

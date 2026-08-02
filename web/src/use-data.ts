@@ -6,7 +6,13 @@ export function useData() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [connError, setConnError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionInFlight, setActionInFlight] = useState(false);
   const onRefreshed = useRef<(d: DashboardData) => void>(() => {});
+  // Ref (not state) so the 3s/10-min scheduled callbacks — closed over at
+  // effect-setup time — always see the current in-flight status rather than
+  // a stale snapshot from whenever the effect ran.
+  const refreshInFlight = useRef(false);
 
   const get = async () => {
     const d = await (await fetch('/api/data')).json();
@@ -15,6 +21,8 @@ export function useData() {
   };
 
   const refresh = async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     setRefreshing(true);
     try {
       const res = await fetch('/api/refresh', { method: 'POST' });
@@ -26,26 +34,39 @@ export function useData() {
     } catch (e) {
       setConnError((e as Error).message);
     } finally {
+      refreshInFlight.current = false;
       setRefreshing(false);
       setLoading(false);
     }
   };
 
   const act = async (body: object) => {
-    const res = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) {
-      setConnError(`action ${res.status}`);
-      return;
+    setActionInFlight(true);
+    try {
+      const res = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) {
+        let message = `action ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j.error) message = j.error;
+        } catch { /* non-JSON error body, keep the status-based message */ }
+        throw new Error(message);
+      }
+      await get();
+      setActionError(null);
+    } catch (e) {
+      setActionError(`Action failed: ${(e as Error).message}`);
+    } finally {
+      setActionInFlight(false);
     }
-    await get();
   };
 
   useEffect(() => {
     get().catch(() => setLoading(false));
-    const t0 = setTimeout(refresh, 3000); // silent refresh shortly after load
-    const t = setInterval(refresh, 10 * 60 * 1000); // every 10 min while tab open
+    const t0 = setTimeout(() => { if (!refreshInFlight.current) refresh(); }, 3000); // silent refresh shortly after load
+    const t = setInterval(() => { if (!refreshInFlight.current) refresh(); }, 10 * 60 * 1000); // every 10 min while tab open
     return () => { clearTimeout(t0); clearInterval(t); };
   }, []);
 
-  return { data, loading, refreshing, connError, refresh, act, onRefreshed };
+  return { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed };
 }
