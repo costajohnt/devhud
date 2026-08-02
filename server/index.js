@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFileSync, existsSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { loadConfig } from './config.js';
 import { loadState, saveState, cardState } from './state.js';
@@ -26,6 +26,10 @@ export function createServer({ config, statePath, webDist }) {
   // ever visible to the next handler.
   const state = loadState(statePath);
   return http.createServer(async (req, res) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      console.log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - start}ms`);
+    });
     const send = (code, obj) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
       const url = new URL(req.url, 'http://x');
@@ -56,16 +60,21 @@ export function createServer({ config, statePath, webDist }) {
           }
           return null;
         };
+        // "Seen" horizon is the data horizon (last snapshot's updatedAt), not
+        // wall-clock time — a comment that arrived between the last refresh
+        // and this ack must still be treated as new on the next refresh.
+        const horizon = state.snapshot?.updatedAt ?? new Date().toISOString();
         if (type === 'ack') {
-          cs.lastSeenPr = cs.lastSeenJira = new Date().toISOString();
-          cs.override = null;
+          cs.lastSeenPr = cs.lastSeenJira = horizon;
+          // override is intentionally kept: acking only clears the attention
+          // flags, it doesn't undo a prior manual move.
           const loc = findItem();
           if (loc) {
             loc.item.attention = [];
             loc.item.newComments = [];
             if (loc.from === 'needs_attention') {
               snap.buckets.needs_attention.splice(loc.i, 1);
-              const dest = loc.item.jiraStatus === config.jira?.statuses?.inTest ? 'in_qa' : 'in_progress';
+              const dest = cs.override ?? (loc.item.jiraStatus === config.jira?.statuses?.inTest ? 'in_qa' : 'in_progress');
               loc.item.bucket = dest;
               snap.buckets[dest].push(loc.item);
             }
@@ -74,6 +83,10 @@ export function createServer({ config, statePath, webDist }) {
           if (!BUCKETS.includes(bucket)) return send(400, { error: `bucket must be one of ${BUCKETS.join(', ')}` });
           cs.override = bucket;
           cs.overrideAt = new Date().toISOString();
+          // Also bump the seen horizon so old comments already accounted
+          // for by the classifier don't bounce the card straight back to
+          // needs_attention on the next refresh.
+          cs.lastSeenPr = cs.lastSeenJira = horizon;
           const loc = findItem();
           if (loc) {
             snap.buckets[loc.from].splice(loc.i, 1);
@@ -112,14 +125,17 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   const config = loadConfig();
   const root = new URL('..', import.meta.url).pathname;
   const pidPath = join(root, 'data', 'server.pid');
-  if (existsSync(pidPath)) {
-    let parsed;
-    try { parsed = JSON.parse(readFileSync(pidPath, 'utf8')); } catch { parsed = null; }
-    if (parsed?.pid) {
-      try { process.kill(parsed.pid, 0); console.error(`already running (pid ${parsed.pid})`); process.exit(1); } catch {}
-    }
-  }
   const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist') });
+  // Single-instance guard: let the OS decide via the listen() call itself
+  // rather than probing a possibly-stale pid file (which can false-negative
+  // after a crash, or false-positive if the pid was reused).
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.error(`already running on port ${config.port}`);
+      process.exit(1);
+    }
+    throw e;
+  });
   server.listen(config.port, '127.0.0.1', () => {
     writeFileSync(pidPath, JSON.stringify({ pid: process.pid, port: config.port, startedAt: new Date().toISOString() }));
     console.log(`jira-dash on http://localhost:${config.port}`);

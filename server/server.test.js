@@ -73,7 +73,7 @@ test('POST /api/action with invalid JSON returns 400', async () => {
   expect(d.error).toContain('invalid JSON body');
 });
 
-test('ack clears override', async () => {
+test('ack keeps override', async () => {
   // Seed the override via the live API (not a raw disk write) so this
   // exercises the same shared in-memory state the ack handler mutates.
   const moveRes = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -84,7 +84,8 @@ test('ack clears override', async () => {
   const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'ack', key: 'P-1' }) });
   expect(res.status).toBe(200);
-  expect(loadStateFn(statePath).cards['P-1'].override).toBeNull();
+  // Acking clears attention flags but does not undo a prior manual move.
+  expect(loadStateFn(statePath).cards['P-1'].override).toBe('in_qa');
 });
 
 test('sequential POSTs both persist (no lost update)', async () => {
