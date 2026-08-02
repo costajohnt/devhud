@@ -1,9 +1,10 @@
 import { useState } from 'preact/hooks';
 import { useData } from './use-data.js';
 import { Board } from './board.js';
+import { Detail } from './detail.js';
 
 export function App() {
-  const { data, loading, refreshing, connError, refresh } = useData();
+  const { data, loading, refreshing, connError, refresh, act } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [theme, setTheme] = useState(localStorage.getItem('jira-dash-theme') ?? 'dark');
   const flipTheme = () => {
@@ -29,6 +30,9 @@ export function App() {
   }
 
   const inFlight = Object.values(data.buckets).flat().length;
+  const selectedItem = selected
+    ? Object.values(data.buckets).flat().find(i => i.key === selected) ?? null
+    : null;
 
   return (
     <div class="dashboard">
@@ -59,7 +63,10 @@ export function App() {
       {data.errors.jira && <div class="partial-banner" role="status"><span>Jira fetch failed: {data.errors.jira}</span></div>}
       {data.errors.github && <div class="partial-banner" role="status"><span>GitHub fetch failed: {data.errors.github}</span></div>}
       <main class="dashboard-main">
-        <Board data={data} selectedKey={selected} onSelect={setSelected} />
+        <div class="dashboard-content">
+          <Board data={data} selectedKey={selected} onSelect={setSelected} />
+          {selectedItem && <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} />}
+        </div>
       </main>
     </div>
   );

@@ -45,10 +45,10 @@ export function Board({ data, selectedKey, onSelect }:
   const shown = BUCKET_ORDER.reduce((n, b) => n + data.buckets[b].filter(match).length, 0);
 
   return (
-    <div>
+    <div class="pr-list">
       <div class="stats-bar animate-in delay-1">
         {BUCKET_ORDER.map(b => (
-          <a class={`stat-card ${STAT_COLOR[b]}`} href={`#${b}`}>
+          <a key={b} class={`stat-card ${STAT_COLOR[b]}`} href={`#${b}`}>
             <span class="stat-value">{data.buckets[b].length}</span>
             <span class="stat-label">{BUCKET_LABEL[b]}</span>
           </a>
@@ -76,7 +76,7 @@ export function Board({ data, selectedKey, onSelect }:
           const items = data.buckets[b].filter(match);
           if (!items.length) return null;
           return (
-            <section id={b} class="pr-section">
+            <section key={b} id={b} class="pr-section">
               <div class="pr-section-header">
                 <span class={`pr-section-dot ${DOT_COLOR[b]}`} />
                 <span class="pr-section-title">{BUCKET_LABEL[b]}</span>
@@ -86,6 +86,7 @@ export function Board({ data, selectedKey, onSelect }:
                 const p = pill(i);
                 return (
                   <div
+                    key={i.key}
                     class={`pr-row ${selectedKey === i.key ? 'pr-row--selected' : ''}`}
                     onClick={() => onSelect(i.key)}
                   >
