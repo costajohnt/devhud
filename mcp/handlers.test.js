@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.js';
 import { loadState, saveState, emptyState } from '../server/state.js';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -137,6 +137,32 @@ test('transitionCard against a non-demo config with writeEnabled false refuses w
   const nonDemoConfig = { ...config, demo: false, writeEnabled: false };
   const result = await transitionCard({ config: nonDemoConfig, statePath, key: 'P-1', status: 'Done' });
   expect(result.error).toBe('write-back disabled; set writeEnabled: true in config.json');
+});
+
+// getSnapshot's HTTP-mode path is two round-trips (probeServer's own fetch,
+// then this one) — a server that answered the probe can still drop the
+// connection by the time the real fetch lands. This must come back as a
+// structured { error }, not a raw throw out of an MCP tool call.
+test('boardStatus returns a structured error instead of throwing when the fetch fails after a successful probe', async () => {
+  const statePath = tempStatePath();
+  const viaServerConfig = { ...config, demo: false, port: 39220 };
+  const fetchSpy = vi.spyOn(global, 'fetch')
+    .mockResolvedValueOnce({ ok: true }) // probeServer's own check
+    .mockRejectedValueOnce(new Error('socket hang up')); // the real /api/data fetch
+  const result = await boardStatus({ config: viaServerConfig, statePath });
+  expect(result).toEqual({ error: 'socket hang up' });
+  fetchSpy.mockRestore();
+});
+
+test('cardComments propagates a getSnapshot error instead of masking it as an unknown-key error', async () => {
+  const statePath = tempStatePath();
+  const viaServerConfig = { ...config, demo: false, port: 39221 };
+  const fetchSpy = vi.spyOn(global, 'fetch')
+    .mockResolvedValueOnce({ ok: true })
+    .mockRejectedValueOnce(new Error('socket hang up'));
+  const result = await cardComments({ config: viaServerConfig, statePath, key: 'P-1' });
+  expect(result).toEqual({ error: 'socket hang up' });
+  fetchSpy.mockRestore();
 });
 
 test('boardStatus (read-only) still works direct-mode even with a server.pid present', async () => {

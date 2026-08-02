@@ -16,8 +16,18 @@ import { probeServer, serverAppearsRunning, splitBrainError } from '../server/tr
 async function getSnapshot({ config, statePath }) {
   const viaServer = await probeServer(config.port);
   if (viaServer) {
-    const res = await fetch(`http://127.0.0.1:${config.port}/api/data`);
-    return await res.json();
+    // The probe and this fetch are two separate round-trips — a server that
+    // answered the probe can still drop the connection (or start erroring)
+    // by the time this call lands. Catch it into the same { error } shape
+    // every other handler returns instead of letting a raw throw propagate
+    // out of an MCP tool call.
+    try {
+      const res = await fetch(`http://127.0.0.1:${config.port}/api/data`);
+      if (!res.ok) return { error: `HTTP ${res.status}` };
+      return await res.json();
+    } catch (e) {
+      return { error: e.message };
+    }
   }
   return loadState(statePath).snapshot ?? emptySnapshot();
 }
@@ -120,6 +130,7 @@ export async function commentPr({ config, statePath, repo, number, body }) {
 export async function cardComments(ctx) {
   const { key } = ctx;
   const snapshot = await getSnapshot(ctx);
+  if (snapshot.error) return snapshot;
   const item = Object.values(snapshot.buckets ?? {}).flat().find(i => i.key === key)
     ?? (snapshot.mergedCards ?? []).find(i => i.key === key);
   if (!item) return { error: `no card with key "${key}" found on the current board` };
