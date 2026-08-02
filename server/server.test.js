@@ -40,7 +40,18 @@ beforeAll(async () => {
     prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }] };
   saveState(statePath, state);
   const config = { port: 0, jira: {}, github: {} };
-  server = createServer({ config, statePath, webDist });
+  // performWrite (used by POST /api/write) re-reads config from disk and
+  // now fails CLOSED if that read throws — so the write-back tests below
+  // need a real config.json on disk matching what they expect the gate to
+  // do (writeEnabled: false, not demo), not just an in-memory `config`.
+  const configPath = join(dir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({
+    port: 0,
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+    writeEnabled: false, demo: false,
+  }));
+  server = createServer({ config, statePath, webDist, configPath });
   await new Promise(r => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -194,7 +205,13 @@ test('POST /api/write in demo mode returns a 200 stub-success refusal, not a 403
   const webDist = join(dir, 'dist');
   mkdirSync(webDist);
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
-  const demoServer = createServer({ config: { port: 0, demo: true, jira: {}, github: {} }, statePath: demoStatePath, webDist });
+  const demoConfigPath = join(dir, 'config.json');
+  writeFileSync(demoConfigPath, JSON.stringify({
+    port: 0, demo: true,
+    jira: { projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  const demoServer = createServer({ config: { port: 0, demo: true, jira: {}, github: {} }, statePath: demoStatePath, webDist, configPath: demoConfigPath });
   await new Promise(r => demoServer.listen(0, r));
   try {
     const demoBase = `http://127.0.0.1:${demoServer.address().port}`;

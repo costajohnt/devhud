@@ -43,7 +43,7 @@ function guardMutation(req) {
   return null;
 }
 
-export function createServer({ config, statePath, webDist }) {
+export function createServer({ config, statePath, webDist, configPath }) {
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
   // once here (instead of per-request) avoids a lost-update race between
@@ -99,7 +99,7 @@ export function createServer({ config, statePath, webDist }) {
         // smuggle arbitrary keys (e.g. "config"/"state") into performWrite's
         // named parameters, potentially overriding config/state entirely.
         const { type, key, repo, number, body: text, status } = body;
-        const result = await performWrite({ config, state, type, key, repo, number, body: text, status });
+        const result = await performWrite({ config, state, type, key, repo, number, body: text, status, configPath });
         if (result.error) return send(result.status ?? 400, { error: result.error });
         if (!result.demo) saveState(statePath, state);
         return send(200, result);
@@ -129,10 +129,11 @@ export function createServer({ config, statePath, webDist }) {
 
 // main
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const config = loadConfig();
+  const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+  const config = loadConfig(configPath);
   const root = fileURLToPath(new URL('..', import.meta.url));
   const pidPath = join(root, 'data', 'server.pid');
-  const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist') });
+  const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist'), configPath });
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative
   // after a crash, or false-positive if the pid was reused).

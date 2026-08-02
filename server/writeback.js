@@ -34,7 +34,11 @@ function adfParagraph(paragraphText) {
  * markdown or rich text.
  */
 export function buildAdfDoc(text) {
-  const paragraphs = text.split(/\n{2,}/).map(adfParagraph);
+  // Normalize Windows (\r\n) and old-Mac (\r) line endings to \n before
+  // splitting, so a \r never ends up sitting inside an ADF text node (ADF
+  // has no meaning for a literal \r any more than it does for \n).
+  const normalized = text.replace(/\r\n?/g, '\n');
+  const paragraphs = normalized.split(/\n{2,}/).map(adfParagraph);
   return { type: 'doc', version: 1, content: paragraphs.length ? paragraphs : [adfParagraph('')] };
 }
 
@@ -167,14 +171,20 @@ export async function performWrite({
   // long-lived in-memory `config` a caller loaded once at process start),
   // so flipping writeEnabled (or demo) in config.json takes effect on the
   // very next write, with no server/CLI/MCP restart needed. loadConfig()
-  // is cheap — one readFileSync + JSON.parse. Falls back to the caller's
-  // in-memory `config` if the re-read throws (e.g. config.json transiently
-  // unreadable mid-edit) rather than hard-failing a write over that.
+  // is cheap — one readFileSync + JSON.parse.
+  //
+  // Fails CLOSED, not open: if the re-read throws, this refuses the write
+  // rather than falling back to the caller's possibly-stale in-memory
+  // config. The whole point of re-reading is that config.json is the
+  // current source of truth for "is writing allowed" — silently trusting
+  // a stale in-memory config on read failure would mean deleting
+  // config.json (or making it briefly unreadable) doesn't actually stop a
+  // long-running process from continuing to write.
   let liveConfig;
   try {
     liveConfig = loadConfigFn(configPath);
-  } catch {
-    liveConfig = config;
+  } catch (e) {
+    return { error: `config re-read failed (${e.message}); refusing write`, status: 403 };
   }
 
   const gate = checkWriteGate(liveConfig);

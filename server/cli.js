@@ -68,7 +68,7 @@ export function formatStatus(payload) {
 // Runs one CLI invocation and returns { code, out, err } instead of touching
 // process.exit/console directly, so tests can call it in-process. The
 // script-entry block at the bottom does the actual printing/exit.
-export async function run(argv, { config, statePath }) {
+export async function run(argv, { config, statePath, configPath }) {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -99,7 +99,9 @@ export async function run(argv, { config, statePath }) {
     let payload;
     if (cmd === 'refresh') {
       if (viaServer) {
-        payload = await (await fetch(`${base}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
+        const res = await fetch(`${base}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+        if (!res.ok) return { code: 1, out: '', err: [err, `HTTP ${res.status}`].join('\n') };
+        payload = await res.json();
       } else {
         const blockingPid = serverAppearsRunning(statePath);
         if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
@@ -216,7 +218,7 @@ export async function run(argv, { config, statePath }) {
       const blockingPid = serverAppearsRunning(statePath);
       if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
       const state = loadState(statePath);
-      result = await performWrite({ config, state, ...writeArgs });
+      result = await performWrite({ config, state, ...writeArgs, configPath });
       if (result.ok && !result.demo) {
         // Re-checked immediately before the write, not just the early guard
         // above. The external Jira/GitHub write already went through by
@@ -253,10 +255,11 @@ export async function run(argv, { config, statePath }) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    const config = loadConfig();
+    const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+    const config = loadConfig(configPath);
     const root = fileURLToPath(new URL('..', import.meta.url));
     const statePath = join(root, 'data', 'state.json');
-    const { code, out, err } = await run(process.argv.slice(2), { config, statePath });
+    const { code, out, err } = await run(process.argv.slice(2), { config, statePath, configPath });
     if (err) console.error(err);
     if (out) console.log(out);
     process.exit(code);

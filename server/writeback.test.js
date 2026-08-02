@@ -5,11 +5,14 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-// performWrite re-reads config from disk on every write (see the gate-flip
-// test below); a nonexistent path makes that re-read fail deterministically
-// so these tests fall back to the in-memory `config` they pass, regardless
-// of whether a real config.json happens to sit in the repo root right now.
+// performWrite re-reads config from disk on every write and now fails
+// CLOSED if that re-read throws (see the fail-closed test below) — so tests
+// that aren't specifically exercising the disk re-read itself stub
+// loadConfigFn to hand back the in-memory config directly, sidestepping the
+// filesystem (and any real config.json that might happen to sit in the
+// repo root) entirely.
 const NO_CONFIG = '/nonexistent/writeback-test-config.json';
+const stubLoadConfig = (cfg) => () => cfg;
 
 test('buildAdfDoc wraps plain text in a minimal single-paragraph ADF doc', () => {
   expect(buildAdfDoc('hello world')).toEqual({
@@ -36,6 +39,22 @@ test('buildAdfDoc turns a single newline into a hardBreak within one paragraph',
       { type: 'text', text: 'Line two.' },
     ] },
   ]);
+});
+
+test('buildAdfDoc normalizes \\r\\n (Windows line endings) the same as \\n — no stray \\r in any text node', () => {
+  const doc = buildAdfDoc('Line one.\r\nLine two.\r\n\r\nSecond paragraph.');
+  expect(doc.content).toEqual([
+    { type: 'paragraph', content: [
+      { type: 'text', text: 'Line one.' },
+      { type: 'hardBreak' },
+      { type: 'text', text: 'Line two.' },
+    ] },
+    { type: 'paragraph', content: [{ type: 'text', text: 'Second paragraph.' }] },
+  ]);
+  const textNodes = doc.content.flatMap(p => p.content).filter(n => n.type === 'text');
+  for (const node of textNodes) {
+    expect(node.text).not.toContain('\r');
+  }
 });
 
 test('buildAdfDoc: no text node in the output ever contains a literal newline', () => {
@@ -107,13 +126,13 @@ test('performWrite validates required fields per type', async () => {
 
 test('performWrite: demo mode returns a stub success shape without dispatching a network write', async () => {
   const config = { demo: true, writeEnabled: false, jira: {}, github: {} };
-  const result = await performWrite({ config, state: emptyState(), type: 'transition', key: 'P-1', status: 'Done', configPath: NO_CONFIG });
+  const result = await performWrite({ config, state: emptyState(), type: 'transition', key: 'P-1', status: 'Done', loadConfigFn: stubLoadConfig(config) });
   expect(result).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
 
 test('performWrite: writeEnabled false (non-demo) refuses with a real error, not a stub', async () => {
   const config = { demo: false, writeEnabled: false };
-  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath: NO_CONFIG });
+  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', loadConfigFn: stubLoadConfig(config) });
   expect(result).toEqual({ error: 'write-back disabled; set writeEnabled: true in config.json', status: 403 });
 });
 
@@ -153,12 +172,18 @@ test('performWrite re-reads the gate from disk: an in-memory config claiming wri
   expect(result).toEqual({ error: 'write-back disabled; set writeEnabled: true in config.json', status: 403 });
 });
 
-test('performWrite falls back to the passed-in config when the disk re-read throws (e.g. unreadable config.json)', async () => {
-  const config = { demo: false, writeEnabled: false }; // in-memory says refuse
-  // NO_CONFIG doesn't exist, so loadConfigFn throws and performWrite must
-  // fall back to `config` above rather than crashing or silently allowing.
+test('performWrite fails CLOSED when the config re-read throws, even if the in-memory config would have allowed the write', async () => {
+  // In-memory config says writes are allowed — but that must not matter:
+  // if the on-disk config can't be read (deleted, permissions, mid-edit),
+  // the write must refuse, not silently trust a possibly-stale in-memory
+  // config. This is what stops a long-running process from continuing to
+  // write after config.json is deleted or made briefly unreadable.
+  const config = { demo: false, writeEnabled: true, jira: {}, github: {} };
   const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath: NO_CONFIG });
-  expect(result).toEqual({ error: 'write-back disabled; set writeEnabled: true in config.json', status: 403 });
+  expect(result.status).toBe(403);
+  expect(result.error).toContain('config re-read failed');
+  expect(result.error).toContain('refusing write');
+  expect(result.ok).toBeUndefined();
 });
 
 test('performWrite: a successful write with a failing post-write refresh is still ok:true, with refreshError set', async () => {
@@ -170,7 +195,7 @@ test('performWrite: a successful write with a failing post-write refresh is stil
     const result = await performWrite({
       config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi',
       refreshFn: () => { throw new Error('jira down mid-refresh'); },
-      configPath: NO_CONFIG,
+      loadConfigFn: stubLoadConfig(config),
     });
     expect(result.ok).toBe(true);
     expect(result.error).toBeUndefined();

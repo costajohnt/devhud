@@ -15,16 +15,17 @@ import { loadConfig } from '../server/config.js';
 import { BUCKETS } from '../server/actions.js';
 import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.js';
 
+const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
 let config;
 try {
-  config = loadConfig();
+  config = loadConfig(configPath);
 } catch (e) {
   console.error(`simon-dash-mcp: failed to load config.json: ${e.message}`);
   process.exit(1);
 }
 const root = fileURLToPath(new URL('..', import.meta.url));
 const statePath = join(root, 'data', 'state.json');
-const ctx = { config, statePath };
+const ctx = { config, statePath, configPath };
 
 const server = new McpServer({ name: 'simon-dash', version: '1.0.0' });
 

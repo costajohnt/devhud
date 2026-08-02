@@ -5,6 +5,7 @@ import { loadState, saveState, emptyState } from './state.js';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import http from 'node:http';
 
 const config = {
   port: 39217, // unused by direct-mode tests; a port nothing is listening on
@@ -14,6 +15,19 @@ const config = {
 
 function tempStatePath() {
   return join(mkdtempSync(join(tmpdir(), 'jd-cli-')), 'state.json');
+}
+
+// performWrite re-reads config from disk and fails CLOSED if that read
+// throws, so write-back tests need a real config.json on disk matching the
+// gate state they're exercising, not just an in-memory config passed to run().
+function tempConfigFile(overrides) {
+  const path = join(mkdtempSync(join(tmpdir(), 'jd-cli-cfg-')), 'config.json');
+  writeFileSync(path, JSON.stringify({
+    jira: { projectKey: 'PROJ', accountId: 'me', ...(overrides.demo ? {} : { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' }) },
+    github: { username: 'john', org: 'o' },
+    ...overrides,
+  }));
+  return path;
 }
 
 test('probeServer returns false when nothing is listening on the port', async () => {
@@ -154,7 +168,8 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
 test('transition in direct mode against demo config prints a clean demo-refusal message (not an error)', async () => {
   const statePath = tempStatePath();
   const demoConfig = { port: 39217, demo: true, jira: { statuses: {} }, github: {} };
-  const { code, out, err } = await run(['transition', 'FAKE-1', 'Done'], { config: demoConfig, statePath });
+  const configPath = tempConfigFile({ demo: true });
+  const { code, out, err } = await run(['transition', 'FAKE-1', 'Done'], { config: demoConfig, statePath, configPath });
   expect(code).toBe(0);
   expect(err).toBe('direct');
   expect(out).toBe('demo mode: write-back is a no-op (nothing real to write to)');
@@ -163,14 +178,16 @@ test('transition in direct mode against demo config prints a clean demo-refusal 
 test('transition --json in direct mode against demo config returns the stub-success shape', async () => {
   const statePath = tempStatePath();
   const demoConfig = { port: 39217, demo: true, jira: { statuses: {} }, github: {} };
-  const { code, out } = await run(['transition', 'FAKE-1', 'In', 'Review', '--json'], { config: demoConfig, statePath });
+  const configPath = tempConfigFile({ demo: true });
+  const { code, out } = await run(['transition', 'FAKE-1', 'In', 'Review', '--json'], { config: demoConfig, statePath, configPath });
   expect(code).toBe(0);
   expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
 
 test('comment in direct mode refuses with the real gate error when writeEnabled is false (non-demo)', async () => {
   const statePath = tempStatePath();
-  const { code, err } = await run(['comment', 'P-1', 'looks', 'good'], { config, statePath });
+  const configPath = tempConfigFile({ demo: false, writeEnabled: false });
+  const { code, err } = await run(['comment', 'P-1', 'looks', 'good'], { config, statePath, configPath });
   expect(code).toBe(1);
   expect(err).toContain('write-back disabled; set writeEnabled: true in config.json');
 });
@@ -192,7 +209,8 @@ test('pr-comment usage error when no comment text is given', async () => {
 test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', async () => {
   const statePath = tempStatePath();
   const demoConfig = { port: 39217, demo: true, jira: {}, github: {} };
-  const { code, out } = await run(['pr-comment', 'acme/webapp#482', 'nice', 'work', '--json'], { config: demoConfig, statePath });
+  const configPath = tempConfigFile({ demo: true });
+  const { code, out } = await run(['pr-comment', 'acme/webapp#482', 'nice', 'work', '--json'], { config: demoConfig, statePath, configPath });
   expect(code).toBe(0);
   expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
@@ -270,4 +288,25 @@ test('ack goes through the HTTP transport and reports the resulting bucket', asy
   expect(code).toBe(0);
   expect(err).toBe('via server');
   expect(out).toBe('P-9 -> in_progress');
+});
+
+// A minimal double answering the probe (GET /api/data -> 200) but failing
+// the actual refresh (POST /api/refresh -> 500), so `refresh`'s via-server
+// path has to handle a non-2xx response instead of blindly parsing its body
+// as if it were a snapshot payload.
+test('refresh via the HTTP transport surfaces a non-2xx response as an error instead of parsing it as a snapshot', async () => {
+  const badServer = http.createServer((req, res) => {
+    if (req.url === '/api/data') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{}'); }
+    if (req.url === '/api/refresh') { res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'boom' })); }
+    res.writeHead(404); res.end();
+  });
+  await new Promise(r => badServer.listen(0, r));
+  try {
+    const badConfig = { port: badServer.address().port, jira: {}, github: {} };
+    const { code, err } = await run(['refresh'], { config: badConfig, statePath: '/nonexistent/should-not-be-read.json' });
+    expect(code).toBe(1);
+    expect(err).toContain('HTTP 500');
+  } finally {
+    badServer.close();
+  }
 });

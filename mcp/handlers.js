@@ -40,11 +40,14 @@ export async function doRefresh({ config, statePath }) {
   const viaServer = await probeServer(config.port);
   let payload;
   if (viaServer) {
+    let res;
     try {
-      payload = await (await fetch(`http://127.0.0.1:${config.port}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
+      res = await fetch(`http://127.0.0.1:${config.port}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
     } catch (e) {
       return { error: e.message };
     }
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    payload = await res.json();
   } else {
     const blockingPid = serverAppearsRunning(statePath);
     if (blockingPid) return { error: splitBrainError(blockingPid) };
@@ -116,7 +119,7 @@ export async function moveCard({ config, statePath, key, bucket }) {
 // doRefresh guard), so this needs the same split-brain guard before the
 // direct-mode branch. Gate refusal (writeEnabled false, or demo mode) is
 // handled entirely inside performWrite.
-async function doWrite({ config, statePath, type, key, repo, number, body, status }) {
+async function doWrite({ config, statePath, configPath, type, key, repo, number, body, status }) {
   const viaServer = await probeServer(config.port);
   const writeArgs = { type, key, repo, number, body, status };
   if (viaServer) {
@@ -135,7 +138,7 @@ async function doWrite({ config, statePath, type, key, repo, number, body, statu
   const blockingPid = serverAppearsRunning(statePath);
   if (blockingPid) return { error: splitBrainError(blockingPid) };
   const state = loadState(statePath);
-  const result = await performWrite({ config, state, ...writeArgs });
+  const result = await performWrite({ config, state, ...writeArgs, configPath });
   if (result.ok && !result.demo) {
     // Re-checked immediately before the write. The external Jira/GitHub
     // write already succeeded by this point — a blocked local save must not
@@ -149,16 +152,16 @@ async function doWrite({ config, statePath, type, key, repo, number, body, statu
   return result;
 }
 
-export async function transitionCard({ config, statePath, key, status }) {
-  return await doWrite({ config, statePath, type: 'transition', key, status });
+export async function transitionCard({ config, statePath, configPath, key, status }) {
+  return await doWrite({ config, statePath, configPath, type: 'transition', key, status });
 }
 
-export async function commentCard({ config, statePath, key, body }) {
-  return await doWrite({ config, statePath, type: 'comment', key, body });
+export async function commentCard({ config, statePath, configPath, key, body }) {
+  return await doWrite({ config, statePath, configPath, type: 'comment', key, body });
 }
 
-export async function commentPr({ config, statePath, repo, number, body }) {
-  return await doWrite({ config, statePath, type: 'pr_comment', repo, number, body });
+export async function commentPr({ config, statePath, configPath, repo, number, body }) {
+  return await doWrite({ config, statePath, configPath, type: 'pr_comment', repo, number, body });
 }
 
 export async function cardComments(ctx) {

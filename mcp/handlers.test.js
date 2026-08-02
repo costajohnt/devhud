@@ -18,6 +18,19 @@ function tempStatePath() {
   return join(mkdtempSync(join(tmpdir(), 'jd-mcp-')), 'state.json');
 }
 
+// performWrite re-reads config from disk and fails CLOSED if that read
+// throws, so write-back tests need a real config.json on disk matching the
+// gate state they're exercising, not just an in-memory config.
+function tempConfigFile(overrides) {
+  const path = join(mkdtempSync(join(tmpdir(), 'jd-mcp-cfg-')), 'config.json');
+  writeFileSync(path, JSON.stringify({
+    jira: { projectKey: 'DEMO', accountId: 'me', ...(overrides.demo ? {} : { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' }) },
+    github: { username: 'costajohnt', org: 'acme' },
+    ...overrides,
+  }));
+  return path;
+}
+
 function seedSnapshot(statePath) {
   const state = emptyState();
   state.snapshot = {
@@ -116,19 +129,22 @@ test('ackCard refuses a direct-mode write when a server.pid exists for a live pr
 
 test('transitionCard against demo config returns the stub-success refusal, not an error', async () => {
   const statePath = tempStatePath();
-  const result = await transitionCard({ config, statePath, key: 'P-1', status: 'Done' });
+  const configPath = tempConfigFile({ demo: true });
+  const result = await transitionCard({ config, statePath, configPath, key: 'P-1', status: 'Done' });
   expect(result).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
 
 test('commentCard against demo config returns the stub-success refusal', async () => {
   const statePath = tempStatePath();
-  const result = await commentCard({ config, statePath, key: 'P-1', body: 'looks good' });
+  const configPath = tempConfigFile({ demo: true });
+  const result = await commentCard({ config, statePath, configPath, key: 'P-1', body: 'looks good' });
   expect(result.demo).toBe(true);
 });
 
 test('commentPr against demo config returns the stub-success refusal', async () => {
   const statePath = tempStatePath();
-  const result = await commentPr({ config, statePath, repo: 'acme/webapp', number: 482, body: 'nice work' });
+  const configPath = tempConfigFile({ demo: true });
+  const result = await commentPr({ config, statePath, configPath, repo: 'acme/webapp', number: 482, body: 'nice work' });
   expect(result.demo).toBe(true);
 });
 
@@ -143,7 +159,8 @@ test('transitionCard refuses a direct-mode write when a server.pid exists for a 
 test('transitionCard against a non-demo config with writeEnabled false refuses with a real error', async () => {
   const statePath = tempStatePath();
   const nonDemoConfig = { ...config, demo: false, writeEnabled: false };
-  const result = await transitionCard({ config: nonDemoConfig, statePath, key: 'P-1', status: 'Done' });
+  const configPath = tempConfigFile({ demo: false, writeEnabled: false });
+  const result = await transitionCard({ config: nonDemoConfig, statePath, configPath, key: 'P-1', status: 'Done' });
   expect(result.error).toBe('write-back disabled; set writeEnabled: true in config.json');
 });
 
@@ -170,6 +187,17 @@ test('cardComments propagates a getSnapshot error instead of masking it as an un
     .mockRejectedValueOnce(new Error('socket hang up'));
   const result = await cardComments({ config: viaServerConfig, statePath, key: 'P-1' });
   expect(result).toEqual({ error: 'socket hang up' });
+  fetchSpy.mockRestore();
+});
+
+test('doRefresh via the HTTP transport surfaces a non-2xx response as an error instead of parsing it as a snapshot', async () => {
+  const statePath = tempStatePath();
+  const viaServerConfig = { ...config, demo: false, port: 39222 };
+  const fetchSpy = vi.spyOn(global, 'fetch')
+    .mockResolvedValueOnce({ ok: true }) // probeServer's own check
+    .mockResolvedValueOnce({ ok: false, status: 500 }); // the real /api/refresh fetch
+  const result = await doRefresh({ config: viaServerConfig, statePath });
+  expect(result).toEqual({ error: 'HTTP 500' });
   fetchSpy.mockRestore();
 });
 
