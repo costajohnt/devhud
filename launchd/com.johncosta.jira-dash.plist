@@ -7,6 +7,11 @@
   <array><string>/bin/bash</string><string>REPLACE_WITH_REPO_PATH/bin/start.sh</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
   <key>StandardOutPath</key><string>/tmp/jira-dash.log</string>
   <key>StandardErrorPath</key><string>/tmp/jira-dash.log</string>
 </dict>
