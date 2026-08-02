@@ -7,8 +7,10 @@ export function adfToText(node) {
   return node.type === 'paragraph' ? inner + '\n' : inner;
 }
 
+// Done cards within 14 days are fetched so merged+Done cards flow to
+// mergedCards/celebration once before aging out.
 export function buildJql(cfg) {
-  return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}" AND statusCategory != Done ORDER BY updated DESC`;
+  return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
 }
 
 export function mapIssue(issue, cfg) {

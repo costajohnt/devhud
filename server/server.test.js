@@ -79,3 +79,16 @@ test('ack clears override', async () => {
   state = loadStateFn(statePath);
   expect(state.cards['P-1'].override).toBeNull();
 });
+
+test('sequential POSTs both persist (no lost update)', async () => {
+  const ack = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ack', key: 'P-1' }) });
+  expect(ack.status).toBe(200);
+  const move = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'move', key: 'P-1', bucket: 'in_qa' }) });
+  expect(move.status).toBe(200);
+  const { loadState: loadStateFn } = await import('./state.js');
+  const state = loadStateFn(statePath);
+  expect(state.cards['P-1'].lastSeenJira).not.toBeNull();
+  expect(state.cards['P-1'].override).toBe('in_qa');
+});

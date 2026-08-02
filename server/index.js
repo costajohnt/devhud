@@ -16,18 +16,22 @@ async function readBody(req) {
 }
 
 export function createServer({ config, statePath, webDist }) {
+  // The in-memory `state` object is the single source of truth for the
+  // life of the process; disk (statePath) is write-through only. Loading
+  // once here (instead of per-request) avoids a lost-update race between
+  // concurrent /api/refresh and /api/action calls, since Node's single
+  // process serializes handler execution around each await.
+  const state = loadState(statePath);
   return http.createServer(async (req, res) => {
     const send = (code, obj) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname === '/api/data' && req.method === 'GET') {
-        const state = loadState(statePath);
         return send(200, state.snapshot ?? { updatedAt: null, errors: { jira: null, github: null },
           buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
           todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] });
       }
       if (url.pathname === '/api/refresh' && req.method === 'POST') {
-        const state = loadState(statePath);
         const payload = await refresh({ config, state });
         saveState(statePath, state);
         return send(200, payload);
@@ -40,7 +44,6 @@ export function createServer({ config, statePath, webDist }) {
           return send(400, { error: 'invalid JSON body' });
         }
         const { type, key, bucket } = body;
-        const state = loadState(statePath);
         const cs = cardState(state, key);
         const snap = state.snapshot;
         const findItem = () => {
@@ -108,7 +111,7 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
     try { process.kill(pid, 0); console.error(`already running (pid ${pid})`); process.exit(1); } catch {}
   }
   const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist') });
-  server.listen(config.port, () => {
+  server.listen(config.port, '127.0.0.1', () => {
     writeFileSync(pidPath, JSON.stringify({ pid: process.pid, port: config.port, startedAt: new Date().toISOString() }));
     console.log(`jira-dash on http://localhost:${config.port}`);
   });

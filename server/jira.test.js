@@ -11,6 +11,11 @@ test('buildJql filters project, assignee, not-done', () => {
   expect(jql).toContain('statusCategory != Done');
 });
 
+test('buildJql includes recently-updated Done cards', () => {
+  const jql = buildJql(cfg);
+  expect(jql).toContain('updated >= -14d');
+});
+
 test('mapIssue flattens ADF description and comments', () => {
   const issue = {
     key: 'PROJ-9',
