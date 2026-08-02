@@ -3,7 +3,7 @@ import { run, formatStatus, probeServer } from './cli.js';
 import { createServer } from './index.js';
 import { loadState, saveState, emptyState } from './state.js';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const config = {
@@ -103,6 +103,52 @@ test('move with an invalid bucket exits 1 with the server-side error', async () 
   const { code, err } = await run(['move', 'P-1', 'needs_attention'], { config, statePath });
   expect(code).toBe(1);
   expect(err).toContain('bucket must be one of');
+});
+
+test('direct-mode ack refuses when a server.pid exists for a live process (split-brain guard)', async () => {
+  const statePath = tempStatePath();
+  const state = emptyState();
+  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
+    buckets: { needs_attention: [{ key: 'P-1', summary: 'S', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: [], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+  saveState(statePath, state);
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+
+  const { code, err } = await run(['ack', 'P-1'], { config, statePath });
+  expect(code).toBe(1);
+  expect(err).toContain(`a server (pid ${process.pid}) appears to be running`);
+  // No mutation happened: the card is untouched on disk.
+  expect(loadState(statePath).cards['P-1']).toBeUndefined();
+});
+
+test('direct-mode refresh refuses when a server.pid exists for a live process', async () => {
+  const statePath = tempStatePath();
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  const { code, err } = await run(['refresh'], { config, statePath });
+  expect(code).toBe(1);
+  expect(err).toContain('appears to be running but did not answer the probe');
+});
+
+test('status still works direct-mode even with a server.pid present (read-only)', async () => {
+  const statePath = tempStatePath();
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  const { code, out } = await run(['status'], { config, statePath });
+  expect(code).toBe(0);
+  expect(out).toBe('No data yet — run `jira-dash refresh` to fetch a snapshot.');
+});
+
+test('a stale server.pid (dead process) does not block direct-mode writes', async () => {
+  const statePath = tempStatePath();
+  const state = emptyState();
+  state.snapshot = { updatedAt: 'x', errors: { jira: null, github: null },
+    buckets: { needs_attention: [{ key: 'P-1', summary: 'S', jiraStatus: 'In Progress', bucket: 'needs_attention', attention: [], newComments: [] }], in_progress: [], waiting_review: [], in_qa: [] },
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] };
+  saveState(statePath, state);
+  // A pid essentially guaranteed not to be alive.
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: 999999, port: 39217, startedAt: 'x' }));
+  const { code, out } = await run(['ack', 'P-1'], { config, statePath });
+  expect(code).toBe(0);
+  expect(out).toBe('P-1 -> in_progress');
 });
 
 test('exit code 1 for an unknown command', async () => {

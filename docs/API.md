@@ -13,11 +13,12 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
   "updatedAt": null,
   "errors": { "jira": null, "github": null },
   "buckets": { "needs_attention": [], "in_progress": [], "waiting_review": [], "in_qa": [] },
-  "todo": [], "unlinkedPrs": [], "mergedCards": [], "mergedTotal": 0, "newlyMerged": [], "recentActivity": []
+  "todo": [], "unlinkedPrs": [], "mergedCards": [], "mergedTotal": 0, "newlyMerged": [], "recentActivity": [],
+  "closedPrs": [], "prLog": []
 }
 ```
 
-Note this placeholder predates `closedPrs` and `prLog` and does not include them. The web client only reads `prLog`/`closedPrs` after a real snapshot exists (see Payload Shape below), so this is a display-only gap on true first boot, before any refresh has ever run.
+This placeholder carries every top-level key a real snapshot has (empty arrays/zeros in place of real data), so callers — the web client, the CLI's direct-mode `status` — never have to special-case true first boot before any refresh has ever run.
 
 ## POST /api/refresh
 

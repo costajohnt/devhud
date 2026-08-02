@@ -9,12 +9,19 @@
 // human mode.
 import { parseArgs } from 'node:util';
 import { spawnSync, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { loadState, saveState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
 import { applyAction, BUCKETS } from './actions.js';
+import { probeServer } from './transport.js';
+
+// Re-exported for backward compatibility: server/cli.test.js imports
+// probeServer from here, and server/transport.js is also used directly by
+// the MCP server (mcp/handlers.js) so both transports can't drift.
+export { probeServer };
 
 const HELP = `jira-dash — Jira/GitHub board CLI
 
@@ -31,16 +38,35 @@ If a jira-dash server is already running on the configured port, commands
 go through its HTTP API; otherwise they operate directly on data/state.json.
 `;
 
-// ~500ms budget: long enough that a live server on loopback always answers,
-// short enough that "no server running" doesn't make every command feel stuck.
-export async function probeServer(port, { timeoutMs = 500 } = {}) {
+// Split-brain guard for direct-mode WRITES (ack/move, refresh): the 500ms
+// probe can time out while a real server is nonetheless alive (slow
+// response, momentary hiccup), and if direct mode writes state.json in
+// that window, the server's next save silently clobbers it (or vice
+// versa) since neither knows about the other's write. server/index.js
+// writes data/server.pid with { pid, ... } on successful bind and removes
+// it on shutdown, so a stale pid file (crash, kill -9) is the only false
+// positive — process.kill(pid, 0) still filters those out (ESRCH) unless
+// the pid was reused by an unrelated process, an accepted residual risk.
+// Read-only `status` doesn't call this — it's safe to read state.json
+// while a server independently holds it in memory.
+function serverAppearsRunning(statePath) {
+  let pid;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs) });
-    return res.ok;
+    pid = JSON.parse(readFileSync(join(dirname(statePath), 'server.pid'), 'utf8')).pid;
   } catch {
-    return false;
+    return null;
+  }
+  if (!pid) return null;
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return null;
   }
 }
+
+const splitBrainError = (pid) =>
+  `a server (pid ${pid}) appears to be running but did not answer the probe; retry, or stop it before using direct mode`;
 
 export function formatStatus(payload) {
   if (!payload.updatedAt) {
@@ -97,6 +123,8 @@ export async function run(argv, { config, statePath }) {
       if (viaServer) {
         payload = await (await fetch(`${base}/api/refresh`, { method: 'POST' })).json();
       } else {
+        const blockingPid = serverAppearsRunning(statePath);
+        if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
         // refresh() logs an operational one-liner via console.log — fine
         // when the server does it (that's its process log), but it would
         // corrupt this command's stdout (plain status text, or --json).
@@ -141,6 +169,8 @@ export async function run(argv, { config, statePath }) {
         result = { ok: true, bucket: item?.bucket ?? null };
       }
     } else {
+      const blockingPid = serverAppearsRunning(statePath);
+      if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
       const state = loadState(statePath);
       const r = applyAction({ state, config, type: cmd, key, bucket });
       if (r.error) {
@@ -168,11 +198,16 @@ export async function run(argv, { config, statePath }) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const config = loadConfig();
-  const root = new URL('..', import.meta.url).pathname;
-  const statePath = join(root, 'data', 'state.json');
-  const { code, out, err } = await run(process.argv.slice(2), { config, statePath });
-  if (err) console.error(err);
-  if (out) console.log(out);
-  process.exit(code);
+  try {
+    const config = loadConfig();
+    const root = new URL('..', import.meta.url).pathname;
+    const statePath = join(root, 'data', 'state.json');
+    const { code, out, err } = await run(process.argv.slice(2), { config, statePath });
+    if (err) console.error(err);
+    if (out) console.log(out);
+    process.exit(code);
+  } catch (e) {
+    console.error(`error: ${e.message}`);
+    process.exit(1);
+  }
 }

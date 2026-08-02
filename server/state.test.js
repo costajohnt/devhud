@@ -1,5 +1,6 @@
 import { test, expect, vi } from 'vitest';
-import { loadState, saveState, cardState, emptyState } from './state.js';
+import { loadState, saveState, cardState, emptyState, emptySnapshot } from './state.js';
+import { buildSnapshot } from './refresh.js';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -94,6 +95,12 @@ test('loadState backfill does not clobber an existing prLog entry for the same i
   writeFileSync(path, JSON.stringify(state));
   const s = loadState(path);
   expect(s.prLog['org/repo#42'].openedAt).toBe('2025-12-01T00:00:00Z');
+});
+
+test('emptySnapshot() has the same top-level keys as a real buildSnapshot payload', () => {
+  const config = { jira: { statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } }, github: { username: 'me' } };
+  const real = buildSnapshot({ cards: [], prs: [], state: emptyState(), config, errors: {} });
+  expect(Object.keys(emptySnapshot()).sort()).toEqual(Object.keys(real).sort());
 });
 
 test('saveState rotates the previous file to .bak before writing', () => {
