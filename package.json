@@ -2,9 +2,11 @@
   "name": "jira-dash",
   "private": true,
   "type": "module",
+  "bin": { "jira-dash": "server/cli.js" },
   "scripts": {
     "test": "vitest run",
     "start": "node server/index.js",
+    "cli": "node server/cli.js",
     "build": "cd web && npm run build"
   },
   "devDependencies": { "vitest": "^3.0.0" }

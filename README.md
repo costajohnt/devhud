@@ -58,6 +58,27 @@ launchctl load ~/Library/LaunchAgents/com.johncosta.jira-dash.plist
 
 Logs go to `/tmp/jira-dash.log`. To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.jira-dash.plist`.
 
+## CLI
+
+`server/cli.js` is a plain-JS, dependency-free CLI over the same modules the
+server uses. If a jira-dash server is already running on the configured
+port, commands go through its HTTP API; otherwise they operate directly on
+`data/state.json` — either way the result is the same, and which transport
+was used is printed to stderr.
+
+```bash
+node server/cli.js status                # counts + needs-attention rows
+node server/cli.js status --json         # full snapshot
+node server/cli.js refresh               # fetch fresh data, then show status
+node server/cli.js ack PROJ-123          # clear attention flags on a card
+node server/cli.js move PROJ-123 in_qa   # pin a card to a bucket
+node server/cli.js serve                 # run the server in the foreground
+node server/cli.js open                  # open the dashboard in your browser
+```
+
+Also runnable as `npm run cli -- status`, or (once linked/installed) as the
+`jira-dash` bin.
+
 ## API
 
 Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the last snapshot from memory, `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds it, `POST /api/action` applies an `ack` or `move` to one card. All manual moves and acknowledgements are stored locally in `data/state.json`; Jira and GitHub are never written to.

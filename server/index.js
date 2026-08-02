@@ -2,13 +2,12 @@ import http from 'node:http';
 import { readFileSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { loadConfig } from './config.js';
-import { loadState, saveState, cardState } from './state.js';
+import { loadState, saveState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
+import { applyAction } from './actions.js';
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
-
-const BUCKETS = ['in_progress', 'waiting_review', 'in_qa'];
 
 async function readBody(req) {
   let s = ''; for await (const c of req) s += c;
@@ -34,9 +33,7 @@ export function createServer({ config, statePath, webDist }) {
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname === '/api/data' && req.method === 'GET') {
-        return send(200, state.snapshot ?? { updatedAt: null, errors: { jira: null, github: null },
-          buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-          todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [] });
+        return send(200, state.snapshot ?? emptySnapshot());
       }
       if (url.pathname === '/api/refresh' && req.method === 'POST') {
         const payload = await refresh({ config, state });
@@ -51,49 +48,8 @@ export function createServer({ config, statePath, webDist }) {
           return send(400, { error: 'invalid JSON body' });
         }
         const { type, key, bucket } = body;
-        const cs = cardState(state, key);
-        const snap = state.snapshot;
-        const findItem = () => {
-          for (const b of Object.keys(snap?.buckets ?? {})) {
-            const i = snap.buckets[b].findIndex(x => x.key === key);
-            if (i >= 0) return { from: b, i, item: snap.buckets[b][i] };
-          }
-          return null;
-        };
-        // "Seen" horizon is the data horizon (last snapshot's updatedAt), not
-        // wall-clock time — a comment that arrived between the last refresh
-        // and this ack must still be treated as new on the next refresh.
-        const horizon = state.snapshot?.updatedAt ?? new Date().toISOString();
-        if (type === 'ack') {
-          cs.lastSeenPr = cs.lastSeenJira = horizon;
-          // override is intentionally kept: acking only clears the attention
-          // flags, it doesn't undo a prior manual move.
-          const loc = findItem();
-          if (loc) {
-            loc.item.attention = [];
-            loc.item.newComments = [];
-            if (loc.from === 'needs_attention') {
-              snap.buckets.needs_attention.splice(loc.i, 1);
-              const dest = cs.override ?? (loc.item.jiraStatus === config.jira?.statuses?.inTest ? 'in_qa' : 'in_progress');
-              loc.item.bucket = dest;
-              snap.buckets[dest].push(loc.item);
-            }
-          }
-        } else if (type === 'move') {
-          if (!BUCKETS.includes(bucket)) return send(400, { error: `bucket must be one of ${BUCKETS.join(', ')}` });
-          cs.override = bucket;
-          cs.overrideAt = new Date().toISOString();
-          // Also bump the seen horizon so old comments already accounted
-          // for by the classifier don't bounce the card straight back to
-          // needs_attention on the next refresh.
-          cs.lastSeenPr = cs.lastSeenJira = horizon;
-          const loc = findItem();
-          if (loc) {
-            snap.buckets[loc.from].splice(loc.i, 1);
-            loc.item.bucket = bucket;
-            snap.buckets[bucket].push(loc.item);
-          }
-        } else return send(400, { error: 'unknown action type' });
+        const result = applyAction({ state, config, type, key, bucket });
+        if (result.error) return send(result.status ?? 400, { error: result.error });
         saveState(statePath, state);
         return send(200, { ok: true });
       }

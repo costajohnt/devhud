@@ -62,6 +62,18 @@ export function saveState(path, state) {
   renameSync(tmp, path);
 }
 
+// Placeholder shape for GET /api/data (and the CLI's direct-mode `status`)
+// before any refresh has ever run, so callers get a well-formed empty board
+// instead of null. Documented in docs/API.md as predating closedPrs/prLog —
+// intentionally not backfilled here (display-only gap on true first boot).
+export function emptySnapshot() {
+  return {
+    updatedAt: null, errors: { jira: null, github: null },
+    buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+  };
+}
+
 export function cardState(state, key) {
   return (state.cards[key] ??= { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null });
 }
