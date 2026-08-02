@@ -8,7 +8,7 @@ Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serv
 
 Copy `config.example.json` to `config.json` and fill in:
 
-- **Jira**: Get your API token at https://id.atlassian.com/manage-profile/security/api-tokens. Get your accountId by visiting `https://<baseUrl>/rest/api/3/myself` (e.g., `https://mysite.atlassian.net/rest/api/3/myself`) while logged in, then copy the `accountId` field.
+- **Jira**: Get your API token at https://id.atlassian.com/manage-profile/security/api-tokens. Get your accountId by visiting `https://<baseUrl>/rest/api/3/myself` (e.g., `https://mysite.atlassian.net/rest/api/3/myself`) while logged in, then copy the `accountId` field, or ask a Claude session with the Atlassian MCP to look it up.
 - **GitHub**: Create a token with `repo` read scope. Falls back to `GITHUB_TOKEN` env var if not provided in config.
 
 ### 2. Install
@@ -64,7 +64,7 @@ All manual moves and acknowledgements are stored locally in `data/state.json`. J
 
 ## Buckets
 
-- **needs_attention**: New PR comments from others, CI failures, or a merged PR on a card that wasn't in "In Test" status. Clear by acknowledging.
+- **needs_attention**: Triggered by new PR comments from others since last-seen, new Jira card comments from others since last-seen, CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done" status. Acknowledging clears the attention flags and override. A manual move pins the card to that bucket until a new attention trigger fires, then re-evaluates.
 - **in_qa**: Jira card status is "In Test".
 - **waiting_review**: Open PR with review requests or active review comments.
 - **in_progress**: Everything else (default).
