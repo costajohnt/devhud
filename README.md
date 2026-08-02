@@ -4,6 +4,18 @@ Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serv
 
 See [docs/API.md](docs/API.md) for the full HTTP API reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the module map, data flow, and design decisions.
 
+![Board view: cards grouped into Needs Attention, In Progress, Waiting in Review, and In QA, with stat cards for each bucket plus Merged and Closed totals.](docs/images/board.jpg)
+
+The board groups cards into buckets, with filters for status and repo and a search box above the list.
+
+![Detail panel: a selected card showing its Jira status, CI status, review state, days since activity, and creation date.](docs/images/detail.jpg)
+
+Clicking a card opens its detail panel with Jira status, CI/review state, and comment history.
+
+![Charts and activity: a monthly PR activity line chart, a top-repos stacked bar chart, and a Recent Activity feed grouped by Merged, Closed, and Comments.](docs/images/charts.jpg)
+
+Charts and the Recent Activity feed round out the board with PR lifecycle trends and a 7-day activity log.
+
 ## Features
 
 - **Buckets**: cards land in Needs Attention, In Progress, Waiting in Review, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
@@ -36,7 +48,7 @@ cd web && npm i
 cd ../mcp && npm i
 ```
 
-The third install is only needed if you plan to use the MCP server (see Claude integration below) — but do it now anyway: skipping it is the most common fresh-clone mistake and shows up as `ERR_MODULE_NOT_FOUND` the first time `mcp/index.js` runs.
+The third install is only needed if you plan to use the MCP server (see Claude integration below) — but do it now anyway: skipping it is the most common fresh-clone mistake and shows up as `ERR_MODULE_NOT_FOUND` the first time `mcp/index.ts` runs.
 
 ### 3. Run
 
@@ -64,25 +76,25 @@ Logs go to `/tmp/simon-dash.log`. To unload: `launchctl unload ~/Library/LaunchA
 
 ## CLI
 
-`server/cli.js` is a plain-JS, dependency-free CLI over the same modules the
+`server/cli.ts` is a plain-TS, dependency-free CLI over the same modules the
 server uses. If a simon-dash server is already running on the configured
 port, commands go through its HTTP API; otherwise they operate directly on
 `data/state.json`; either way the result is the same, and which transport
 was used is printed to stderr.
 
 ```bash
-node server/cli.js status                # counts + needs-attention rows
-node server/cli.js status --json         # full snapshot
-node server/cli.js refresh               # fetch fresh data, then show status
-node server/cli.js ack PROJ-123          # clear attention flags on a card
-node server/cli.js move PROJ-123 in_qa   # pin a card to a bucket
-node server/cli.js serve                 # run the server in the foreground
-node server/cli.js open                  # open the dashboard in your browser
+node server/cli.ts status                # counts + needs-attention rows
+node server/cli.ts status --json         # full snapshot
+node server/cli.ts refresh               # fetch fresh data, then show status
+node server/cli.ts ack PROJ-123          # clear attention flags on a card
+node server/cli.ts move PROJ-123 in_qa   # pin a card to a bucket
+node server/cli.ts serve                 # run the server in the foreground
+node server/cli.ts open                  # open the dashboard in your browser
 
 # Write-back (mutates real Jira/GitHub — see the Write-back section below)
-node server/cli.js transition PROJ-123 "In Review"
-node server/cli.js comment PROJ-123 "picking this back up today"
-node server/cli.js pr-comment acme/webapp#482 "looks good, one nit inline"
+node server/cli.ts transition PROJ-123 "In Review"
+node server/cli.ts comment PROJ-123 "picking this back up today"
+node server/cli.ts pr-comment acme/webapp#482 "looks good, one nit inline"
 ```
 
 Also runnable as `npm run cli -- status`, or (once linked/installed) as the
@@ -101,7 +113,7 @@ cd mcp && npm i
 Register it with the Claude Code CLI:
 
 ```bash
-claude mcp add simon-dash --scope user -- node /path/to/simon-dash/mcp/index.js
+claude mcp add simon-dash --scope user -- node /path/to/simon-dash/mcp/index.ts
 ```
 
 Or add it directly to `.mcp.json`:
@@ -111,7 +123,7 @@ Or add it directly to `.mcp.json`:
   "mcpServers": {
     "simon-dash": {
       "command": "node",
-      "args": ["/path/to/simon-dash/mcp/index.js"]
+      "args": ["/path/to/simon-dash/mcp/index.ts"]
     }
   }
 }
@@ -134,7 +146,7 @@ simon-dash can optionally *write* to Jira and GitHub — transition a card's sta
 - The gate is re-checked from disk on **every single write** (not just at process startup) — `performWrite()` reloads `config.json` fresh before deciding whether to allow the call. Flip `writeEnabled` to `false` in `config.json` and the very next `transition`/`comment`/`pr-comment` refuses, with no server/CLI/MCP restart required. This fails **closed**: if that fresh read throws for any reason (the file was deleted, permissions changed, it's transiently unreadable mid-edit), the write is refused rather than falling back to whatever config the caller already had in memory — a long-running process can't keep writing just because its in-memory config happened to say `writeEnabled: true` before `config.json` became unreadable.
 - Demo mode **always** refuses writes, regardless of `writeEnabled` — there's nothing real for canned demo data to write to. That refusal is a "stub success" (not an error), so scripting against the CLI/MCP doesn't need special-case error handling for demo mode.
 - The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Writes only happen via an explicit CLI command (`transition`/`comment`/`pr-comment`) or an explicit MCP tool call, both of which require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose. Nothing in simon-dash writes to Jira or GitHub automatically or on a timer.
-- All three write paths (the CLI, the MCP tools, and `POST /api/write` itself) funnel through the same `performWrite()` function (`server/writeback.js`), so the gate and the "refresh the board after a successful write" behavior can't drift between them. See [docs/API.md](docs/API.md#post-apiwrite) for the endpoint and gate semantics in full.
+- All three write paths (the CLI, the MCP tools, and `POST /api/write` itself) funnel through the same `performWrite()` function (`server/writeback.ts`), so the gate and the "refresh the board after a successful write" behavior can't drift between them. See [docs/API.md](docs/API.md#post-apiwrite) for the endpoint and gate semantics in full.
 
 ## API
 
