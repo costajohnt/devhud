@@ -9,18 +9,18 @@
 // human mode.
 import { parseArgs } from 'node:util';
 import { spawnSync, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { loadState, saveState, emptySnapshot } from './state.js';
 import { refresh } from './refresh.js';
 import { applyAction, BUCKETS } from './actions.js';
-import { probeServer } from './transport.js';
+import { probeServer, serverAppearsRunning, splitBrainError } from './transport.js';
 
 // Re-exported for backward compatibility: server/cli.test.js imports
 // probeServer from here, and server/transport.js is also used directly by
-// the MCP server (mcp/handlers.js) so both transports can't drift.
+// the MCP server (mcp/handlers.js) so all transports (HTTP proxy, direct
+// disk access, and the split-brain guard) can't drift between callers.
 export { probeServer };
 
 const HELP = `jira-dash — Jira/GitHub board CLI
@@ -37,36 +37,6 @@ Usage:
 If a jira-dash server is already running on the configured port, commands
 go through its HTTP API; otherwise they operate directly on data/state.json.
 `;
-
-// Split-brain guard for direct-mode WRITES (ack/move, refresh): the 500ms
-// probe can time out while a real server is nonetheless alive (slow
-// response, momentary hiccup), and if direct mode writes state.json in
-// that window, the server's next save silently clobbers it (or vice
-// versa) since neither knows about the other's write. server/index.js
-// writes data/server.pid with { pid, ... } on successful bind and removes
-// it on shutdown, so a stale pid file (crash, kill -9) is the only false
-// positive — process.kill(pid, 0) still filters those out (ESRCH) unless
-// the pid was reused by an unrelated process, an accepted residual risk.
-// Read-only `status` doesn't call this — it's safe to read state.json
-// while a server independently holds it in memory.
-function serverAppearsRunning(statePath) {
-  let pid;
-  try {
-    pid = JSON.parse(readFileSync(join(dirname(statePath), 'server.pid'), 'utf8')).pid;
-  } catch {
-    return null;
-  }
-  if (!pid) return null;
-  try {
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
-
-const splitBrainError = (pid) =>
-  `a server (pid ${pid}) appears to be running but did not answer the probe; retry, or stop it before using direct mode`;
 
 export function formatStatus(payload) {
   if (!payload.updatedAt) {

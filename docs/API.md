@@ -2,6 +2,8 @@
 
 jira-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Three endpoints under `/api/`, plus static file serving for the SPA.
 
+There are two other ways to reach the same board: `server/cli.js` (a plain-JS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
+
 ## GET /api/data
 
 Returns the last computed snapshot from memory. Does not touch Jira or GitHub; it's a cheap read of whatever `/api/refresh` last produced.

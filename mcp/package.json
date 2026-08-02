@@ -1,0 +1,10 @@
+{
+  "name": "jira-dash-mcp",
+  "private": true,
+  "type": "module",
+  "bin": { "jira-dash-mcp": "./index.js" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0"
+  }
+}

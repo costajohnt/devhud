@@ -63,7 +63,7 @@ Logs go to `/tmp/jira-dash.log`. To unload: `launchctl unload ~/Library/LaunchAg
 `server/cli.js` is a plain-JS, dependency-free CLI over the same modules the
 server uses. If a jira-dash server is already running on the configured
 port, commands go through its HTTP API; otherwise they operate directly on
-`data/state.json` — either way the result is the same, and which transport
+`data/state.json`; either way the result is the same, and which transport
 was used is printed to stderr.
 
 ```bash
@@ -78,6 +78,43 @@ node server/cli.js open                  # open the dashboard in your browser
 
 Also runnable as `npm run cli -- status`, or (once linked/installed) as the
 `jira-dash` bin.
+
+## Claude integration
+
+`mcp/` is a stdio MCP server exposing the board to Claude sessions, so you can ask Claude about your board directly instead of switching to the dashboard or the CLI. It uses the same dual transport as the CLI: proxies through a running server if one's up on the configured port, otherwise operates directly on `data/state.json`.
+
+Install its dependencies once:
+
+```bash
+cd mcp && npm i
+```
+
+Register it with the Claude Code CLI:
+
+```bash
+claude mcp add jira-dash --scope user -- node /path/to/jira-dash/mcp/index.js
+```
+
+Or add it directly to `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "jira-dash": {
+      "command": "node",
+      "args": ["/path/to/jira-dash/mcp/index.js"]
+    }
+  }
+}
+```
+
+Tools exposed:
+
+- `board_status`: the full current board snapshot (same payload as `GET /api/data`).
+- `refresh`: fetch fresh Jira/GitHub data and return a summary (bucket counts, errors, newly merged cards).
+- `ack_card`: acknowledge a card's attention flags.
+- `move_card`: pin a card to a bucket.
+- `card_comments`: one card's comment history and unseen comments.
 
 ## API
 
