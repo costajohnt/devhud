@@ -27,9 +27,9 @@ function stateWithItem(overrides: Partial<Snapshot> = {}) {
       }],
       in_progress: [], waiting_review: [], in_qa: [],
     },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [],
+    todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    prLog: [],
     ...overrides,
   };
   return state;

@@ -32,9 +32,9 @@ test('serverAppearsRunning returns the pid for a live process', () => {
 test('saveStateGuarded saves normally when no server is running', () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.mergedTotal = 3;
+  state.doneTotal = 3;
   saveStateGuarded(statePath, state);
-  expect(loadState(statePath).mergedTotal).toBe(3);
+  expect(loadState(statePath).doneTotal).toBe(3);
 });
 
 // TOCTOU: a call site's early guard check (serverAppearsRunning at the top

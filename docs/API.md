@@ -15,9 +15,9 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
   "updatedAt": null,
   "errors": { "jira": null, "github": null },
   "buckets": { "needs_attention": [], "in_progress": [], "waiting_review": [], "in_qa": [] },
-  "todo": [], "unlinkedPrs": [], "mergedCards": [], "mergedTotal": 0, "newlyMerged": [],
+  "todo": [], "unlinkedPrs": [],
   "doneCards": [], "doneTotal": 0, "newlyDone": [], "recentActivity": [],
-  "closedPrs": [], "prLog": []
+  "prLog": []
 }
 ```
 
@@ -115,14 +115,10 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   },
   todo: TodoItem[],
   unlinkedPrs: UnlinkedPr[],
-  closedPrs: ClosedPr[],
-  mergedCards: MergedCard[],       // internal/legacy: merged PRs, no longer a UI page/counter
-  mergedTotal: number,             // internal/legacy
-  newlyMerged: string[],           // internal/legacy
   doneCards: DoneCard[],           // cards Jira has marked Done — drives the /done page
   doneTotal: number,               // running count of completed cards — the "Done" counter
   newlyDone: string[],             // cards that reached Done on this refresh — drives confetti
-  recentActivity: ActivityEntry[],
+  recentActivity: ActivityEntry[], // merged/closed/comment activity in the last 7 days
   prLog: PrLogEntry[]
 }
 ```
@@ -182,37 +178,21 @@ Cards whose Jira status is the configured "To Do" status. Split out before bucke
 
 Open PRs that couldn't be matched to any tracked Jira card by branch name, PR title, PR body (containing a `/browse/KEY` link), or card description (containing the PR URL). Only `state === 'open'` unlinked PRs are surfaced; unlinked merged/closed PRs are silently dropped from this list (they still land in `prLog`).
 
-### ClosedPr
-
-```
-{ repo: string, number: number, url: string, title: string, closedAt: string }
-```
-
-PRs with `state === 'closed'` and no `mergedAt` (closed without merging). Sorted newest-closed first. Feeds the `closed` entries in `recentActivity`. (The former standalone `/closed` page and Closed stat card were removed — completion is tracked via `doneCards`.)
-
 ### DoneCard
 
 ```
 { key: string, summary: string, jiraStatus: string, jiraUrl: string, pr: PrRef | null, doneAt: string }
 ```
 
-Cards Jira has marked complete — status category `done`, excluding Canceled. Drives the `/done` page and the header's Done counter. `doneAt` is the card's last-updated time (when it reached Done); `pr` is the linked PR, if any, as supporting context. Completion follows the **Jira card's Done state**, not a PR merge — a merged-but-not-Done card stays on the active board.
+Cards Jira has marked complete — status category `done`, excluding Canceled. Drives the `/done` page and the header's Done counter. `doneAt` is the card's last-updated time (when it reached Done); `pr` is the linked PR, if any, as supporting context. Completion follows the **Jira card's Done state**, not a PR merge — a merged-but-not-Done card stays on the active board with its merged PR shown as context.
 
-### MergedCard (internal/legacy)
-
-```
-{ key: string, summary: string, jiraStatus: string, jiraUrl: string, pr: PrRef, mergedAt: string }
-```
-
-Every card whose linked PR is merged. Retained in the payload as internal supporting data — a merged PR only means code is ready for QA — but no longer surfaced as its own UI page or counter (superseded by `doneCards`).
+There is no Merged or Closed page/counter/field. A merged PR surfaces only on its active card (the board's "Merged" pill and the detail panel's "PR merged" chip) and, for merges/closes in the last 7 days, in `recentActivity`.
 
 ### doneTotal / newlyDone
 
 `doneTotal` is a running counter, incremented once per Jira card the first time it's observed in the Done category (tracked via `state.doneCelebrated`, keyed by card key), never decremented. It survives cards aging out of Jira's fetch window, so it doesn't undercount.
 
 `newlyDone` is the list of Jira keys that reached Done on *this* refresh only, empty on every refresh after the first celebration. Drives the completion confetti/toast in the UI.
-
-(`mergedTotal`/`newlyMerged` remain in the payload as internal/legacy counterparts keyed by `org/repo#num`, no longer surfaced in the UI.)
 
 ### recentActivity
 
@@ -223,7 +203,7 @@ Flat list across three types, all within the last 7 days, newest first:
 ```
 
 - `merged`: PRs with `mergedAt` in the last 7 days.
-- `closed`: entries from `closedPrs` with `closedAt` in the last 7 days.
+- `closed`: closed-unmerged PRs (`state === 'closed'`, no `mergedAt`) with `updatedAt` in the last 7 days, derived straight from the fetched PRs.
 - `comment`: derived from each board item's `newComments` (not a separate scan): any unseen comment newer than 7 days, `label` is `"{key}: comment from {author}"`, `url` points at the PR if the comment is from GitHub, otherwise the Jira card.
 
 ### prLog (PR lifecycle log)
@@ -232,7 +212,7 @@ Flat list across three types, all within the last 7 days, newest first:
 { id: string, repo: string, openedAt: string | null, mergedAt: string | null, closedAt: string | null }
 ```
 
-One entry per PR ever fetched, keyed by `org/repo#number` (`id`). Upserted (not appended) on every refresh, real or demo, from the live fetched PR list: `openedAt` from `createdAt`, `mergedAt` as-is, `closedAt` only when `state === 'closed'` and there's no `mergedAt` (mirrors `ClosedPr`'s semantics: a merged PR never carries `closedAt`). Entries are never deleted, so this is a full history, not just what's currently open. Powers the Monthly Activity line chart (Opened/Merged/Closed series) and the Top Repos stacked bar chart in the web UI. States created before this field existed get a synthesized entry per legacy `celebrated` merge (`openedAt`/`closedAt` unknown, only `mergedAt` recoverable).
+One entry per PR ever fetched, keyed by `org/repo#number` (`id`). Upserted (not appended) on every refresh, real or demo, from the live fetched PR list: `openedAt` from `createdAt`, `mergedAt` as-is, `closedAt` only when `state === 'closed'` and there's no `mergedAt` (a merged PR never carries `closedAt`). Entries are never deleted, so this is a full history, not just what's currently open. Powers the Monthly Activity line chart (Opened/Merged/Closed series) and the Top Repos stacked bar chart in the web UI. States created before this field existed get a synthesized entry per legacy `celebrated` merge (`openedAt`/`closedAt` unknown, only `mergedAt` recoverable).
 
 **Known limitation: `prLog` is append-only and unbounded.** There is no eviction, no age-based pruning, and no cap on entry count — every PR the account has ever had fetched into it (across every repo in `github.repos`, for as long as `data/state.json` has existed) stays in `prLog` forever, growing `state.json` and the `/api/data`/`/api/refresh` payload size a little more with each newly-seen PR. For a single-user personal tool at realistic PR volumes this is a non-issue in practice, but it's a real limitation if this ever needs to scale to a high-volume repo or run unattended for years.
 

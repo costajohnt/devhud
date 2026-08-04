@@ -168,23 +168,6 @@ export interface UnlinkedPr {
   state: string;
 }
 
-export interface ClosedPr {
-  repo: string;
-  number: number;
-  url: string;
-  title: string;
-  closedAt: string;
-}
-
-export interface MergedCard {
-  key: string;
-  summary: string;
-  jiraStatus: string;
-  jiraUrl: string;
-  pr: PrRef | null;
-  mergedAt: string | null;
-}
-
 // A card Jira has marked complete (Done category, excluding Canceled). Drives
 // the Done page. Carries the linked PR (if any) purely as supporting context.
 export interface DoneCard {
@@ -217,18 +200,14 @@ export interface Snapshot {
   buckets: Record<Bucket, Item[]>;
   todo: TodoItem[];
   unlinkedPrs: UnlinkedPr[];
-  // Completion is driven by the Jira Done category (see doneCards). The
-  // merged* fields remain in the payload as internal/legacy data — a merged PR
-  // only means code is ready for QA, not that the story is complete — but the
-  // dashboard UI no longer surfaces them as a page or counter.
-  mergedCards: MergedCard[];
-  mergedTotal: number;
-  newlyMerged: string[];
+  // Completion is driven by the Jira Done category (a merged PR only means code
+  // is ready for QA). A merged PR rides along on its active card's `pr` as
+  // supporting context; merged/closed PRs in the last 7 days show in
+  // recentActivity. There is no Merged/Closed page or counter.
   doneCards: DoneCard[];
   doneTotal: number;
   newlyDone: string[];
   recentActivity: ActivityEntry[];
-  closedPrs: ClosedPr[];
   prLog: PrLogEntry[];
 }
 
@@ -248,11 +227,12 @@ export interface CelebratedEntry {
 
 export interface State {
   cards: Record<string, CardState>;
+  // Legacy: PR-merge celebration ids from older state files. No longer written;
+  // retained only so migratePrLog can backfill prLog history for pre-prLog
+  // state files on load.
   celebrated: CelebratedEntry[];
-  mergedTotal: number;
   // Cards celebrated as complete, keyed by Jira card key, and the running
-  // all-time total shown by the Done counter. Distinct from celebrated/
-  // mergedTotal, which track PR merges.
+  // all-time total shown by the Done counter.
   doneCelebrated: CelebratedEntry[];
   doneTotal: number;
   lastRefreshAt: string | null;

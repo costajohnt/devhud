@@ -12,7 +12,8 @@ test('fresh state when file missing', () => {
   const s = loadState(p);
   expect(s.cards).toEqual({});
   expect(s.celebrated).toEqual([]);
-  expect(s.mergedTotal).toBe(0);
+  expect(s.doneCelebrated).toEqual([]);
+  expect(s.doneTotal).toBe(0);
   expect(s.lastCards).toBeNull();
   expect(s.lastPrs).toBeNull();
   expect(s.prLog).toEqual({});

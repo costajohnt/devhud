@@ -3,7 +3,7 @@ import { linkPrsToCards, unlinked } from './link.ts';
 import { classifyCard, isTodo, isDone, isCanceled } from './classify.ts';
 import { fetchJiraCards } from './jira.ts';
 import { fetchPrs, enrichPr } from './github.ts';
-import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, ClosedPr, PrLogEntry, NewComment } from './types.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
 
 const DAY = 86400000;
 
@@ -55,7 +55,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
   const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] };
-  const todo: Snapshot['todo'] = [], mergedCards: Snapshot['mergedCards'] = [], newlyMerged: string[] = [];
+  const todo: Snapshot['todo'] = [];
   const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
 
   for (const card of cards) {
@@ -66,21 +66,11 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
     const pr = linked.get(card.key) ?? null;
     const cs = cardState(state, card.key);
 
-    if (pr?.state === 'merged') {
-      const id = `${pr.repo}#${pr.number}`;
-      if (!state.celebrated.some(e => e.id === id)) {
-        state.celebrated.push({ id, at: pr.mergedAt ?? new Date().toISOString() });
-        state.mergedTotal += 1;
-        newlyMerged.push(card.key);
-      }
-      // Kept as internal/legacy supporting context: a merged PR means code is
-      // ready for QA, not that the story is complete. The UI surfaces this on
-      // the active card (especially in QA), not as its own page.
-      mergedCards.push({ key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url, pr: prView(pr), mergedAt: pr.mergedAt });
-    }
-
-    // Completion follows the Jira Done category, not the PR merge. A done card
-    // is celebrated once (running doneTotal) and drops off the active board.
+    // A merged PR is supporting context, not completion: it rides along on the
+    // active card via prView(pr) (the board's "Merged" pill, the detail panel),
+    // and stays on the board so QA can still reject it. Completion follows the
+    // Jira Done category below — a done card is celebrated once (running
+    // doneTotal) and drops off the active board.
     if (isDone(card, statuses)) {
       if (!state.doneCelebrated.some(e => e.id === card.key)) {
         state.doneCelebrated.push({ id: card.key, at: card.updatedAt ?? new Date().toISOString() });
@@ -104,17 +94,15 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
 
   const weekAgo = Date.now() - 7 * DAY;
 
-  const closedPrs: ClosedPr[] = prs
-    .filter(p => p.state === 'closed' && !p.mergedAt)
-    .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, closedAt: p.updatedAt }))
-    .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
-
+  // Merged/closed PRs from the last 7 days still surface in Recent Activity as
+  // supporting context. They're derived straight from the fetched PRs — no
+  // dedicated payload field — since the board no longer has Merged/Closed pages.
   const mergedActivity: ActivityEntry[] = prs
     .filter(p => p.mergedAt && Date.parse(p.mergedAt) > weekAgo)
     .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt! }));
-  const closedActivity: ActivityEntry[] = closedPrs
-    .filter(p => p.closedAt && Date.parse(p.closedAt) > weekAgo)
-    .map(p => ({ type: 'closed', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.closedAt }));
+  const closedActivity: ActivityEntry[] = prs
+    .filter(p => p.state === 'closed' && !p.mergedAt && p.updatedAt && Date.parse(p.updatedAt) > weekAgo)
+    .map(p => ({ type: 'closed', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.updatedAt }));
   // Comments surface from the board items just built above: each item's
   // newComments already carries source/author/createdAt, so no re-scan of
   // cards/prs is needed. url follows the comment's source (PR vs Jira card).
@@ -141,9 +129,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
     buckets, todo,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
-    mergedCards, mergedTotal: state.mergedTotal, newlyMerged,
     doneCards, doneTotal: state.doneTotal, newlyDone, recentActivity,
-    closedPrs,
     prLog: Object.values(state.prLog) as PrLogEntry[],
   };
 }

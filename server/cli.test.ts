@@ -33,9 +33,9 @@ function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [],
+    todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    prLog: [],
     ...overrides,
   };
 }
@@ -74,12 +74,12 @@ test('status --json in direct mode against a populated temp state file returns t
   const state = emptyState();
   state.snapshot = makeSnapshot({
     buckets: { needs_attention: [needsAttentionItem()], in_progress: [], waiting_review: [], in_qa: [] },
-    mergedTotal: 3,
+    doneTotal: 3,
   });
   saveState(statePath, state);
   const { code, out } = await run(['status', '--json'], { config, statePath });
   expect(code).toBe(0);
-  expect(JSON.parse(out).mergedTotal).toBe(3);
+  expect(JSON.parse(out).doneTotal).toBe(3);
 });
 
 test('status human output includes needs-attention rows with key/summary/reasons', () => {
@@ -297,7 +297,7 @@ beforeAll(async () => {
   const state = emptyState();
   state.snapshot = makeSnapshot({
     buckets: { needs_attention: [needsAttentionItem({ key: 'P-9', summary: 'S' })], in_progress: [], waiting_review: [], in_qa: [] },
-    mergedTotal: 7,
+    doneTotal: 7,
   });
   saveState(statePath, state);
   serverConfig = makeConfig({ port: 0 });
@@ -311,7 +311,7 @@ test('status goes through the HTTP transport when a server is listening on the c
   const { code, out, err } = await run(['status', '--json'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json' });
   expect(code).toBe(0);
   expect(err).toBe('via server');
-  expect(JSON.parse(out).mergedTotal).toBe(7);
+  expect(JSON.parse(out).doneTotal).toBe(7);
 });
 
 test('ack goes through the HTTP transport and reports the resulting bucket', async () => {

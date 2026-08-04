@@ -31,9 +31,9 @@ function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [],
+    todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    prLog: [],
     ...overrides,
   };
 }
@@ -77,7 +77,6 @@ async function startServer(): Promise<{ server: http.Server; base: string; state
   const state = emptyState();
   state.snapshot = makeSnapshot({
     buckets: { needs_attention: [needsAttentionItem()], in_progress: [], waiting_review: [], in_qa: [] },
-    closedPrs: [{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }],
     prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }],
   });
   saveState(statePath, state);
@@ -114,9 +113,8 @@ test('GET /api/data returns snapshot', async () => {
   expect(d.buckets.needs_attention[0].key).toBe('P-1');
 });
 
-test('GET /api/data carries closedPrs and prLog through unchanged', async () => {
+test('GET /api/data carries prLog through unchanged', async () => {
   const d = await (await fetch(`${base}/api/data`)).json();
-  expect(d.closedPrs).toEqual([{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }]);
   expect(d.prLog).toEqual([{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }]);
 });
 
@@ -426,7 +424,7 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
     const d = await (await fetch(`${freshBase}/api/data`)).json();
     expect(d.updatedAt).toBeNull();
     expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] });
-    expect(d.mergedTotal).toBe(0);
+    expect(d.doneTotal).toBe(0);
   } finally {
     freshServer.close();
   }

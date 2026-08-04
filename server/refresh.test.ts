@@ -27,19 +27,20 @@ test('buckets a linked open card', () => {
   expect(p.todo).toEqual([]);
 });
 
-test('todo cards split out, done cards with merged PR land in mergedCards + celebration once', () => {
+test('todo cards split out; a Done card with a merged PR lands in doneCards + celebration once, and still logs the PR', () => {
   const state = emptyState();
   const cards = [card({ status: 'To Do', key: 'PROJ-2' }), card({ key: 'PROJ-3', status: 'Done' })];
   const prs = [pr({ branch: 'PROJ-3-x', state: 'merged', mergedAt: '2026-07-03T00:00:00Z' })];
   const p1 = buildSnapshot({ cards, prs, state, config, errors: {} });
   expect(p1.todo[0]!.key).toBe('PROJ-2');
-  expect(p1.mergedCards[0]!.key).toBe('PROJ-3');
-  expect(p1.newlyMerged).toEqual(['PROJ-3']);
-  expect(p1.mergedTotal).toBe(1);
+  expect(p1.doneCards[0]!.key).toBe('PROJ-3');
+  expect(p1.newlyDone).toEqual(['PROJ-3']);
+  expect(p1.doneTotal).toBe(1);
+  // The merged PR is still logged (charts) even though it isn't a payload page.
   expect(p1.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]);
   const p2 = buildSnapshot({ cards, prs, state, config, errors: {} });
-  expect(p2.newlyMerged).toEqual([]);   // celebrated already
-  expect(p2.mergedTotal).toBe(1);
+  expect(p2.newlyDone).toEqual([]);   // celebrated already
+  expect(p2.doneTotal).toBe(1);
   expect(p2.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]); // no duplicate on re-run
 });
 
@@ -80,19 +81,19 @@ test('board items carry the card fix versions', () => {
   expect(p.buckets.in_progress[0]!.fixVersions).toEqual(['2026.9']);
 });
 
-test('a merged PR whose card is not Done still lands on the Merged page (driven by the merge event, not Jira status) and stays on the board', () => {
+test('a merged-but-not-Done card stays on the board with its PR shown as merged, and is not counted as done', () => {
   const state = emptyState();
   // In this workflow a merge moves the card to In Test / In QA, not Done.
   const cards = [card({ key: 'PROJ-5', status: 'In Test' })];
   const prs = [pr({ branch: 'PROJ-5-x', state: 'merged', mergedAt: '2026-07-03T00:00:00Z' })];
   const p = buildSnapshot({ cards, prs, state, config, errors: {} });
-  expect(p.mergedCards.map(m => m.key)).toEqual(['PROJ-5']);
-  expect(p.mergedCards[0]!.jiraStatus).toBe('In Test');   // status rides along as a column
-  expect(p.mergedTotal).toBe(1);
-  expect(p.newlyMerged).toEqual(['PROJ-5']);
-  // A merged-but-not-Done card stays on the board so QA can still reject it.
-  const onBoard = Object.values(p.buckets).flat().some(i => i.key === 'PROJ-5');
-  expect(onBoard).toBe(true);
+  // Not complete: absent from doneCards and doneTotal.
+  expect(p.doneCards).toHaveLength(0);
+  expect(p.doneTotal).toBe(0);
+  // Stays on the board (QA can still reject it) with the merged PR as context.
+  const item = Object.values(p.buckets).flat().find(i => i.key === 'PROJ-5');
+  expect(item).toBeDefined();
+  expect(item!.pr?.state).toBe('merged');
 });
 
 test('upserts every fetched PR into prLog on refresh, keyed by org/repo#num', () => {
@@ -199,20 +200,6 @@ test('recentActivity lists new comments from board items within 7 days, with sou
   expect(jiraEntry!.url).toBe(c.url);
 });
 
-test('closedPrs: closed-unmerged PRs from the current fetch, newest first', () => {
-  const prs = [
-    pr({ repo: 'o/r', number: 5, branch: 'other', state: 'closed', mergedAt: null, updatedAt: '2026-07-01T00:00:00Z', title: 'older' }),
-    pr({ repo: 'o/r', number: 6, branch: 'other', state: 'closed', mergedAt: null, updatedAt: '2026-07-10T00:00:00Z', title: 'newer' }),
-    pr({ repo: 'o/r', number: 7, branch: 'other', state: 'open' }), // excluded: not closed
-    pr({ repo: 'o/r', number: 8, branch: 'other', state: 'merged', mergedAt: '2026-07-05T00:00:00Z' }), // excluded: merged
-  ];
-  const p = buildSnapshot({ cards: [], prs, state: emptyState(), config, errors: {} });
-  expect(p.closedPrs).toEqual([
-    { repo: 'o/r', number: 6, url: prs[1]!.url, title: 'newer', closedAt: '2026-07-10T00:00:00Z' },
-    { repo: 'o/r', number: 5, url: prs[0]!.url, title: 'older', closedAt: '2026-07-01T00:00:00Z' },
-  ]);
-});
-
 test('item comments merge both sources, newest first, capped at 10', () => {
   const c = card({
     comments: [
@@ -275,17 +262,15 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.todo.length).toBeGreaterThan(0);
   expect(p.buckets.needs_attention.length).toBeGreaterThan(0);
   expect(p.buckets.in_qa.length).toBeGreaterThan(0);
-  expect(p.mergedCards.length).toBeGreaterThan(0);
-  expect(p.newlyMerged.length).toBeGreaterThan(0);
   expect(p.doneCards.length).toBeGreaterThan(0);   // Jira-done cards drive the Done page
   expect(p.newlyDone.length).toBeGreaterThan(0);
   expect(p.unlinkedPrs.length).toBeGreaterThan(0);
   expect(p.errors).toEqual({ jira: null, github: null });
   expect(p.prLog.length).toBeGreaterThan(0);
   expect(p.prLog[0]).toEqual(expect.objectContaining({ id: expect.any(String), repo: expect.any(String) }));
-  expect(p.prLog.some(e => e.closedAt !== null)).toBe(true); // demo now includes closed-unmerged PRs
-  expect(p.closedPrs.length).toBeGreaterThan(0);
-  expect(p.closedPrs[0]).toEqual(expect.objectContaining({ repo: expect.any(String), number: expect.any(Number), closedAt: expect.any(String) }));
+  expect(p.prLog.some(e => e.closedAt !== null)).toBe(true); // demo includes closed-unmerged PRs (charts)
+  // Merged/closed PRs surface only as Recent Activity context, not their own fields.
+  expect(p.recentActivity.some(e => e.type === 'merged')).toBe(true);
 });
 
 // M7: concurrent /api/refresh calls (two browser tabs, CLI + the web timer)

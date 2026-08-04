@@ -10,7 +10,7 @@ export function emptyState(): State {
   // to an inherited accessor like Object.prototype.__proto__ in the first
   // place — cardState()'s `??=` sees a real missing key and assigns
   // normally, no matter what string reaches it.
-  return { cards: Object.create(null) as State['cards'], celebrated: [], mergedTotal: 0, doneCelebrated: [], doneTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
+  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], doneTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
 }
 
 // JSON.parse always produces normal-prototype objects, so the `cards` field
@@ -83,16 +83,16 @@ export function saveState(path: string, state: State): void {
 // Placeholder shape for GET /api/data (and the CLI's direct-mode `status`)
 // before any refresh has ever run, so callers get a well-formed empty board
 // instead of null. Must carry every top-level key buildSnapshot() produces —
-// board.tsx and friends read fields like closedPrs.length unconditionally,
+// board.tsx and friends read fields like doneCards.length unconditionally,
 // so a missing key here crashes the web client on true first boot rather
 // than just showing an empty state.
 export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [],
+    todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    prLog: [],
   };
 }
 
