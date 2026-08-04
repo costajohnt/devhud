@@ -157,6 +157,7 @@ export interface ClosedPr {
 export interface MergedCard {
   key: string;
   summary: string;
+  jiraStatus: string;
   jiraUrl: string;
   pr: PrRef | null;
   mergedAt: string | null;

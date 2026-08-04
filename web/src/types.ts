@@ -21,7 +21,7 @@ export interface DashboardData {
   buckets: Record<Bucket, Item[]>;
   todo: { key: string; summary: string; jiraUrl: string; createdAt: string }[];
   unlinkedPrs: { repo: string; number: number; url: string; title: string; state: string }[];
-  mergedCards: { key: string; summary: string; jiraUrl: string; pr: PrRef; mergedAt: string }[];
+  mergedCards: { key: string; summary: string; jiraStatus: string; jiraUrl: string; pr: PrRef; mergedAt: string }[];
   mergedTotal: number;
   newlyMerged: string[];
   recentActivity: { type: 'merged' | 'closed' | 'comment'; label: string; url: string; date: string }[];

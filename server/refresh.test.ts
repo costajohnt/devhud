@@ -43,6 +43,21 @@ test('todo cards split out, done cards with merged PR land in mergedCards + cele
   expect(p2.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]); // no duplicate on re-run
 });
 
+test('a merged PR whose card is not Done still lands on the Merged page (driven by the merge event, not Jira status) and stays on the board', () => {
+  const state = emptyState();
+  // In this workflow a merge moves the card to In Test / In QA, not Done.
+  const cards = [card({ key: 'PROJ-5', status: 'In Test' })];
+  const prs = [pr({ branch: 'PROJ-5-x', state: 'merged', mergedAt: '2026-07-03T00:00:00Z' })];
+  const p = buildSnapshot({ cards, prs, state, config, errors: {} });
+  expect(p.mergedCards.map(m => m.key)).toEqual(['PROJ-5']);
+  expect(p.mergedCards[0]!.jiraStatus).toBe('In Test');   // status rides along as a column
+  expect(p.mergedTotal).toBe(1);
+  expect(p.newlyMerged).toEqual(['PROJ-5']);
+  // A merged-but-not-Done card stays on the board so QA can still reject it.
+  const onBoard = Object.values(p.buckets).flat().some(i => i.key === 'PROJ-5');
+  expect(onBoard).toBe(true);
+});
+
 test('upserts every fetched PR into prLog on refresh, keyed by org/repo#num', () => {
   const state = emptyState();
   const p = buildSnapshot({ cards: [card()], prs: [pr({ repo: 'o/r', number: 1 })], state, config, errors: {} });

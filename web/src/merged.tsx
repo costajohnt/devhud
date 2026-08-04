@@ -25,6 +25,7 @@ export function MergedPage({ data }: { data: DashboardData }) {
           <thead>
             <tr>
               <th scope="col">Card</th>
+              <th scope="col">Status</th>
               <th scope="col">PR</th>
               <th
                 scope="col"
@@ -56,6 +57,9 @@ export function MergedPage({ data }: { data: DashboardData }) {
                   <div class="merged-table-pr-title">{m.summary}</div>
                 </td>
                 <td>
+                  <span class="merged-table-status">{m.jiraStatus}</span>
+                </td>
+                <td>
                   <a class="merged-table-pr-link" href={m.pr.url} target="_blank" rel="noopener noreferrer">
                     {m.pr.repo}#{m.pr.number}
                   </a>
@@ -68,7 +72,7 @@ export function MergedPage({ data }: { data: DashboardData }) {
           </tbody>
         </table>
       )}
-      <p class="merged-view-subtitle">Total counts every celebrated merge; rows show cards still in Jira's recent window.</p>
+      <p class="merged-view-subtitle">Total counts every celebrated merge; rows show cards whose PR has merged, whatever their Jira status.</p>
     </div>
   );
 }

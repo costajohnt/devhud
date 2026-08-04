@@ -137,7 +137,7 @@ test('cardComments finds a merged card via the mergedCards fallback, returning e
   const statePath = tempStatePath();
   const state = seedSnapshot(statePath);
   state.snapshot!.mergedCards = [
-    { key: 'P-9', summary: 'Shipped it', jiraUrl: 'https://x/browse/P-9', pr: null, mergedAt: '2026-07-01T00:00:00Z' },
+    { key: 'P-9', summary: 'Shipped it', jiraStatus: 'In Test', jiraUrl: 'https://x/browse/P-9', pr: null, mergedAt: '2026-07-01T00:00:00Z' },
   ];
   saveState(statePath, state);
 

@@ -1752,6 +1752,12 @@ a:hover {
   white-space: nowrap;
 }
 
+.merged-table-status {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
 /* === Sortable Table Headers === */
 
 .sortable-th {

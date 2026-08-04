@@ -66,10 +66,15 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
         state.mergedTotal += 1;
         newlyMerged.push(card.key);
       }
-      if (isDone(card, statuses)) {
-        mergedCards.push({ key: card.key, summary: card.summary, jiraUrl: card.url, pr: prView(pr), mergedAt: pr.mergedAt });
-        continue; // done + merged: off the board
-      }
+      // The Merged page is driven by the PR's merge event, not the card's Jira
+      // status. In this workflow a merge moves the card to In QA / In Test, and
+      // Done only comes later once QA approves (many cards never get there), so
+      // gating inclusion on Done left the page almost always empty. Jira status
+      // rides along as a displayed column, not as the inclusion filter.
+      mergedCards.push({ key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url, pr: prView(pr), mergedAt: pr.mergedAt });
+      // Done cards drop off the board; a merged-but-not-Done card (In QA / In
+      // Test) stays on the board below so QA can still reject it.
+      if (isDone(card, statuses)) continue;
     }
     if (isDone(card, statuses)) continue;
 
