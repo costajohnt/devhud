@@ -2,7 +2,12 @@ import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Config, JiraStatuses } from './types.ts';
 
-const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done' };
+const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
+
+// Comment authors whose comments never trigger triage or enter the actionable
+// queue: the user themselves and Atlassian's Rovo agent. Overridable via
+// config.json's top-level "ignoreAuthors".
+const DEFAULT_IGNORE_AUTHORS = ['John', 'Rovo'];
 
 // Loose shape of whatever JSON.parse hands back for config.json: every field
 // optional/untyped until the validation below confirms it's present, at
@@ -20,6 +25,7 @@ interface RawConfig {
   port?: number;
   demo?: boolean;
   writeEnabled?: boolean;
+  ignoreAuthors?: string[];
 }
 
 export function loadConfig(path: string = fileURLToPath(new URL('../config.json', import.meta.url))): Config {
@@ -89,5 +95,6 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     port,
     demo,
     writeEnabled: Boolean(c.writeEnabled),
+    ignoreAuthors: Array.isArray(c.ignoreAuthors) ? c.ignoreAuthors : DEFAULT_IGNORE_AUTHORS,
   };
 }

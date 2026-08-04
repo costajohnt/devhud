@@ -29,13 +29,12 @@ A stdio MCP server exposing the board to Claude sessions, using the exact same d
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
 
 - **main.tsx**: Entry point: mounts `<App>` wrapped in an `<ErrorBoundary>`.
-- **app.tsx**: Top-level shell: polling/refresh lifecycle wiring, theme state (OS-aware), route branching (`/`, `/merged`, `/closed`, 404), header, banners, toast.
+- **app.tsx**: Top-level shell: polling/refresh lifecycle wiring, theme state (OS-aware), route branching (`/`, `/done`, 404), header, banners, toast. Acknowledging a Needs Attention card auto-advances the selection to the next such card.
 - **use-data.ts**: `useData()` hook: fetches `/api/data` on mount, silent refresh 3s after load then every 10 minutes, exposes `act()` for `/api/action` calls with error handling.
 - **board.tsx**: `useBoardFilter()` hook (search/status/repo filter state, drag-and-drop handlers) plus `BoardStats`, `BoardFilterBar`, `BoardList` components.
-- **detail.tsx**: Card detail side panel: PR/CI/review status, new comments, full comment history, ack/move actions.
-- **extras.tsx**: TODO section, Unlinked PRs section, Recent Activity (grouped by merged/closed/comment).
-- **merged.tsx**: `/merged` full-page sortable table of `mergedCards`.
-- **closed.tsx**: `/closed` full-page sortable table of `closedPrs`.
+- **detail.tsx**: Card detail side panel: a prominent status + next-action strip, Fix Version (with an explicit missing-state), PR/CI/review status, an actionable New Comments queue, the full comment history behind an "All activity" disclosure, and ack/move actions.
+- **extras.tsx**: Todo section, Unlinked PRs section, Recent Activity (grouped by merged/closed/comment).
+- **done.tsx**: `/done` full-page sortable table of `doneCards` (cards Jira has marked Done). Replaces the former `/merged` and `/closed` pages.
 - **chart-panel.tsx**: Chart.js-backed Monthly Activity (line) and Top Repos (stacked bar) charts, built from `prLog`.
 - **chart-panel-lazy.tsx**: Dynamic-import wrapper around `chart-panel.tsx` so Chart.js ships in its own chunk, not the initial bundle.
 - **celebrate.ts**: Lazy-loaded `canvas-confetti` wrapper, respects `prefers-reduced-motion`.
@@ -61,7 +60,7 @@ POST /api/refresh   ▼
      │                    ▼
      │            buildSnapshot()   : assembles the full payload:
      │                                buckets, todo, unlinkedPrs, closedPrs,
-     │                                mergedCards, recentActivity, prLog
+     │                                doneCards, mergedCards, recentActivity, prLog
      │                    │
      │                    ▼
      │            state.snapshot = payload;  saveState(data/state.json)
@@ -80,6 +79,8 @@ On the client, `useData()` polls: an initial `GET /api/data` on mount, a silent 
   cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt } },
   celebrated: [{ id: "org/repo#num", at: isoString | null }],
   mergedTotal: number,
+  doneCelebrated: [{ id: "jiraKey", at: isoString | null }],
+  doneTotal: number,
   lastRefreshAt: isoString | null,
   snapshot: <last full payload, or null>,
   lastCards: <last successful Jira fetch, or null>,
@@ -89,7 +90,8 @@ On the client, `useData()` polls: an initial `GET /api/data` on mount, a silent 
 ```
 
 - **cards**: per-card local overrides. `override`/`overrideAt` record a manual bucket pin; `lastSeenPr`/`lastSeenJira` are the comment "seen" horizons used by `classifyCard` to decide what counts as new.
-- **celebrated**: every PR ever observed merged, so `mergedTotal` only increments once per PR and confetti only fires once per merge, even across process restarts and even after the card ages out of Jira's fetch window.
+- **celebrated**: every PR ever observed merged, so `mergedTotal` only increments once per PR, even across process restarts and even after the card ages out of Jira's fetch window. (The merge* fields are internal/legacy — a merged PR only means code is ready for QA — and are no longer surfaced as a UI page or counter.)
+- **doneCelebrated**: every Jira card ever observed in the Done category (keyed by card key), so `doneTotal` only increments once per card and the completion confetti only fires once. Completion — not a PR merge — is what the UI celebrates and counts.
 - **lastCards** / **lastPrs**: last-known-good fetch results, used to backfill the board on a partial or total source failure instead of blanking it.
 - **prLog**: full PR lifecycle history (see API.md), a superset of what `celebrated` tracks; never pruned.
 - **snapshot**: the exact payload the API returns; recomputed by `buildSnapshot` on every refresh, read as-is by `GET /api/data`.
@@ -118,9 +120,17 @@ Attention triggers (any one of these puts the card in `needs_attention`, appende
 | `new_jira_comments` | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. |
 | `merged_not_in_test` | Linked PR is merged but the Jira card's status is neither "In Test" nor "Done" yet. |
 
+Comments authored by anyone in `config.ignoreAuthors` (default `["John", "Rovo"]`, case-insensitive substring match) never fire `new_pr_comments`/`new_jira_comments` and never enter the actionable New Comments queue; they still appear in the full activity history.
+
 A manual override (`type: 'move'`) is honored only when no attention trigger fires. The "live" triggers (CI failing, merged-not-in-test) always re-flag the card into `needs_attention` on the next refresh even if it was previously pinned elsewhere. Only the comment-based triggers are silenced by acking or moving, because those actions reset the seen horizon; CI status and merge state aren't horizon-gated, they're re-evaluated fresh every refresh.
 
-Before any bucket classification: cards with Jira status "To Do" are split into `todo` and skip classification. Cards with a merged, linked PR are added to `celebrated`/`mergedTotal` once; if the card's Jira status is also "Done", it moves to `mergedCards` and leaves the board entirely (skipping the bucket loop). Cards with Jira status "Done" but no merged PR (or already handled above) are dropped from the board without classification.
+Routing keys off the Jira **status category** (`new`/`indeterminate`/`done`), not exact status names, so `Assigned` counts as To Do and `Closed` as Done. In order, before bucket classification:
+
+1. **Canceled** cards (status matching `statuses.canceled`, default "Canceled") are dropped entirely — no bucket, no todo, no done, no counts.
+2. **To Do category** cards are split into `todo` and skip classification.
+3. A merged, linked PR adds the card to `celebrated`/`mergedTotal` and to `mergedCards` (internal supporting context) once.
+4. **Done category** cards (excluding Canceled) are added to `doneCelebrated`/`doneTotal` and `doneCards` once, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge.
+5. Everything else is classified into a bucket. A merged-but-not-Done card stays on the board (QA can still reject it) with the merged PR shown as context.
 
 ## Concurrency
 

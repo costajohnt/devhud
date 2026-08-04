@@ -137,17 +137,13 @@ export function BoardStats({ data }: { data: DashboardData }) {
         return (
           <Tag class="stat-card muted" {...(data.todo.length > 0 ? { href: '#todo' } : {})}>
             <span class="stat-value"><AnimatedValue value={data.todo.length} /></span>
-            <span class="stat-label">TODO</span>
+            <span class="stat-label">Todo</span>
           </Tag>
         );
       })()}
-      <a class="stat-card purple" href="/merged">
-        <span class="stat-value"><AnimatedValue value={data.mergedTotal} /></span>
-        <span class="stat-label">Merged</span>
-      </a>
-      <a class="stat-card red" href="/closed">
-        <span class="stat-value"><AnimatedValue value={data.closedPrs.length} /></span>
-        <span class="stat-label">Closed</span>
+      <a class="stat-card purple" href="/done">
+        <span class="stat-value"><AnimatedValue value={data.doneTotal} /></span>
+        <span class="stat-label">Done</span>
       </a>
     </div>
   );

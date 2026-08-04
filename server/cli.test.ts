@@ -33,7 +33,8 @@ function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     closedPrs: [], prLog: [],
     ...overrides,
   };
@@ -85,10 +86,10 @@ test('status human output includes needs-attention rows with key/summary/reasons
   const out = formatStatus(makeSnapshot({
     buckets: { needs_attention: [needsAttentionItem({ summary: 'Fix it' })], in_progress: [], waiting_review: [], in_qa: [] },
     todo: [{ key: 'T-1', summary: '', jiraUrl: '', createdAt: null }, { key: 'T-2', summary: '', jiraUrl: '', createdAt: null }],
-    mergedTotal: 5,
+    doneTotal: 5,
   }));
   expect(out).toContain('Needs Attention: 1');
-  expect(out).toContain('TODO: 2  Merged: 5');
+  expect(out).toContain('Todo: 2  Done: 5');
   expect(out).toContain('P-1  Fix it  [ci_failing]');
 });
 

@@ -15,7 +15,8 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
   "updatedAt": null,
   "errors": { "jira": null, "github": null },
   "buckets": { "needs_attention": [], "in_progress": [], "waiting_review": [], "in_qa": [] },
-  "todo": [], "unlinkedPrs": [], "mergedCards": [], "mergedTotal": 0, "newlyMerged": [], "recentActivity": [],
+  "todo": [], "unlinkedPrs": [], "mergedCards": [], "mergedTotal": 0, "newlyMerged": [],
+  "doneCards": [], "doneTotal": 0, "newlyDone": [], "recentActivity": [],
   "closedPrs": [], "prLog": []
 }
 ```
@@ -72,7 +73,7 @@ The override persists across refreshes: on every `/api/refresh`, `classifyCard` 
 - `type: "move"` with `bucket` not in `in_progress` / `waiting_review` / `in_qa` (including `needs_attention`): `{ "error": "bucket must be one of in_progress, waiting_review, in_qa" }`.
 - `type` is anything other than `"ack"` or `"move"`: `{ "error": "unknown action type" }`.
 
-An action against an unknown `key` (a card not present in any bucket, or never seen before) does not 400. `cardState` is created lazily and the horizon fields are still written to `data/state.json`, but there's no matching snapshot item to move, so the action is a no-op on the visible board. This is intentional: it makes acking a card that just left the board (e.g. it merged and moved to `mergedCards` between page load and the click) harmless instead of an error.
+An action against an unknown `key` (a card not present in any bucket, or never seen before) does not 400. `cardState` is created lazily and the horizon fields are still written to `data/state.json`, but there's no matching snapshot item to move, so the action is a no-op on the visible board. This is intentional: it makes acking a card that just left the board (e.g. Jira marked it Done and it moved to `doneCards` between page load and the click) harmless instead of an error.
 
 On success, both action types respond `{ "ok": true, "bucket": string | null }` — `bucket` is the card's resulting bucket, or `null` if it isn't on the current board (see the unknown-`key` case above) — and persist `data/state.json` before returning.
 
@@ -115,9 +116,12 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   todo: TodoItem[],
   unlinkedPrs: UnlinkedPr[],
   closedPrs: ClosedPr[],
-  mergedCards: MergedCard[],
-  mergedTotal: number,
-  newlyMerged: string[],
+  mergedCards: MergedCard[],       // internal/legacy: merged PRs, no longer a UI page/counter
+  mergedTotal: number,             // internal/legacy
+  newlyMerged: string[],           // internal/legacy
+  doneCards: DoneCard[],           // cards Jira has marked Done — drives the /done page
+  doneTotal: number,               // running count of completed cards — the "Done" counter
+  newlyDone: string[],             // cards that reached Done on this refresh — drives confetti
   recentActivity: ActivityEntry[],
   prLog: PrLogEntry[]
 }
@@ -131,6 +135,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   summary: string,
   jiraStatus: string,               // raw Jira status name
   jiraUrl: string,
+  fixVersions: string[],            // Jira Fix Version names; empty array = none set (flagged in the detail view)
   bucket: 'needs_attention' | 'in_progress' | 'waiting_review' | 'in_qa',
   attention: string[],              // trigger reasons: 'ci_failing', 'new_pr_comments', 'new_jira_comments', 'merged_not_in_test'
   newComments: Comment[],           // comments newer than the seen horizon, from others (not self)
@@ -183,21 +188,31 @@ Open PRs that couldn't be matched to any tracked Jira card by branch name, PR ti
 { repo: string, number: number, url: string, title: string, closedAt: string }
 ```
 
-PRs with `state === 'closed'` and no `mergedAt` (closed without merging). Sorted newest-closed first. Powers the `/closed` page and the header's Closed stat card.
+PRs with `state === 'closed'` and no `mergedAt` (closed without merging). Sorted newest-closed first. Feeds the `closed` entries in `recentActivity`. (The former standalone `/closed` page and Closed stat card were removed — completion is tracked via `doneCards`.)
 
-### MergedCard
+### DoneCard
 
 ```
-{ key: string, summary: string, jiraUrl: string, pr: PrRef, mergedAt: string }
+{ key: string, summary: string, jiraStatus: string, jiraUrl: string, pr: PrRef | null, doneAt: string }
 ```
 
-Cards whose linked PR is merged **and** whose Jira status is the configured "Done" status. These cards leave the board entirely (they don't appear in any `buckets` entry). A card whose PR merged but whose Jira status isn't yet "Done" stays on the board and gets the `merged_not_in_test` attention trigger instead.
+Cards Jira has marked complete — status category `done`, excluding Canceled. Drives the `/done` page and the header's Done counter. `doneAt` is the card's last-updated time (when it reached Done); `pr` is the linked PR, if any, as supporting context. Completion follows the **Jira card's Done state**, not a PR merge — a merged-but-not-Done card stays on the active board.
 
-### mergedTotal / newlyMerged
+### MergedCard (internal/legacy)
 
-`mergedTotal` is a running counter, incremented once per PR the first time it's observed merged (tracked via `state.celebrated`, keyed by `org/repo#num`), never decremented. It survives cards aging out of Jira's fetch window (see Architecture doc), so it undercounts nothing even after a card's Jira history is no longer being fetched.
+```
+{ key: string, summary: string, jiraStatus: string, jiraUrl: string, pr: PrRef, mergedAt: string }
+```
 
-`newlyMerged` is the list of Jira keys that crossed into "merged, not yet celebrated" on *this* refresh only, empty on every refresh after the first celebration. Drives the confetti/toast in the UI.
+Every card whose linked PR is merged. Retained in the payload as internal supporting data — a merged PR only means code is ready for QA — but no longer surfaced as its own UI page or counter (superseded by `doneCards`).
+
+### doneTotal / newlyDone
+
+`doneTotal` is a running counter, incremented once per Jira card the first time it's observed in the Done category (tracked via `state.doneCelebrated`, keyed by card key), never decremented. It survives cards aging out of Jira's fetch window, so it doesn't undercount.
+
+`newlyDone` is the list of Jira keys that reached Done on *this* refresh only, empty on every refresh after the first celebration. Drives the completion confetti/toast in the UI.
+
+(`mergedTotal`/`newlyMerged` remain in the payload as internal/legacy counterparts keyed by `org/repo#num`, no longer surfaced in the UI.)
 
 ### recentActivity
 
@@ -238,7 +253,7 @@ Any request not starting with `/api/` is treated as a static file request agains
 
 - Path traversal is blocked: the resolved path must stay within `webDist`, otherwise the server responds `403`.
 - If the resolved path is a real file, it's served with a `content-type` derived from its extension (`.html`, `.js`, `.css`, `.svg`, `.woff2`, `.png`, `.json`; anything else falls back to `application/octet-stream`).
-- If the path doesn't resolve to a file (a client-side route like `/merged`, `/closed`, or any unknown path), the server falls back to serving `index.html` so the SPA router (`preact-iso`, reading `window.location` client-side) can render its own not-found or route view.
+- If the path doesn't resolve to a file (a client-side route like `/done`, or any unknown path), the server falls back to serving `index.html` so the SPA router (`preact-iso`, reading `window.location` client-side) can render its own not-found or route view.
 
 `/api/*` paths that don't match `/api/data`, `/api/refresh`, or `/api/action` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
 

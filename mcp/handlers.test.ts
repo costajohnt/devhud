@@ -46,7 +46,8 @@ function seedSnapshot(statePath: string) {
       }],
       in_progress: [], waiting_review: [], in_qa: [],
     },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 3, newlyMerged: [], recentActivity: [],
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 3, newlyMerged: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     closedPrs: [], prLog: [],
   };
   state.snapshot = snapshot;

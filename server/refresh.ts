@@ -1,6 +1,6 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
-import { classifyCard, isTodo, isDone } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled } from './classify.ts';
 import { fetchJiraCards } from './jira.ts';
 import { fetchPrs, enrichPr } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, ClosedPr, PrLogEntry, NewComment } from './types.ts';
@@ -47,14 +47,21 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
 }): Snapshot {
   const { statuses } = config.jira;
   const username = config.github.username;
+  const ignoreAuthors = config.ignoreAuthors ?? [];
   state.prLog ??= {};
+  state.doneCelebrated ??= [];
+  state.doneTotal ??= 0;
   upsertPrLog(state, prs);
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
   const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] };
   const todo: Snapshot['todo'] = [], mergedCards: Snapshot['mergedCards'] = [], newlyMerged: string[] = [];
+  const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
 
   for (const card of cards) {
+    // Canceled work is neither active nor complete — drop it from every bucket,
+    // the Todo list, the Done page, and all counts.
+    if (isCanceled(card, statuses)) continue;
     if (isTodo(card, statuses)) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     const pr = linked.get(card.key) ?? null;
     const cs = cardState(state, card.key);
@@ -66,22 +73,29 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
         state.mergedTotal += 1;
         newlyMerged.push(card.key);
       }
-      // The Merged page is driven by the PR's merge event, not the card's Jira
-      // status. In this workflow a merge moves the card to In QA / In Test, and
-      // Done only comes later once QA approves (many cards never get there), so
-      // gating inclusion on Done left the page almost always empty. Jira status
-      // rides along as a displayed column, not as the inclusion filter.
+      // Kept as internal/legacy supporting context: a merged PR means code is
+      // ready for QA, not that the story is complete. The UI surfaces this on
+      // the active card (especially in QA), not as its own page.
       mergedCards.push({ key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url, pr: prView(pr), mergedAt: pr.mergedAt });
-      // Done cards drop off the board; a merged-but-not-Done card (In QA / In
-      // Test) stays on the board below so QA can still reject it.
-      if (isDone(card, statuses)) continue;
     }
-    if (isDone(card, statuses)) continue;
 
-    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username });
+    // Completion follows the Jira Done category, not the PR merge. A done card
+    // is celebrated once (running doneTotal) and drops off the active board.
+    if (isDone(card, statuses)) {
+      if (!state.doneCelebrated.some(e => e.id === card.key)) {
+        state.doneCelebrated.push({ id: card.key, at: card.updatedAt ?? new Date().toISOString() });
+        state.doneTotal += 1;
+        newlyDone.push(card.key);
+      }
+      doneCards.push({ key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url, pr: prView(pr), doneAt: card.updatedAt });
+      continue;
+    }
+
+    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, ignoreAuthors });
     const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
+      fixVersions: card.fixVersions ?? [],
       bucket, attention, newComments, comments: itemComments(card, pr), pr: prView(pr),
       createdAt: card.createdAt, updatedAt: card.updatedAt,
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
@@ -127,7 +141,8 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
     buckets, todo,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
-    mergedCards, mergedTotal: state.mergedTotal, newlyMerged, recentActivity,
+    mergedCards, mergedTotal: state.mergedTotal, newlyMerged,
+    doneCards, doneTotal: state.doneTotal, newlyDone, recentActivity,
     closedPrs,
     prLog: Object.values(state.prLog) as PrLogEntry[],
   };

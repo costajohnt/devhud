@@ -11,7 +11,7 @@ export interface PrRef { repo: string; number: number; url: string; branch: stri
 
 export interface NewComment { source: 'github' | 'jira'; author: string; body: string; createdAt: string; }
 
-export interface Item { key: string; summary: string; jiraStatus: string; jiraUrl: string;
+export interface Item { key: string; summary: string; jiraStatus: string; jiraUrl: string; fixVersions?: string[];
   bucket: Bucket; attention: string[]; newComments: NewComment[]; comments: NewComment[]; pr: PrRef | null;
   createdAt: string; updatedAt: string; daysSinceActivity: number | null; }
 
@@ -24,6 +24,9 @@ export interface DashboardData {
   mergedCards: { key: string; summary: string; jiraStatus: string; jiraUrl: string; pr: PrRef; mergedAt: string }[];
   mergedTotal: number;
   newlyMerged: string[];
+  doneCards: { key: string; summary: string; jiraStatus: string; jiraUrl: string; pr: PrRef | null; doneAt: string }[];
+  doneTotal: number;
+  newlyDone: string[];
   recentActivity: { type: 'merged' | 'closed' | 'comment'; label: string; url: string; date: string }[];
   closedPrs: { repo: string; number: number; url: string; title: string; closedAt: string }[];
   prLog: { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null }[];

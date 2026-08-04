@@ -6,25 +6,44 @@ import type { Card, Pr, JiraComment, JiraConfig, GithubConfig } from './types.ts
 const DAY = 86400000;
 const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * DAY).toISOString();
 
+type Cat = Card['statusCategory'];
+interface CardOpts { comments?: JiraComment[]; description?: string; category?: Cat; fixVersions?: string[] }
+
 export function demoCards(cfg: JiraConfig): Card[] {
   const url = (k: string) => `${cfg.baseUrl?.startsWith('http') ? cfg.baseUrl : 'https://example.atlassian.net'}/browse/${k}`;
-  const card = (key: string, summary: string, status: string, age: number, comments: JiraComment[] = [], description = ''): Card => ({
-    key, summary, status, description, url: url(key),
+  // Infer a plausible status category from the status name when one isn't given
+  // explicitly, so demo data flows through the same category-based routing as
+  // real Jira data.
+  const catFor = (status: string): Cat =>
+    status === 'To Do' ? 'new' : status === 'Done' || status === 'Canceled' ? 'done' : 'indeterminate';
+  const card = (key: string, summary: string, status: string, age: number, o: CardOpts = {}): Card => ({
+    key, summary, status, statusCategory: o.category ?? catFor(status),
+    fixVersions: o.fixVersions ?? [], description: o.description ?? '', url: url(key),
     createdAt: iso(age + 10), updatedAt: iso(age),
-    myAccountId: cfg.accountId, comments,
+    myAccountId: cfg.accountId, comments: o.comments ?? [],
   });
   return [
-    card('DEMO-101', 'Fix login redirect loop on SSO tenants', 'In Progress', 1, [
-      { author: 'Priya N', authorId: 'priya', body: 'QA blocked on this, any ETA?', createdAt: iso(0.3) },
-    ]),
-    card('DEMO-97', 'Migrate billing webhooks to v2 signatures', 'In Review', 3),
+    card('DEMO-101', 'Fix login redirect loop on SSO tenants', 'In Progress', 1, {
+      fixVersions: ['2026.9'],
+      comments: [
+        { author: 'Priya N', authorId: 'priya', body: 'QA blocked on this, any ETA?', createdAt: iso(0.3) },
+        // Rovo / self comments must NOT trigger triage or the actionable queue.
+        { author: 'Rovo', authorId: 'rovo', body: 'Automated summary: 3 files changed.', createdAt: iso(0.25) },
+      ],
+    }),
+    card('DEMO-97', 'Migrate billing webhooks to v2 signatures', 'In Review', 3, { fixVersions: ['2026.9'] }),
     card('DEMO-104', 'Add rate limiting to public API', 'In Progress', 0),
     card('DEMO-108', 'Refactor notification queue consumer', 'In Progress', 1),
     card('DEMO-99', 'Support CSV export on reports page', 'In Review', 4),
-    card('DEMO-95', 'New onboarding checklist flow', 'In Test', 6),
-    card('DEMO-92', 'Dark mode for customer portal', 'Done', 2),
+    card('DEMO-95', 'New onboarding checklist flow', 'In Test', 6, { fixVersions: ['2026.8'] }),
+    card('DEMO-92', 'Dark mode for customer portal', 'Done', 2, { fixVersions: ['2026.8'] }),
     card('DEMO-112', 'Spike: evaluate feature flag providers', 'To Do', 1),
     card('DEMO-113', 'Clean up deprecated user settings endpoints', 'To Do', 3),
+    // Assigned-but-not-started (To Do category, non-"To Do" name): belongs in
+    // Todo, not Needs Attention.
+    card('DEMO-120', 'Investigate flaky checkout integration test', 'Assigned', 2, { category: 'new' }),
+    // Canceled (Done category, but abandoned): excluded from the dashboard.
+    card('DEMO-121', 'Prototype experimental gesture nav', 'Canceled', 4, { category: 'done' }),
     // Older Done cards behind the last 5 months of merged PRs (chart demo data).
     card('DEMO-80', 'Add retry backoff to job queue', 'Done', 20),
     card('DEMO-81', 'Switch mobile push provider', 'Done', 35),

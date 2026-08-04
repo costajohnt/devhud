@@ -31,7 +31,8 @@ function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
+    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     closedPrs: [], prLog: [],
     ...overrides,
   };

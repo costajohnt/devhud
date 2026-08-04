@@ -218,7 +218,7 @@ export async function cardComments(ctx: Ctx & { key: string }): Promise<CardComm
   const snapshot = await getSnapshot(ctx);
   if ('error' in snapshot) return snapshot;
   const item = Object.values(snapshot.buckets ?? {}).flat().find(i => i.key === key)
-    ?? (snapshot.mergedCards ?? []).find(i => i.key === key) as { key: string; comments?: unknown[]; newComments?: unknown[] } | undefined;
+    ?? [...(snapshot.mergedCards ?? []), ...(snapshot.doneCards ?? [])].find(i => i.key === key) as { key: string; comments?: unknown[]; newComments?: unknown[] } | undefined;
   if (!item) return { error: `no card with key "${key}" found on the current board` };
   return { key: item.key, comments: item.comments ?? [], newComments: item.newComments ?? [], _note: UNTRUSTED_TEXT_NOTE };
 }

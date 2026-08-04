@@ -55,7 +55,7 @@ export function formatStatus(payload: Snapshot): string {
   const lines = [
     `Needs Attention: ${b.needs_attention.length}  In Progress: ${b.in_progress.length}  ` +
       `Waiting in Review: ${b.waiting_review.length}  In QA: ${b.in_qa.length}`,
-    `TODO: ${payload.todo.length}  Merged: ${payload.mergedTotal}`,
+    `Todo: ${payload.todo.length}  Done: ${payload.doneTotal}`,
   ];
   if (b.needs_attention.length) {
     lines.push('', 'Needs Attention:');

@@ -1,8 +1,8 @@
 import { test, expect } from 'vitest';
-import { classifyCard, isTodo } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled } from './classify.ts';
 import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 
-const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done' };
+const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
 const base = { username: 'john', statuses };
 const card = (o: Partial<Card> = {}): Card => ({ key: 'P-1', status: 'In Progress', myAccountId: 'me', comments: [], summary: '', description: '', url: '', createdAt: null, updatedAt: null, ...o });
 const pr = (o: Partial<Pr> = {}): Pr => ({ state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [], repo: 'o/r', number: 1, url: '', title: '', body: '', branch: '', createdAt: '', updatedAt: '', mergedAt: null, ...o });
@@ -60,4 +60,32 @@ test('merged with Done status excludes merged_not_in_test', () => {
   const m = pr({ state: 'merged' });
   const r = classifyCard({ ...base, card: card({ status: 'Done' }), pr: m, cs: cs() });
   expect(r.attention).not.toContain('merged_not_in_test');
+});
+
+test('isTodo/isDone follow the status category, not just the exact name', () => {
+  // 'Assigned' in the To Do category is a Todo even though it isn't the todo name.
+  expect(isTodo(card({ status: 'Assigned', statusCategory: 'new' }), statuses)).toBe(true);
+  // A Done-category status that isn't the done name still counts as done.
+  expect(isDone(card({ status: 'Closed', statusCategory: 'done' }), statuses)).toBe(true);
+  // Exact-name fallback still works when no category is present.
+  expect(isTodo(card({ status: 'To Do' }), statuses)).toBe(true);
+  expect(isDone(card({ status: 'Done' }), statuses)).toBe(true);
+});
+
+test('Canceled (Done category) is canceled, not done', () => {
+  const c = card({ status: 'Canceled', statusCategory: 'done' });
+  expect(isCanceled(c, statuses)).toBe(true);
+  expect(isDone(c, statuses)).toBe(false); // excluded from Done despite the category
+});
+
+test('comments from ignored authors (John/Rovo) do not trigger needs_attention', () => {
+  const c = card({ comments: [{ authorId: 'rovo', author: 'Rovo', body: 'auto', createdAt: '2026-07-02T00:00:00Z' }] });
+  const r = classifyCard({ ...base, card: c, pr: null, cs: cs(), ignoreAuthors: ['John', 'Rovo'] });
+  expect(r.attention).not.toContain('new_jira_comments');
+  expect(r.newComments).toHaveLength(0);
+  expect(r.bucket).toBe('in_progress');
+  // A PR comment from John (matches the ignore list) is likewise skipped.
+  const p = pr({ comments: [{ author: 'John Costa', body: 'note', createdAt: '2026-07-02T00:00:00Z' }] });
+  const r2 = classifyCard({ ...base, card: card(), pr: p, cs: cs(), ignoreAuthors: ['John', 'Rovo'] });
+  expect(r2.attention).not.toContain('new_pr_comments');
 });

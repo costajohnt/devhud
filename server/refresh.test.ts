@@ -10,9 +10,9 @@ vi.mock('./github.ts', () => ({
 }));
 
 const config: Config = {
-  jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+  jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' } },
   github: { username: 'john', org: 'o', token: '', repos: [] },
-  port: 3010, demo: false, writeEnabled: false,
+  port: 3010, demo: false, writeEnabled: false, ignoreAuthors: ['John', 'Rovo'],
 };
 const card = (o: Partial<Card> = {}): Card => ({ key: 'PROJ-1', summary: 'S', status: 'In Progress', description: '',
   url: 'https://x/browse/PROJ-1', createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z',
@@ -41,6 +41,43 @@ test('todo cards split out, done cards with merged PR land in mergedCards + cele
   expect(p2.newlyMerged).toEqual([]);   // celebrated already
   expect(p2.mergedTotal).toBe(1);
   expect(p2.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]); // no duplicate on re-run
+});
+
+test('canceled cards are excluded from every bucket, the todo list, and doneCards', () => {
+  const cards = [card({ key: 'PROJ-C', status: 'Canceled', statusCategory: 'done' })];
+  const p = buildSnapshot({ cards, prs: [], state: emptyState(), config, errors: {} });
+  expect(Object.values(p.buckets).flat()).toHaveLength(0);
+  expect(p.todo).toHaveLength(0);
+  expect(p.doneCards).toHaveLength(0);
+});
+
+test('an assigned card in the To Do category routes to Todo, not Needs Attention', () => {
+  // Even with an unseen comment that would otherwise trip needs_attention.
+  const cards = [card({ key: 'PROJ-A', status: 'Assigned', statusCategory: 'new',
+    comments: [{ authorId: 'other', author: 'Someone', body: 'ping', createdAt: '2026-07-09T00:00:00Z' }] })];
+  const p = buildSnapshot({ cards, prs: [], state: emptyState(), config, errors: {} });
+  expect(p.todo.map(t => t.key)).toEqual(['PROJ-A']);
+  expect(p.buckets.needs_attention).toHaveLength(0);
+});
+
+test('a Jira-done card lands in doneCards with a running doneTotal, celebrated once, and off the board', () => {
+  const state = emptyState();
+  const cards = [card({ key: 'PROJ-D', status: 'Closed', statusCategory: 'done', updatedAt: '2026-07-08T00:00:00Z' })];
+  const p1 = buildSnapshot({ cards, prs: [], state, config, errors: {} });
+  expect(p1.doneCards.map(d => d.key)).toEqual(['PROJ-D']);
+  expect(p1.doneCards[0]!.doneAt).toBe('2026-07-08T00:00:00Z');
+  expect(p1.doneTotal).toBe(1);
+  expect(p1.newlyDone).toEqual(['PROJ-D']);
+  expect(Object.values(p1.buckets).flat()).toHaveLength(0);
+  const p2 = buildSnapshot({ cards, prs: [], state, config, errors: {} });
+  expect(p2.newlyDone).toEqual([]);     // celebrated already
+  expect(p2.doneTotal).toBe(1);
+});
+
+test('board items carry the card fix versions', () => {
+  const cards = [card({ key: 'PROJ-F', fixVersions: ['2026.9'] })];
+  const p = buildSnapshot({ cards, prs: [], state: emptyState(), config, errors: {} });
+  expect(p.buckets.in_progress[0]!.fixVersions).toEqual(['2026.9']);
 });
 
 test('a merged PR whose card is not Done still lands on the Merged page (driven by the merge event, not Jira status) and stays on the board', () => {
@@ -240,6 +277,8 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.buckets.in_qa.length).toBeGreaterThan(0);
   expect(p.mergedCards.length).toBeGreaterThan(0);
   expect(p.newlyMerged.length).toBeGreaterThan(0);
+  expect(p.doneCards.length).toBeGreaterThan(0);   // Jira-done cards drive the Done page
+  expect(p.newlyDone.length).toBeGreaterThan(0);
   expect(p.unlinkedPrs.length).toBeGreaterThan(0);
   expect(p.errors).toEqual({ jira: null, github: null });
   expect(p.prLog.length).toBeGreaterThan(0);

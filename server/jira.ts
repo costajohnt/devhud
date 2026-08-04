@@ -34,12 +34,20 @@ interface RawJiraIssue {
   key: string;
   fields: {
     summary?: string;
-    status?: { name?: string };
+    status?: { name?: string; statusCategory?: { key?: string } };
+    fixVersions?: { name?: string }[];
     description?: AdfNode;
     created?: string;
     updated?: string;
     comment?: { comments?: RawJiraComment[]; total?: number };
   };
+}
+
+// Jira's statusCategory.key is one of 'new' | 'indeterminate' | 'done'; map
+// anything unexpected to '' so downstream code falls back to status-name
+// matching rather than trusting a bogus category.
+function statusCategory(key: string | undefined): Card['statusCategory'] {
+  return key === 'new' || key === 'indeterminate' || key === 'done' ? key : '';
 }
 
 interface RawJiraComment {
@@ -54,6 +62,8 @@ export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
     key: issue.key,
     summary: f.summary ?? '',
     status: f.status?.name ?? '',
+    statusCategory: statusCategory(f.status?.statusCategory?.key),
+    fixVersions: (f.fixVersions ?? []).map(v => v.name ?? '').filter(Boolean),
     description: adfToText(f.description).trim(),
     url: `${cfg.baseUrl}/browse/${issue.key}`,
     createdAt: iso(f.created),
@@ -88,7 +98,7 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
 
 export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
   const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
-  const fields = 'summary,status,description,created,updated,comment';
+  const fields = 'summary,status,fixVersions,description,created,updated,comment';
   const cards: Card[] = [];
   let nextPageToken: string | undefined;
   do {

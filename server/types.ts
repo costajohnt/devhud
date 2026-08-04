@@ -11,7 +11,17 @@ export interface JiraStatuses {
   todo: string;
   inTest: string;
   done: string;
+  // Status name that means the work was abandoned (Jira puts it in the Done
+  // category, but it is not a completion). Cards in this status are excluded
+  // from the whole dashboard. Optional so existing { todo, inTest, done }
+  // config/test fixtures keep working; defaults to 'Canceled' in loadConfig.
+  canceled?: string;
 }
+
+// Jira status categories: every status rolls up to one of these three. Used
+// for To Do / Done routing that must not depend on an exact status name
+// ('Assigned' is To Do, 'Canceled' is Done, etc.).
+export type StatusCategory = 'new' | 'indeterminate' | 'done' | '';
 
 export interface JiraConfig {
   baseUrl?: string;
@@ -35,6 +45,11 @@ export interface Config {
   port: number;
   demo: boolean;
   writeEnabled: boolean;
+  // Comment authors (case-insensitive substring match) whose comments never
+  // trigger Needs Attention triage and never enter the actionable New
+  // Comments queue — e.g. the user themselves ('John') and the Rovo agent.
+  // They remain visible in the full activity history. Defaults in loadConfig.
+  ignoreAuthors?: string[];
 }
 
 // --- Jira cards ---
@@ -50,6 +65,12 @@ export interface Card {
   key: string;
   summary: string;
   status: string;
+  // Jira status category key ('new' | 'indeterminate' | 'done'). Optional so
+  // existing fixtures without it fall back to exact status-name matching.
+  statusCategory?: StatusCategory;
+  // Jira Fix Version names (a card can target more than one release). Empty
+  // array means no Fix Version is set, which the detail view flags explicitly.
+  fixVersions?: string[];
   description: string;
   url: string;
   createdAt: string | null;
@@ -121,6 +142,7 @@ export interface Item {
   summary: string;
   jiraStatus: string;
   jiraUrl: string;
+  fixVersions?: string[];
   bucket: Bucket;
   attention: string[];
   newComments: NewComment[];
@@ -163,6 +185,17 @@ export interface MergedCard {
   mergedAt: string | null;
 }
 
+// A card Jira has marked complete (Done category, excluding Canceled). Drives
+// the Done page. Carries the linked PR (if any) purely as supporting context.
+export interface DoneCard {
+  key: string;
+  summary: string;
+  jiraStatus: string;
+  jiraUrl: string;
+  pr: PrRef | null;
+  doneAt: string | null;
+}
+
 export interface ActivityEntry {
   type: 'merged' | 'closed' | 'comment';
   label: string;
@@ -184,9 +217,16 @@ export interface Snapshot {
   buckets: Record<Bucket, Item[]>;
   todo: TodoItem[];
   unlinkedPrs: UnlinkedPr[];
+  // Completion is driven by the Jira Done category (see doneCards). The
+  // merged* fields remain in the payload as internal/legacy data — a merged PR
+  // only means code is ready for QA, not that the story is complete — but the
+  // dashboard UI no longer surfaces them as a page or counter.
   mergedCards: MergedCard[];
   mergedTotal: number;
   newlyMerged: string[];
+  doneCards: DoneCard[];
+  doneTotal: number;
+  newlyDone: string[];
   recentActivity: ActivityEntry[];
   closedPrs: ClosedPr[];
   prLog: PrLogEntry[];
@@ -210,6 +250,11 @@ export interface State {
   cards: Record<string, CardState>;
   celebrated: CelebratedEntry[];
   mergedTotal: number;
+  // Cards celebrated as complete, keyed by Jira card key, and the running
+  // all-time total shown by the Done counter. Distinct from celebrated/
+  // mergedTotal, which track PR merges.
+  doneCelebrated: CelebratedEntry[];
+  doneTotal: number;
   lastRefreshAt: string | null;
   snapshot: Snapshot | null;
   lastCards: Card[] | null;
