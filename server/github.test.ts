@@ -100,14 +100,23 @@ test('enrichPr does not fetch check-runs for a non-open PR and leaves ciStatus u
   expect(result.ciStatus).toBe('unknown');
 });
 
-test('fetchPrs filters to PRs authored by the configured username', async () => {
+test('fetchPrs filters by author server-side via search, then detail-fetches each PR', async () => {
+  const seen: string[] = [];
   const fetchMock = vi.fn((url: string | URL) => {
     const u = String(url);
-    if (u.includes('/repos/o/r/pulls')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve([
-        { number: 1, html_url: 'u1', head: { ref: 'b1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } },
-        { number: 2, html_url: 'u2', head: { ref: 'b2' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'someone-else' } },
-      ]) });
+    seen.push(u);
+    // Search applies the per_page window to *the user's* PRs, so it returns
+    // only the author's — no repo-window client filter is needed anymore.
+    if (u.includes('/search/issues')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ number: 1 }, { number: 4 }] }) });
+    }
+    if (u.includes('/repos/o/r/pulls/1')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { number: 1, html_url: 'u1', head: { ref: 'b1', sha: 's1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
+    }
+    if (u.includes('/repos/o/r/pulls/4')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { number: 4, html_url: 'u4', head: { ref: 'b4', sha: 's4' }, merged_at: '2026-07-01T00:00:00Z', state: 'closed', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
     }
     throw new Error(`unexpected fetch: ${u}`);
   });
@@ -115,19 +124,24 @@ test('fetchPrs filters to PRs authored by the configured username', async () => 
   const cfg: GithubConfig = { token: 't', org: 'o', repos: ['r'], username: 'me' };
   const { prs, errors } = await fetchPrs(cfg);
   expect(errors).toEqual([]);
-  expect(prs).toHaveLength(1);
-  expect(prs[0]!.number).toBe(1);
+  // The author filter now rides in the search query, not a client-side filter.
+  expect(seen.some(u => u.includes('/search/issues') && u.includes(encodeURIComponent('author:me')) && u.includes(encodeURIComponent('repo:o/r')))).toBe(true);
+  expect(prs.map(p => p.number)).toEqual([1, 4]);
+  expect(prs[0]!.branch).toBe('b1');       // head.ref survives the detail fetch
+  expect(prs[1]!.state).toBe('merged');    // merged_at survives the detail fetch
 });
 
 test('fetchPrs isolates a per-repo failure into an "org/repo: message" error, without blanking the other repos', async () => {
   const fetchMock = vi.fn((url: string | URL) => {
     const u = String(url);
-    if (u.includes('/repos/o/good/pulls')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve([
-        { number: 1, html_url: 'u1', head: { ref: 'b1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } },
-      ]) });
+    if (u.includes('/search/issues') && u.includes(encodeURIComponent('repo:o/good'))) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ number: 1 }] }) });
     }
-    if (u.includes('/repos/o/bad/pulls')) {
+    if (u.includes('/repos/o/good/pulls/1')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { number: 1, html_url: 'u1', head: { ref: 'b1', sha: 's1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
+    }
+    if (u.includes('/search/issues') && u.includes(encodeURIComponent('repo:o/bad'))) {
       return Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve('boom') });
     }
     throw new Error(`unexpected fetch: ${u}`);

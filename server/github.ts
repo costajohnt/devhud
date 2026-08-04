@@ -107,15 +107,32 @@ async function gh<T>(path: string, token: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+interface RawSearchResult {
+  items?: { number: number }[];
+}
+
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
+//
+// Author filtering happens server-side. The old approach asked /pulls for the
+// repo's 50 most-recently-updated PRs and then filtered by author locally, but
+// on a busy repo the author's PRs are almost never inside that window — ~95% of
+// them were dropped before any dashboard logic ran, starving the board, the
+// Merged page, and the charts. The Search API applies the per_page window to
+// *the user's* PRs instead of the repo's, so it returns the author's 50 newest.
 export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: string[] }> {
   const prs: Pr[] = [];
   const errors: string[] = [];
   for (const repo of cfg.repos) {
     const full = `${cfg.org}/${repo}`;
     try {
-      const list = await gh<RawPr[]>(`/repos/${full}/pulls?state=all&sort=updated&direction=desc&per_page=50`, cfg.token);
-      prs.push(...list.filter(r => r.user?.login === cfg.username).map(r => ({
+      // Search only returns the issue shape (no head.ref / merged_at), so it
+      // gives us the author's PR numbers; each still needs a /pulls/{number}
+      // detail fetch to get the branch and merge state mapPr depends on.
+      const q = encodeURIComponent(`is:pr author:${cfg.username} repo:${full}`);
+      const found = await gh<RawSearchResult>(`/search/issues?q=${q}&sort=updated&order=desc&per_page=50`, cfg.token);
+      const numbers = (found.items ?? []).map(i => i.number);
+      const details = await Promise.all(numbers.map(n => gh<RawPr>(`/repos/${full}/pulls/${n}`, cfg.token)));
+      prs.push(...details.map(r => ({
         ...mapPr(r, full),
         _raw: { head: { sha: r.head?.sha }, requested_reviewers: r.requested_reviewers, requested_teams: r.requested_teams },
       })));
