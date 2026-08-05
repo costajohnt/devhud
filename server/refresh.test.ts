@@ -23,7 +23,7 @@ const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'o/r', number: 1, url: 'https:/
 
 test('buckets a linked open card', () => {
   const p = buildSnapshot({ cards: [card()], prs: [pr()], state: emptyState(), config, errors: {} });
-  expect(p.buckets.in_progress[0]).toMatchObject({ key: 'PROJ-1', pr: { number: 1 } });
+  expect(p.buckets.self_review[0]).toMatchObject({ key: 'PROJ-1', pr: { number: 1 } });
   expect(p.todo).toEqual([]);
 });
 
@@ -228,7 +228,7 @@ test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead 
   state.lastPrs = [pr()];
   const payload = await refresh({ config, state });
   expect(payload.errors.github).toContain('o/r: 500 boom');
-  expect(payload.buckets.in_progress[0]?.pr?.number).toBe(1);
+  expect(payload.buckets.self_review[0]?.pr?.number).toBe(1);
 });
 
 test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart', async () => {

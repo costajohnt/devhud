@@ -14,7 +14,7 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
 {
   "updatedAt": null,
   "errors": { "jira": null, "github": null },
-  "buckets": { "needs_attention": [], "in_progress": [], "waiting_review": [], "in_qa": [] },
+  "buckets": { "needs_attention": [], "in_progress": [], "self_review": [], "waiting_review": [], "in_qa": [] },
   "todo": [], "unlinkedPrs": [],
   "doneCards": [], "doneTotal": 0, "newlyDone": [], "recentActivity": [],
   "prLog": []
@@ -56,7 +56,7 @@ Acknowledges a card's attention flags:
 
 Pins a card to a specific bucket:
 
-- `bucket` must be one of `in_progress`, `waiting_review`, `in_qa`. Moving to `needs_attention` is rejected (see 400 cases below). That bucket is server-computed only, not a manual destination.
+- `bucket` must be one of `in_progress`, `self_review`, `waiting_review`, `in_qa`. Moving to `needs_attention` is rejected (see 400 cases below). That bucket is server-computed only, not a manual destination.
 - Sets `cardState.override` to the target bucket and stamps `overrideAt`.
 - Also resets the seen horizon (same as `ack`), so comments the classifier already accounted for don't immediately bounce the card back into `needs_attention` on the very next refresh.
 - Splices the card out of its current bucket in the live snapshot and into the target bucket.
@@ -70,7 +70,7 @@ The override persists across refreshes: on every `/api/refresh`, `classifyCard` 
 ### 400 cases
 
 - Body is not valid JSON: `{ "error": "invalid JSON body" }`.
-- `type: "move"` with `bucket` not in `in_progress` / `waiting_review` / `in_qa` (including `needs_attention`): `{ "error": "bucket must be one of in_progress, waiting_review, in_qa" }`.
+- `type: "move"` with `bucket` not in `in_progress` / `self_review` / `waiting_review` / `in_qa` (including `needs_attention`): `{ "error": "bucket must be one of in_progress, self_review, waiting_review, in_qa" }`.
 - `type` is anything other than `"ack"` or `"move"`: `{ "error": "unknown action type" }`.
 
 An action against an unknown `key` (a card not present in any bucket, or never seen before) does not 400. `cardState` is created lazily and the horizon fields are still written to `data/state.json`, but there's no matching snapshot item to move, so the action is a no-op on the visible board. This is intentional: it makes acking a card that just left the board (e.g. Jira marked it Done and it moved to `doneCards` between page load and the click) harmless instead of an error.
@@ -111,7 +111,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   updatedAt: string,               // ISO timestamp of this snapshot
   errors: { jira: string | null, github: string | null },
   buckets: {
-    needs_attention: Item[], in_progress: Item[], waiting_review: Item[], in_qa: Item[]
+    needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], in_qa: Item[]
   },
   todo: TodoItem[],
   unlinkedPrs: UnlinkedPr[],
@@ -132,7 +132,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   jiraStatus: string,               // raw Jira status name
   jiraUrl: string,
   fixVersions: string[],            // Jira Fix Version names; empty array = none set (flagged in the detail view)
-  bucket: 'needs_attention' | 'in_progress' | 'waiting_review' | 'in_qa',
+  bucket: 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'in_qa',
   attention: string[],              // trigger reasons: 'ci_failing', 'new_pr_comments', 'new_jira_comments', 'merged_not_in_test'
   newComments: Comment[],           // comments newer than the seen horizon, from others (not self)
   comments: Comment[],              // full comment history, both sources merged, newest first, capped at 10

@@ -131,6 +131,27 @@ test('fetchPrs filters by author server-side via search, then detail-fetches eac
   expect(prs[1]!.state).toBe('merged');    // merged_at survives the detail fetch
 });
 
+test('fetchPrs preserves an owner-qualified repository entry', async () => {
+  const seen: string[] = [];
+  const fetchMock = vi.fn((url: string | URL) => {
+    const u = String(url);
+    seen.push(u);
+    if (u.includes('/search/issues')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ number: 1 }] }) });
+    }
+    if (u.includes('/repos/other/repo/pulls/1')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { number: 1, html_url: 'u1', head: { ref: 'b1', sha: 's1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = { token: 't', org: 'o', repos: ['other/repo'], username: 'me' };
+  const { errors } = await fetchPrs(cfg);
+  expect(errors).toEqual([]);
+  expect(seen.some(u => u.includes(encodeURIComponent('repo:other/repo')))).toBe(true);
+});
+
 test('fetchPrs isolates a per-repo failure into an "org/repo: message" error, without blanking the other repos', async () => {
   const fetchMock = vi.fn((url: string | URL) => {
     const u = String(url);

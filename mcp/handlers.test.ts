@@ -44,7 +44,7 @@ function seedSnapshot(statePath: string) {
         comments: [{ source: 'github', author: 'sarah', body: 'ping', createdAt: '2026-07-01T00:00:00Z' }],
         pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
       }],
-      in_progress: [], waiting_review: [], in_qa: [],
+      in_progress: [], self_review: [], waiting_review: [], in_qa: [],
     },
     todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 3, newlyDone: [], recentActivity: [],

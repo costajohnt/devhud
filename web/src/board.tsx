@@ -19,6 +19,7 @@ function pill(item: Item): { text: string; cls: string } | null {
   if (n) return { text: `${n} new comment${n > 1 ? 's' : ''}`, cls: 'pill pill--red' };
   if (item.pr?.state === 'merged') return { text: 'Merged', cls: 'pill pill--muted' };
   if (item.pr?.reviewState === 'changes_requested') return { text: 'Changes Requested', cls: 'pill pill--amber' };
+  if (item.bucket === 'self_review') return { text: 'Self Review Needed', cls: 'pill pill--purple' };
   if (item.bucket === 'waiting_review') return { text: 'Awaiting Review', cls: 'pill pill--blue' };
   return null;
 }
@@ -29,6 +30,7 @@ function pill(item: Item): { text: string; cls: string } | null {
 const STAT_COLOR: Record<Bucket, string> = {
   needs_attention: 'red',
   in_progress: 'blue',
+  self_review: 'purple',
   waiting_review: 'amber',
   in_qa: 'teal',
 };
@@ -38,7 +40,7 @@ const STAT_COLOR: Record<Bucket, string> = {
 const DOT_COLOR: Record<Bucket, string> = STAT_COLOR;
 
 // needs_attention is excluded: the server rejects moves into that bucket.
-const DROPPABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
+const DROPPABLE: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'in_qa'];
 
 // Owns the search text, drag-and-drop state, and derived filter counts that
 // the stats bar, filter bar, and section list all need to share. Lifted out

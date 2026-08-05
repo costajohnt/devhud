@@ -25,7 +25,7 @@ function stateWithItem(overrides: Partial<Snapshot> = {}) {
         attention: ['ci_failing'], newComments: [{ source: 'github', author: 'a', body: 'b', createdAt: null }],
         comments: [], pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
       }],
-      in_progress: [], waiting_review: [], in_qa: [],
+      in_progress: [], self_review: [], waiting_review: [], in_qa: [],
     },
     todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],

@@ -40,7 +40,7 @@ server.registerTool(
     title: 'Board status',
     description:
       'Returns the full current board snapshot: cards grouped into buckets (needs_attention, ' +
-      'in_progress, waiting_review, in_qa), TODO items, unlinked PRs, closed PRs, merged cards, ' +
+      'in_progress, self_review, waiting_review, in_qa), TODO items, unlinked PRs, closed PRs, merged cards, ' +
       'merged total, and recent activity. This is a read of the last computed snapshot, not a live ' +
       'fetch, so call `refresh` first if you need up-to-the-minute Jira/GitHub data. Use this to ' +
       'answer "what does my board look like right now" or "what needs attention". Card summaries and ' +

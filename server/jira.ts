@@ -26,7 +26,7 @@ const iso = (t: string | undefined | null): string | null => t ? new Date(t).toI
 // card that just reached Done flows into doneCards / celebration once before
 // aging out; older Done cards are dropped to keep the fetch bounded.
 export function buildJql(cfg: JiraConfig): string {
-  return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
+  return `project = ${cfg.projectKey} AND (assignee = "${cfg.accountId}" OR assignee IS EMPTY) AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
 }
 
 // Minimal shape for the slice of the raw Jira REST API issue response this

@@ -18,7 +18,7 @@ test('new PR comment by someone else -> needs_attention, own comment ignored', (
   const others = pr({ comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
   expect(classifyCard({ ...base, card: card(), pr: others, cs: cs() }).bucket).toBe('needs_attention');
   const mine = pr({ comments: [{ author: 'john', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
-  expect(classifyCard({ ...base, card: card(), pr: mine, cs: cs() }).bucket).toBe('in_progress');
+  expect(classifyCard({ ...base, card: card(), pr: mine, cs: cs() }).bucket).toBe('self_review');
 });
 
 test('merged but not In Test -> needs_attention; merged and In Test -> in_qa', () => {
@@ -119,7 +119,7 @@ test('degraded PR data mutes acked reasons without pruning them', () => {
   expect(r.bucket).toBe('in_progress');
   // healthy refresh, CI still failing: still muted
   const r2 = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing' }), cs: c });
-  expect(r2.bucket).toBe('in_progress');
+  expect(r2.bucket).toBe('self_review');
   expect(c.ackedReasons).toEqual(['ci_failing']);
 });
 

@@ -68,7 +68,13 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   if (visible.length) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
   else if (card.status === statuses.inTest) bucket = 'in_qa';
-  else if (pr?.state === 'open' && pr.reviewState !== 'none') bucket = 'waiting_review';
+  else if (pr?.state === 'open') {
+    if (card.status === 'Code Review' || card.status === 'In Review' || pr.reviewState !== 'none') {
+      bucket = 'waiting_review';
+    } else {
+      bucket = 'self_review';
+    }
+  }
   else bucket = 'in_progress';
 
   newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));

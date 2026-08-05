@@ -123,7 +123,7 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   const prs: Pr[] = [];
   const errors: string[] = [];
   for (const repo of cfg.repos) {
-    const full = `${cfg.org}/${repo}`;
+    const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
     try {
       // Search only returns the issue shape (no head.ref / merged_at), so it
       // gives us the author's PR numbers; each still needs a /pulls/{number}

@@ -63,7 +63,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   upsertPrLog(state, prs);
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
-  const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] };
+  const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], in_qa: [] };
   const todo: Snapshot['todo'] = [];
   const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
 
@@ -85,8 +85,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       if (cs?.ackedReasons) cs.ackedReasons = null;
     }
     if (isCanceled(card, statuses)) continue;
-    if (isTodo(card, statuses)) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     const pr = linked.get(card.key) ?? null;
+    if (isTodo(card, statuses) && !pr) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     const cs = cardState(state, card.key);
 
     // A merged PR is supporting context, not completion: it rides along on the

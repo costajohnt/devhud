@@ -2,7 +2,7 @@ import { cardState } from './state.ts';
 import { STATE_REASONS } from './classify.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
-export const BUCKETS: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
+export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'in_qa'];
 
 // Union of already-acked reasons and the state-based reasons currently shown
 // on the item — unioned, not overwritten, because a previously acked reason
@@ -71,14 +71,16 @@ export function applyAction({ state, config, type, key, bucket }: {
     loc.item.newComments = [];
     if (loc.from === 'needs_attention') {
       snap.buckets.needs_attention.splice(loc.i, 1);
-      // Jira-driven destination, mirroring classifyCard's no-attention
-      // routing. (Todo/Done can't apply here: buildSnapshot routes those
-      // cards off the board before bucketing, so a Needs Attention item is
-      // never in a Todo/Done status.)
       let dest: Bucket;
       if (cs.override) dest = cs.override;
       else if (loc.item.jiraStatus === config.jira?.statuses?.inTest) dest = 'in_qa';
-      else if (loc.item.pr?.state === 'open' && loc.item.pr.reviewState !== 'none') dest = 'waiting_review';
+      else if (loc.item.pr?.state === 'open') {
+        if (loc.item.jiraStatus === 'Code Review' || loc.item.jiraStatus === 'In Review' || loc.item.pr.reviewState !== 'none') {
+          dest = 'waiting_review';
+        } else {
+          dest = 'self_review';
+        }
+      }
       else dest = 'in_progress';
       loc.item.bucket = dest;
       snap.buckets[dest].push(loc.item);
