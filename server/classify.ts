@@ -65,7 +65,9 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   const visible = attention.filter(r => !acked.includes(r));
 
   let bucket: Bucket;
-  if (visible.length) bucket = 'needs_attention';
+  if (pr?.state === 'open' && pr.isDraft) {
+    bucket = 'self_review';
+  } else if (visible.length) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
   else if (card.status === statuses.inTest) bucket = 'in_qa';
   else if (pr?.state === 'open') {

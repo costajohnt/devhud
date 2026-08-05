@@ -108,6 +108,7 @@ export interface Pr {
   mergedAt: string | null;
   ciStatus: CiStatus;
   reviewState: ReviewState;
+  isDraft?: boolean;
   comments: PrComment[];
   _raw?: {
     head: { sha?: string };
@@ -135,6 +136,7 @@ export interface PrRef {
   state: PrState;
   ciStatus: CiStatus;
   reviewState: ReviewState;
+  isDraft?: boolean;
 }
 
 export interface Item {

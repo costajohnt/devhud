@@ -10,6 +10,7 @@ interface RawPr {
   head?: { ref?: string; sha?: string };
   merged_at?: string | null;
   state: string;
+  draft?: boolean;
   created_at: string;
   updated_at: string;
   user?: { login?: string };
@@ -53,6 +54,7 @@ export function mapPr(raw: RawPr, repo: string): Pr {
     mergedAt: raw.merged_at ?? null,
     ciStatus: 'unknown',
     reviewState: 'none',
+    isDraft: raw.draft ?? false,
     comments: [],
   };
 }

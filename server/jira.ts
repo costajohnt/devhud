@@ -26,7 +26,7 @@ const iso = (t: string | undefined | null): string | null => t ? new Date(t).toI
 // card that just reached Done flows into doneCards / celebration once before
 // aging out; older Done cards are dropped to keep the fetch bounded.
 export function buildJql(cfg: JiraConfig): string {
-  return `project = ${cfg.projectKey} AND (assignee = "${cfg.accountId}" OR assignee IS EMPTY) AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
+  return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
 }
 
 // Minimal shape for the slice of the raw Jira REST API issue response this
@@ -97,10 +97,27 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
   }));
 }
 
-export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
+export async function fetchJiraCards(cfg: JiraConfig, extraKeys: string[] = []): Promise<Card[]> {
   const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
   const fields = 'summary,status,fixVersions,description,created,updated,comment';
   const cards: Card[] = [];
+  const seenKeys = new Set<string>();
+
+  const processIssues = async (issues: RawJiraIssue[]) => {
+    for (const issue of issues) {
+      if (seenKeys.has(issue.key)) continue;
+      seenKeys.add(issue.key);
+      const mapped = mapIssue(issue, cfg);
+      const total = issue.fields?.comment?.total ?? mapped.comments.length;
+      if (total > mapped.comments.length) {
+        console.warn(`simon-dash: ${issue.key} has ${total} comments but only ${mapped.comments.length} were returned; refetching latest 50`);
+        try { mapped.comments = await fetchLatestComments(issue.key, cfg, auth); }
+        catch (e) { console.warn(`simon-dash: refetch of ${issue.key} comments failed: ${(e as Error).message}`); }
+      }
+      cards.push(mapped);
+    }
+  };
+
   let nextPageToken: string | undefined;
   do {
     const url = new URL('/rest/api/3/search/jql', cfg.baseUrl);
@@ -111,17 +128,22 @@ export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
     const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json() as { issues?: RawJiraIssue[]; nextPageToken?: string };
-    for (const issue of data.issues ?? []) {
-      const mapped = mapIssue(issue, cfg);
-      const total = issue.fields?.comment?.total ?? mapped.comments.length;
-      if (total > mapped.comments.length) {
-        console.warn(`simon-dash: ${issue.key} has ${total} comments but only ${mapped.comments.length} were returned; refetching latest 50`);
-        try { mapped.comments = await fetchLatestComments(issue.key, cfg, auth); }
-        catch (e) { console.warn(`simon-dash: refetch of ${issue.key} comments failed: ${(e as Error).message}`); }
-      }
-      cards.push(mapped);
-    }
+    await processIssues(data.issues ?? []);
     nextPageToken = data.nextPageToken;
   } while (nextPageToken);
+
+  const missingKeys = Array.from(new Set(extraKeys)).filter(k => !seenKeys.has(k));
+  if (missingKeys.length) {
+    const url = new URL('/rest/api/3/search/jql', cfg.baseUrl);
+    url.searchParams.set('jql', `key in (${missingKeys.map(k => `"${k}"`).join(',')})`);
+    url.searchParams.set('fields', fields);
+    url.searchParams.set('maxResults', '50');
+    const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+    if (res.ok) {
+      const data = await res.json() as { issues?: RawJiraIssue[] };
+      await processIssues(data.issues ?? []);
+    }
+  }
+
   return cards;
 }

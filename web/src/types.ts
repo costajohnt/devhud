@@ -7,7 +7,7 @@ export const BUCKET_LABEL: Record<Bucket, string> = {
 
 export interface PrRef { repo: string; number: number; url: string; branch: string;
   state: 'open' | 'merged' | 'closed'; ciStatus: 'passing' | 'failing' | 'pending' | 'unknown';
-  reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none'; }
+  reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none'; isDraft?: boolean; }
 
 export interface NewComment { source: 'github' | 'jira'; author: string; body: string; createdAt: string; }
 
