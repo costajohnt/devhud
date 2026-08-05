@@ -11,6 +11,7 @@ interface RawPr {
   merged_at?: string | null;
   state: string;
   draft?: boolean;
+  labels?: { name?: string }[];
   created_at: string;
   updated_at: string;
   user?: { login?: string };
@@ -41,6 +42,7 @@ interface RawComment {
 }
 
 export function mapPr(raw: RawPr, repo: string): Pr {
+  const hasDraftLabel = (raw.labels ?? []).some(l => l.name?.toLowerCase() === 'draft');
   return {
     repo,
     number: raw.number,
@@ -54,7 +56,7 @@ export function mapPr(raw: RawPr, repo: string): Pr {
     mergedAt: raw.merged_at ?? null,
     ciStatus: 'unknown',
     reviewState: 'none',
-    isDraft: raw.draft ?? false,
+    isDraft: (raw.draft ?? false) || hasDraftLabel,
     comments: [],
   };
 }
