@@ -145,8 +145,8 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 
 `newComments` and `comments` are deliberately separate, not one filtered from the other:
 
-- `newComments` is seen-horizon-filtered (only comments after `cardState.lastSeenPr`/`lastSeenJira`, excluding the card owner's own comments) and drives the `attention` flags and the Detail panel's "New Comments" section.
-- `comments` is the full last-10 comment history from both sources regardless of seen status, for the Detail panel's "Comments" section, so you can read context even after acking.
+- `newComments` is seen-horizon-filtered (only comments after `cardState.lastSeenPr`/`lastSeenJira`, excluding the card owner's own comments) and drives the `attention` flags and the Detail panel's "New Jira Comments" / "New GitHub Comments" sections.
+- `comments` is the last-10-per-source comment history (up to 20 total, merged newest first) regardless of seen status, for the Detail panel's per-source activity disclosures, so you can read context even after acking.
 
 `Comment`:
 

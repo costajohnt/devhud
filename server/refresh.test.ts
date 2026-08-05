@@ -312,6 +312,28 @@ test('a later-sequenced refresh that completes first is not overwritten by an ea
   expect(state.snapshot).not.toBe(payloadA);
 });
 
+test('item comment history is capped per source so a chatty PR cannot evict Jira history', () => {
+  // Interleaved timestamps (Jira on the minute, GitHub 30s later) so the
+  // final cross-source merge sort is actually exercised, not just the caps.
+  const jiraComments = Array.from({ length: 12 }, (_, i) => ({
+    author: 'other', authorId: 'other', body: `j${i}`, createdAt: `2026-07-01T00:${String(i).padStart(2, '0')}:00Z`,
+  }));
+  const prComments = Array.from({ length: 12 }, (_, i) => ({
+    author: 'reviewer', body: `g${i}`, createdAt: `2026-07-01T00:${String(i).padStart(2, '0')}:30Z`,
+  }));
+  const p = buildSnapshot({
+    cards: [card({ comments: jiraComments })],
+    prs: [pr({ comments: prComments })],
+    state: emptyState(), config, errors: {},
+  });
+  const comments = p.buckets.needs_attention[0]!.comments;
+  expect(comments.filter(c => c.source === 'jira')).toHaveLength(10);
+  expect(comments.filter(c => c.source === 'github')).toHaveLength(10);
+  // merged list is fully newest-first across sources
+  const ts = comments.map(c => c.createdAt!);
+  expect(ts).toEqual([...ts].sort().reverse());
+});
+
 test('routing off-board (Done) forgets acked reasons so a reopened card re-triggers', () => {
   const state = emptyState();
   const prs = [pr({ branch: 'PROJ-1-x', state: 'merged', mergedAt: '2026-07-03T00:00:00Z' })];

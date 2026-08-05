@@ -12,16 +12,18 @@ const prView = (p: Pr | null): PrRef | null => p && {
   state: p.state, ciStatus: p.ciStatus, reviewState: p.reviewState,
 };
 
-// Full comment history for the detail panel's "Comments" section: last 10
-// comments merged from both sources, newest first, regardless of whether
-// classifyCard already flagged them as "new". Independent of newComments,
-// which is seen-horizon-filtered and drives attention/badges.
+const newestFirst = (a: NewComment, b: NewComment) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
+
+// Detail-panel activity: last 10 comments PER SOURCE, merged newest-first —
+// per-source cap so a chatty PR review can't evict the entire Jira history
+// from the panel (the detail view renders the sources as separate sections).
+// Independent of newComments, which is seen-horizon-filtered and drives
+// attention/badges.
 const itemComments = (card: Card, pr: Pr | null): NewComment[] => {
   const fromPr: NewComment[] = (pr?.comments ?? []).map(c => ({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt ?? null }));
   const fromJira: NewComment[] = (card.comments ?? []).map(c => ({ source: 'jira', author: c.author || c.authorId || '', body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
-  return [...fromPr, ...fromJira]
-    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
-    .slice(0, 10);
+  const top10 = (cs: NewComment[]) => cs.sort(newestFirst).slice(0, 10);
+  return [...top10(fromPr), ...top10(fromJira)].sort(newestFirst);
 };
 
 // Upsert every fetched PR into the lifecycle log, keyed by "org/repo#num".

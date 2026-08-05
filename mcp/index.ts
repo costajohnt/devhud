@@ -114,7 +114,7 @@ server.registerTool(
   {
     title: 'Card comments',
     description:
-      'Returns one card\'s comment history: the full last-10 comments merged from Jira and GitHub ' +
+      'Returns one card\'s comment history: the last 10 comments per source (Jira and GitHub) merged ' +
       '(newest first), plus `newComments` — the subset that\'s unseen since the last ack/move and ' +
       'currently driving its attention flags. Use this to read what a reviewer or teammate actually ' +
       'said on a card before deciding whether to ack it. Only works for cards still on the active ' +

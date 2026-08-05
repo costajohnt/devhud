@@ -57,9 +57,45 @@ function CommentRow({ c, reason }: { c: Item['comments'][number]; reason?: strin
   );
 }
 
+// One "New Comments"-style section for a single source's unread queue. Only
+// rendered when non-empty, so a card with e.g. only Jira activity shows only
+// the Jira section.
+function UnreadSection({ label, comments }: { label: string; comments: Item['newComments'] }) {
+  if (comments.length === 0) return null;
+  return (
+    <div class="pr-detail-field">
+      <span class="pr-detail-field-label">{label} <span class="pr-detail-badge">{comments.length}</span></span>
+      {comments.map(c => (
+        <CommentRow key={`new-${c.source}-${c.createdAt}-${c.author}`} c={c} reason={`Unread · ${c.author}`} />
+      ))}
+    </div>
+  );
+}
+
+// Full per-source history behind its own disclosure, collapsed by default so
+// complete Jira/GitHub activity stays reachable without rendering up front.
+function HistorySection({ label, comments }: { label: string; comments: Item['comments'] }) {
+  if (comments.length === 0) return null;
+  return (
+    <details class="pr-detail-history">
+      <summary class="pr-detail-history-summary">{label} ({comments.length})</summary>
+      <div class="pr-detail-history-body">
+        {comments.map(c => (
+          <CommentRow key={`all-${c.source}-${c.createdAt}-${c.author}`} c={c} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function Detail({ item, onClose, act, actionInFlight }:
   { item: Item; onClose: () => void; act: (b: object) => Promise<void>; actionInFlight: boolean }) {
   const fixVersions = item.fixVersions ?? [];
+  // newComments is the attention window: the comments that put (or would put)
+  // the card in Needs Attention plus anything newer, already filtered by the
+  // seen watermarks and the ignore-author policy server-side. Acknowledge
+  // bumps the watermarks, so acked activity drops out of these on the next
+  // fetch and a fresh actionable comment starts a new window.
   const unread = item.newComments;
   const history = item.comments ?? [];
 
@@ -129,29 +165,16 @@ export function Detail({ item, onClose, act, actionInFlight }:
           </div>
         )}
 
-        {/* Actionable unread queue: only comments that need a response (John and
-            Rovo already filtered out server-side). Not duplicated below. */}
-        {unread.length > 0 && (
-          <div class="pr-detail-field">
-            <span class="pr-detail-field-label">New Comments <span class="pr-detail-badge">{unread.length}</span></span>
-            {unread.map(c => (
-              <CommentRow key={`new-${c.source}-${c.createdAt}-${c.author}`} c={c} reason={`Unread · ${c.author}`} />
-            ))}
-          </div>
-        )}
+        {/* Actionable unread queue, split by source (issue #13): only comments
+            that need a response (ignore-authors already filtered server-side).
+            Not duplicated in the history disclosures below. */}
+        <UnreadSection label="New Jira Comments" comments={unread.filter(c => c.source === 'jira')} />
+        <UnreadSection label="New GitHub Comments" comments={unread.filter(c => c.source === 'github')} />
 
-        {/* Full history behind one disclosure so the same comments aren't shown
-            twice in the initial view; complete Jira/PR history stays reachable. */}
-        {history.length > 0 && (
-          <details class="pr-detail-history">
-            <summary class="pr-detail-history-summary">All activity ({history.length})</summary>
-            <div class="pr-detail-history-body">
-              {history.map(c => (
-                <CommentRow key={`all-${c.source}-${c.createdAt}-${c.author}`} c={c} />
-              ))}
-            </div>
-          </details>
-        )}
+        {/* Complete per-source history behind explicit disclosures so the same
+            comments aren't shown twice in the initial view. */}
+        <HistorySection label="All Jira activity" comments={history.filter(c => c.source === 'jira')} />
+        <HistorySection label="All GitHub activity" comments={history.filter(c => c.source === 'github')} />
 
         <div class="pr-detail-field">
           <span class="pr-detail-field-label">Days Since Activity</span>
