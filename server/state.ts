@@ -19,6 +19,26 @@ export function emptyState(): State {
 // only protects state built fresh via emptyState().
 function withNullProtoCards(state: State): State {
   state.cards = Object.assign(Object.create(null), state.cards) as State['cards'];
+  // state.json is hand-editable: coerce a non-array ackedReasons to null here
+  // at the load boundary so one bad field can't throw inside classifyCard on
+  // every subsequent refresh (or silently spread a string into characters in
+  // ackReasons). classifyCard filters element junk against STATE_REASONS.
+  for (const k of Object.keys(state.cards)) {
+    const cs = state.cards[k];
+    // A null/non-object entry (plausible hand-edit to "reset" a card) must
+    // not throw here — that would send a perfectly parseable file down the
+    // corruption path and discard it wholesale. Drop the entry instead;
+    // cardState() recreates it on demand.
+    if (cs === null || typeof cs !== 'object') {
+      console.warn(`simon-dash: card ${k} has a malformed entry in the state file; dropping it`);
+      delete state.cards[k];
+      continue;
+    }
+    if (cs.ackedReasons != null && !Array.isArray(cs.ackedReasons)) {
+      console.warn(`simon-dash: card ${k} has a malformed ackedReasons in the state file; resetting it`);
+      cs.ackedReasons = null;
+    }
+  }
   return state;
 }
 

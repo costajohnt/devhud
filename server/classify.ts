@@ -9,14 +9,25 @@ const isIgnoredAuthor = (name: string | null | undefined, ignore: string[]): boo
   return !!n && ignore.some(a => n.includes(a.toLowerCase()));
 };
 
+// The attention reasons that stay true across refreshes (unlike comment
+// reasons, which the lastSeen* watermarks govern). Only these may live in
+// CardState.ackedReasons — ack recording (actions.ts) and the pruning below
+// both filter against this list so the two files can't drift.
+export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test'];
+
 export interface ClassifyResult {
   bucket: Bucket;
   attention: string[];
   newComments: NewComment[];
 }
 
-export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors = [] }: {
+export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors = [], prDegraded = false }: {
   card: Card; pr: Pr | null; cs: CardState; statuses: JiraStatuses; username: string; ignoreAuthors?: string[];
+  // True when this refresh's PR data is degraded (GitHub fetch or enrichment
+  // errors). Both state-based reasons derive from PR data, so pruning acks
+  // against a degraded view would wipe them and bounce the card back into
+  // Needs Attention on the next healthy refresh.
+  prDegraded?: boolean;
 }): ClassifyResult {
   const attention: string[] = [];
   const newComments: NewComment[] = [];
@@ -41,15 +52,27 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
     attention.push('merged_not_in_test');
   }
 
+  // Ack suppression: an acknowledged state-based reason stays muted for as
+  // long as it remains continuously true. Once a reason clears, its ack is
+  // forgotten — a recurrence is a new event and re-triggers Needs Attention.
+  // Skipped while PR data is degraded (see prDegraded above). Filtering
+  // against STATE_REASONS also drops junk entries (hand-edited state files)
+  // that would otherwise mute comment attention forever. cs is mutated in
+  // place; the caller persists card state after the refresh, same as the
+  // celebration bookkeeping in buildSnapshot.
+  const acked = (cs.ackedReasons ?? []).filter(r => STATE_REASONS.includes(r) && (prDegraded || attention.includes(r)));
+  cs.ackedReasons = acked.length ? acked : null;
+  const visible = attention.filter(r => !acked.includes(r));
+
   let bucket: Bucket;
-  if (attention.length) bucket = 'needs_attention';
+  if (visible.length) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
   else if (card.status === statuses.inTest) bucket = 'in_qa';
   else if (pr?.state === 'open' && pr.reviewState !== 'none') bucket = 'waiting_review';
   else bucket = 'in_progress';
 
   newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
-  return { bucket, attention, newComments };
+  return { bucket, attention: visible, newComments };
 }
 
 // Category-first, exact-name fallback. Jira routing must follow the status

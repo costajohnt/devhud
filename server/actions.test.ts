@@ -123,3 +123,46 @@ test('applyAction rejects a falsy or non-string key before touching state (cover
   // Nothing got written into state.cards for any of these.
   expect(Object.keys(state.cards)).toEqual([]);
 });
+
+test('ack records state-based reasons so the next refresh keeps them muted', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').ackedReasons).toEqual(['ci_failing']);
+});
+
+test('ack unions with prior acked reasons instead of overwriting them', () => {
+  const state = stateWithItem();
+  cardState(state, 'P-1').ackedReasons = ['merged_not_in_test'];
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').ackedReasons!.sort()).toEqual(['ci_failing', 'merged_not_in_test']);
+});
+
+test('ack with only comment-based attention leaves ackedReasons null', () => {
+  const state = stateWithItem();
+  state.snapshot!.buckets.needs_attention[0]!.attention = ['new_pr_comments'];
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').ackedReasons).toBeNull();
+});
+
+test('ack routes to waiting_review when the PR is open with review activity', () => {
+  const state = stateWithItem();
+  state.snapshot!.buckets.needs_attention[0]!.pr = {
+    repo: 'o/r', number: 1, url: '', branch: '', state: 'open', ciStatus: 'failing', reviewState: 'review_required',
+  };
+  const result = applyAction({ state, config, type: 'ack', key: 'P-1' }) as LooseResult;
+  expect(result.bucket).toBe('waiting_review');
+});
+
+test('move records state-based reasons the same way ack does', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' });
+  expect(cardState(state, 'P-1').ackedReasons).toEqual(['ci_failing']);
+});
+
+test('move clears attention and newComments like ack does', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' });
+  const item = state.snapshot!.buckets.in_qa[0]!;
+  expect(item.attention).toEqual([]);
+  expect(item.newComments).toEqual([]);
+});

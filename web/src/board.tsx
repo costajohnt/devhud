@@ -12,7 +12,9 @@ export const ago = (iso: string | null) => {
 // Attention reasons (CI failing, unseen comments) always outrank "Merged" —
 // a merged PR that still needs a look shouldn't hide behind a muted pill.
 function pill(item: Item): { text: string; cls: string } | null {
-  if (item.attention.includes('ci_failing')) return { text: 'CI Failing', cls: 'pill pill--red' };
+  // Driven by the PR fact, not the attention flag: acknowledging mutes the
+  // needs_attention nag, but red CI is still red and must stay visible.
+  if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') return { text: 'CI Failing', cls: 'pill pill--red' };
   const n = item.newComments.length;
   if (n) return { text: `${n} new comment${n > 1 ? 's' : ''}`, cls: 'pill pill--red' };
   if (item.pr?.state === 'merged') return { text: 'Merged', cls: 'pill pill--muted' };

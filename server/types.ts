@@ -218,6 +218,10 @@ export interface CardState {
   lastSeenJira: string | null;
   override: Bucket | null;
   overrideAt: string | null;
+  // State-based attention reasons (STATE_REASONS in classify.ts) the user
+  // acknowledged; classifyCard mutes and prunes these — see the comment
+  // there. Optional: absent in pre-existing state files.
+  ackedReasons?: string[] | null;
 }
 
 export interface CelebratedEntry {

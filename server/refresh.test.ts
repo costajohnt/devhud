@@ -311,3 +311,45 @@ test('a later-sequenced refresh that completes first is not overwritten by an ea
   expect(state.snapshot).toBe(payloadB);
   expect(state.snapshot).not.toBe(payloadA);
 });
+
+test('routing off-board (Done) forgets acked reasons so a reopened card re-triggers', () => {
+  const state = emptyState();
+  const prs = [pr({ branch: 'PROJ-1-x', state: 'merged', mergedAt: '2026-07-03T00:00:00Z' })];
+  // ack while active
+  state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['merged_not_in_test'] };
+  buildSnapshot({ cards: [card({ status: 'Done' })], prs, state, config, errors: {} });
+  expect(state.cards['PROJ-1']!.ackedReasons).toBeNull();
+  // reopened: merged_not_in_test is a fresh event again
+  const p = buildSnapshot({ cards: [card()], prs, state, config, errors: {} });
+  expect(p.buckets.needs_attention[0]!.attention).toContain('merged_not_in_test');
+});
+
+test('a GitHub error marks PR data degraded so acks are not pruned', () => {
+  const state = emptyState();
+  state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['ci_failing'] };
+  buildSnapshot({ cards: [card()], prs: [], state, config, errors: { github: 'boom' } });
+  expect(state.cards['PROJ-1']!.ackedReasons).toEqual(['ci_failing']);
+});
+
+test('an unrelated repo failure does not stop ack-pruning for cards whose PR data is healthy', async () => {
+  const { fetchPrs } = await import('./github.ts');
+  const state = emptyState();
+  state.lastCards = [card()]; // fetchJiraCards is mocked to reject in this suite
+  state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['ci_failing'] };
+  // o/r fetched fine (CI now green — the acked reason has cleared); o/dead is
+  // permanently broken. The stale-repo failure must degrade only o/dead.
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'passing' })], errors: ['o/dead: Not Found'] });
+  await refresh({ config, state });
+  expect(state.cards['PROJ-1']!.ackedReasons).toBeNull();
+});
+
+test('a whole-fetch GitHub failure degrades everything and preserves acks', async () => {
+  const { fetchPrs } = await import('./github.ts');
+  const state = emptyState();
+  state.lastCards = [card()]; // fetchJiraCards is mocked to reject in this suite
+  state.lastPrs = [pr({ ciStatus: 'failing' })];
+  state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['ci_failing'] };
+  vi.mocked(fetchPrs).mockRejectedValueOnce(new Error('github down'));
+  await refresh({ config, state });
+  expect(state.cards['PROJ-1']!.ackedReasons).toEqual(['ci_failing']);
+});

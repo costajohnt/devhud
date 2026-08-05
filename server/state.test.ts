@@ -136,3 +136,20 @@ test('saveState rotates the previous file to .bak before writing', () => {
   expect(JSON.parse(readFileSync(path + '.bak', 'utf8')).cards.A.override).toBe('in_progress');
   expect(JSON.parse(readFileSync(path, 'utf8')).cards.B.override).toBe('in_qa');
 });
+
+test('loadState coerces a malformed (non-array) ackedReasons to null', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify({ cards: { 'P-1': { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: 'ci_failing' } } }));
+  expect(loadState(path).cards['P-1']!.ackedReasons).toBeNull();
+});
+
+test('loadState drops a null card entry without discarding the rest of the file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify({ doneTotal: 7, cards: { 'P-1': null, 'P-2': { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: null } } }));
+  const s = loadState(path);
+  expect(s.cards['P-1']).toBeUndefined();
+  expect(s.cards['P-2']!.override).toBe('in_qa');
+  expect(s.doneTotal).toBe(7);
+});

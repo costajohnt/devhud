@@ -102,7 +102,16 @@ export function createServer({ config, statePath, webDist, configPath }: {
         const { type, key, bucket } = body as { type?: string; key?: unknown; bucket?: string };
         const result = applyAction({ state, config, type: type ?? '', key, bucket });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
-        saveState(statePath, state);
+        try {
+          saveState(statePath, state);
+        } catch (e) {
+          // applyAction already mutated the in-memory board, so memory and
+          // disk now diverge: the served snapshot shows the action applied,
+          // but a restart silently reverts it (ack/move bounce back). Name
+          // that explicitly instead of dying in the generic handler catch.
+          console.error(`simon-dash: action ${type} on ${String(key)} applied in memory but saveState failed — memory and disk have diverged:`, e);
+          return send(500, { error: 'action applied but could not be saved; it will revert on restart' });
+        }
         return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {

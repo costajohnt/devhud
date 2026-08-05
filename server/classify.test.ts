@@ -89,3 +89,44 @@ test('comments from ignored authors (John/Rovo) do not trigger needs_attention',
   const r2 = classifyCard({ ...base, card: card(), pr: p, cs: cs(), ignoreAuthors: ['John', 'Rovo'] });
   expect(r2.attention).not.toContain('new_pr_comments');
 });
+
+test('acked state-based reason stays muted while true, re-triggers after clearing and recurring', () => {
+  const m = pr({ state: 'merged' });
+  const c = cs({ ackedReasons: ['merged_not_in_test'] });
+  const r = classifyCard({ ...base, card: card(), pr: m, cs: c });
+  expect(r.attention).toEqual([]);
+  expect(r.bucket).toBe('in_progress');
+  // reason clears (no merged PR any more) -> the ack is forgotten
+  classifyCard({ ...base, card: card(), pr: null, cs: c });
+  expect(c.ackedReasons).toBeNull();
+  // recurrence is a new event -> re-triggers
+  expect(classifyCard({ ...base, card: card(), pr: m, cs: c }).bucket).toBe('needs_attention');
+});
+
+test('new comment still triggers attention while a state-based reason is acked', () => {
+  const m = pr({ state: 'merged', comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
+  const r = classifyCard({ ...base, card: card(), pr: m, cs: cs({ ackedReasons: ['merged_not_in_test'] }) });
+  expect(r.bucket).toBe('needs_attention');
+  expect(r.attention).toEqual(['new_pr_comments']);
+});
+
+test('degraded PR data mutes acked reasons without pruning them', () => {
+  const c = cs({ ackedReasons: ['ci_failing'] });
+  // GitHub down, no last-known-good: pr is null, so ci_failing is absent this
+  // refresh — the ack must survive rather than be mistaken for "cleared".
+  const r = classifyCard({ ...base, card: card(), pr: null, cs: c, prDegraded: true });
+  expect(c.ackedReasons).toEqual(['ci_failing']);
+  expect(r.bucket).toBe('in_progress');
+  // healthy refresh, CI still failing: still muted
+  const r2 = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing' }), cs: c });
+  expect(r2.bucket).toBe('in_progress');
+  expect(c.ackedReasons).toEqual(['ci_failing']);
+});
+
+test('junk (comment-reason) entries in ackedReasons are dropped, never muting comment attention', () => {
+  const c = cs({ ackedReasons: ['new_pr_comments'] });
+  const p = pr({ comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
+  const r = classifyCard({ ...base, card: card(), pr: p, cs: c });
+  expect(r.bucket).toBe('needs_attention');
+  expect(c.ackedReasons).toBeNull();
+});

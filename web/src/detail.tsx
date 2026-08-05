@@ -28,7 +28,9 @@ function reviewDotClass(state: string): string {
 function nextAction(item: Item): string {
   const a = item.attention;
   const n = item.newComments.length;
-  if (a.includes('ci_failing')) return 'CI is failing — fix the build';
+  // PR fact, not attention flag — an acked card with red CI still needs the
+  // build fixed, even though it no longer sits in Needs Attention.
+  if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') return 'CI is failing — fix the build';
   if (n > 0) return `Respond to ${n} new comment${n > 1 ? 's' : ''}`;
   if (a.includes('merged_not_in_test')) return 'PR merged — move the card to QA / In Test';
   switch (item.bucket) {

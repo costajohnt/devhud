@@ -42,8 +42,15 @@ function upsertPrLog(state: State, prs: Pr[]): void {
   }
 }
 
-export function buildSnapshot({ cards, prs, state, config, errors }: {
+export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos }: {
   cards: Card[]; prs: Pr[]; state: State; config: Config; errors: { jira?: string; github?: string };
+  // Which repos' PR data is degraded this refresh ('all' = the whole GitHub
+  // fetch failed). Callers that don't track it (tests, direct use) default to
+  // 'all' whenever errors.github is set — conservative, never prunes acks on
+  // any error. refresh() passes the precise set so one permanently broken
+  // repo in the config doesn't disable ack-pruning for every other repo's
+  // cards forever.
+  degradedPrRepos?: Set<string> | 'all';
 }): Snapshot {
   const { statuses } = config.jira;
   const username = config.github.username;
@@ -58,9 +65,23 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
   const todo: Snapshot['todo'] = [];
   const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
 
+  // Both state-based attention reasons derive from PR data; when a card's PR
+  // data is degraded this refresh, classify's ack-pruning must not treat
+  // "reason missing from this refresh" as "reason cleared" — that would wipe
+  // acks a healthy refresh would have kept.
+  const degraded = degradedPrRepos ?? (errors.github ? 'all' : null);
+
   for (const card of cards) {
     // Canceled work is neither active nor complete — drop it from every bucket,
     // the Todo list, the Done page, and all counts.
+    // Off-board routes (canceled/todo/done) never reach classifyCard, so its
+    // ack-pruning can't run for them; forget acks here so a card that later
+    // returns to the board (e.g. QA rejects a Done card back to In Progress)
+    // re-triggers on a still-true reason instead of staying muted forever.
+    if (isCanceled(card, statuses) || isTodo(card, statuses) || isDone(card, statuses)) {
+      const cs = state.cards[card.key];
+      if (cs?.ackedReasons) cs.ackedReasons = null;
+    }
     if (isCanceled(card, statuses)) continue;
     if (isTodo(card, statuses)) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     const pr = linked.get(card.key) ?? null;
@@ -81,7 +102,11 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
       continue;
     }
 
-    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, ignoreAuthors });
+    // A card with no PR under any degradation is treated as degraded too: we
+    // can't tell whether its PR vanished or simply belongs to a failed repo.
+    const prDegraded = degraded === 'all'
+      || (degraded !== null && (pr ? degraded.has(pr.repo) : degraded.size > 0));
+    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, ignoreAuthors, prDegraded });
     const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
@@ -147,7 +172,13 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
 // gated by this — they run unconditionally on every call regardless of
 // ordering, verified safe: a merge is celebrated once no matter which
 // refresh notices it first, and cardState/override mutations are
-// idempotent writes keyed by card key, not append-only history.
+// idempotent writes keyed by card key, not append-only history. One
+// exception to that idempotence claim: ackedReasons pruning in
+// classifyCard is data-driven and destructive, so a losing (staler)
+// refresh can prune an ack the winning refresh's data would have kept.
+// The prDegraded guard covers the error paths; a healthy-but-stale race
+// window remains and is accepted — worst case is one extra
+// needs_attention round-trip.
 let refreshSeq = 0;
 let lastCompletedRefreshSeq = 0;
 
@@ -157,6 +188,12 @@ let lastCompletedRefreshSeq = 0;
 export async function refresh({ config, state }: { config: Config; state: State }): Promise<Snapshot> {
   const seq = ++refreshSeq;
   const errors: { jira?: string; github?: string } = {};
+  // Repos whose PR data is degraded this refresh (fetch or enrichment
+  // failure — even with a last-known-good fallback the data is stale);
+  // prFetchFailed marks the everything-failed case. Feeds ack-pruning: see
+  // buildSnapshot's degradedPrRepos.
+  const degradedPrRepos = new Set<string>();
+  let prFetchFailed = false;
   let cards: Card[], prs: Pr[];
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
@@ -189,7 +226,10 @@ export async function refresh({ config, state }: { config: Config; state: State 
       errors.github = gh.errors.join('; ');
       for (const err of gh.errors) {
         const failedRepo = err.match(/^([^:]+):/)?.[1];
-        if (failedRepo) prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
+        if (failedRepo) {
+          degradedPrRepos.add(failedRepo);
+          prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
+        }
       }
     }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
@@ -203,6 +243,7 @@ export async function refresh({ config, state }: { config: Config; state: State 
     results.forEach((r, i) => {
       if (r.status !== 'rejected') return;
       const pr = toEnrich[i]!;
+      degradedPrRepos.add(pr.repo);
       const fallback = (state.lastPrs ?? []).find(lp => lp.repo === pr.repo && lp.number === pr.number);
       if (!fallback) return;
       const idx = prs.indexOf(pr);
@@ -212,8 +253,9 @@ export async function refresh({ config, state }: { config: Config; state: State 
   } catch (e) {
     errors.github = [errors.github, (e as Error).message].filter(Boolean).join('; ');
     prs = state.lastPrs ?? [];
+    prFetchFailed = true;
   }
-  const payload = buildSnapshot({ cards, prs, state, config, errors });
+  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos });
   if (seq > lastCompletedRefreshSeq) {
     lastCompletedRefreshSeq = seq;
     state.snapshot = payload;

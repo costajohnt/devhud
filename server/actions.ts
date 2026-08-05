@@ -1,7 +1,18 @@
 import { cardState } from './state.ts';
+import { STATE_REASONS } from './classify.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
 export const BUCKETS: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
+
+// Union of already-acked reasons and the state-based reasons currently shown
+// on the item — unioned, not overwritten, because a previously acked reason
+// is already suppressed from item.attention and overwriting would silently
+// un-mute it. Comment reasons never enter this set (the lastSeen watermarks
+// govern those); classifyCard prunes entries whose reason has cleared.
+const ackReasons = (prior: string[] | null | undefined, attention: string[]): string[] | null => {
+  const merged = new Set([...(prior ?? []), ...attention.filter(r => STATE_REASONS.includes(r))]);
+  return merged.size ? [...merged] : null;
+};
 
 // Shared ack/move logic used by both the HTTP handler (server/index.ts
 // POST /api/action) and the CLI (server/cli.ts `ack`/`move` commands) so the
@@ -53,11 +64,22 @@ export function applyAction({ state, config, type, key, bucket }: {
     // flags, it doesn't undo a prior manual move.
     const loc = findItem();
     if (!loc || !snap) return { ok: true, bucket: null };
+    // Record acked state-based reasons so classifyCard keeps them muted on
+    // subsequent refreshes — see CardState.ackedReasons and ackReasons above.
+    cs.ackedReasons = ackReasons(cs.ackedReasons, loc.item.attention);
     loc.item.attention = [];
     loc.item.newComments = [];
     if (loc.from === 'needs_attention') {
       snap.buckets.needs_attention.splice(loc.i, 1);
-      const dest: Bucket = cs.override ?? (loc.item.jiraStatus === config.jira?.statuses?.inTest ? 'in_qa' : 'in_progress');
+      // Jira-driven destination, mirroring classifyCard's no-attention
+      // routing. (Todo/Done can't apply here: buildSnapshot routes those
+      // cards off the board before bucketing, so a Needs Attention item is
+      // never in a Todo/Done status.)
+      let dest: Bucket;
+      if (cs.override) dest = cs.override;
+      else if (loc.item.jiraStatus === config.jira?.statuses?.inTest) dest = 'in_qa';
+      else if (loc.item.pr?.state === 'open' && loc.item.pr.reviewState !== 'none') dest = 'waiting_review';
+      else dest = 'in_progress';
       loc.item.bucket = dest;
       snap.buckets[dest].push(loc.item);
       return { ok: true, bucket: dest };
@@ -76,6 +98,13 @@ export function applyAction({ state, config, type, key, bucket }: {
     cs.lastSeenPr = cs.lastSeenJira = horizon;
     const loc = findItem();
     if (!loc || !snap) return { ok: true, bucket: null };
+    // A manual move is an acknowledgment too: mute state-based reasons and
+    // clear the item's attention flags the same way ack does, so the moved
+    // card doesn't keep its badges in the target bucket until the next
+    // refresh (and doesn't bounce back on it).
+    cs.ackedReasons = ackReasons(cs.ackedReasons, loc.item.attention);
+    loc.item.attention = [];
+    loc.item.newComments = [];
     snap.buckets[loc.from].splice(loc.i, 1);
     loc.item.bucket = target;
     snap.buckets[target].push(loc.item);
