@@ -21,10 +21,10 @@ test('new PR comment by someone else -> needs_attention, own comment ignored', (
   expect(classifyCard({ ...base, card: card(), pr: mine, cs: cs() }).bucket).toBe('self_review');
 });
 
-test('merged but not In Test -> needs_attention; merged and In Test -> in_qa', () => {
+test('merged but not In Test -> needs_attention; merged and In Test -> qa_ready', () => {
   const m = pr({ state: 'merged' });
   expect(classifyCard({ ...base, card: card(), pr: m, cs: cs() }).attention).toContain('merged_not_in_test');
-  expect(classifyCard({ ...base, card: card({ status: 'In Test' }), pr: m, cs: cs() }).bucket).toBe('in_qa');
+  expect(classifyCard({ ...base, card: card({ status: 'In Test' }), pr: m, cs: cs() }).bucket).toBe('qa_ready');
 });
 
 test('override wins when no attention; attention beats override', () => {
@@ -36,6 +36,10 @@ test('review_required -> waiting_review; no PR -> in_progress; todo helper', () 
   expect(classifyCard({ ...base, card: card(), pr: pr({ reviewState: 'review_required' }), cs: cs() }).bucket).toBe('waiting_review');
   expect(classifyCard({ ...base, card: card(), pr: null, cs: cs() }).bucket).toBe('in_progress');
   expect(isTodo(card({ status: 'To Do' }), statuses)).toBe(true);
+});
+
+test('approved PR -> mergeable', () => {
+  expect(classifyCard({ ...base, card: card(), pr: pr({ reviewState: 'approved' }), cs: cs() }).bucket).toBe('mergeable');
 });
 
 test('new jira comment by someone else since lastSeenJira', () => {
@@ -121,6 +125,24 @@ test('degraded PR data mutes acked reasons without pruning them', () => {
   const r2 = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing' }), cs: c });
   expect(r2.bucket).toBe('self_review');
   expect(c.ackedReasons).toEqual(['ci_failing']);
+});
+
+test('override auto-cleared when card reaches In Test or Done', () => {
+  const s = cs({ override: 'waiting_review', overrideAt: '2026-07-01T00:00:00Z' });
+  // In Test: override cleared, routes to qa_ready
+  const r = classifyCard({ ...base, card: card({ status: 'In Test' }), pr: pr({ state: 'merged' }), cs: s });
+  expect(r.bucket).toBe('qa_ready');
+  expect(s.override).toBeNull();
+  expect(s.overrideAt).toBeNull();
+  // Done: override cleared, routes to in_progress (Done cards are filtered upstream, but classify still works)
+  const s2 = cs({ override: 'self_review', overrideAt: '2026-07-01T00:00:00Z' });
+  classifyCard({ ...base, card: card({ status: 'Done' }), pr: null, cs: s2 });
+  expect(s2.override).toBeNull();
+  // In Progress: override preserved
+  const s3 = cs({ override: 'waiting_review', overrideAt: '2026-07-01T00:00:00Z' });
+  const r3 = classifyCard({ ...base, card: card(), pr: pr(), cs: s3 });
+  expect(r3.bucket).toBe('waiting_review');
+  expect(s3.override).toBe('waiting_review');
 });
 
 test('junk (comment-reason) entries in ackedReasons are dropped, never muting comment attention', () => {

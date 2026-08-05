@@ -30,7 +30,7 @@ function needsAttentionItem(overrides: Partial<Item> = {}): Item {
 function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
     todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     prLog: [],
@@ -76,7 +76,7 @@ async function startServer(): Promise<{ server: http.Server; base: string; state
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], self_review: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
     prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }],
   });
   saveState(statePath, state);
@@ -423,7 +423,7 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
     const freshBase = `http://127.0.0.1:${(freshServer.address() as AddressInfo).port}`;
     const d = await (await fetch(`${freshBase}/api/data`)).json();
     expect(d.updatedAt).toBeNull();
-    expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], self_review: [], waiting_review: [], in_qa: [] });
+    expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] });
     expect(d.doneTotal).toBe(0);
   } finally {
     freshServer.close();

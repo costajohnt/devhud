@@ -2,7 +2,7 @@ import type { Item, Bucket } from './types.js';
 import { BUCKET_LABEL } from './types.js';
 import { ago } from './board.js';
 
-const MOVABLE: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'in_qa'];
+const MOVABLE: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 
 function ciDotClass(status: string): string {
   switch (status) {
@@ -36,6 +36,8 @@ function nextAction(item: Item): string {
   switch (item.bucket) {
     case 'self_review': return 'Self review needed — inspect PR before requesting peer review';
     case 'waiting_review': return 'Waiting on reviewers';
+    case 'mergeable': return 'Approved — merge the PR and move the card to In Test';
+    case 'qa_ready': return 'QA Ready — awaiting a tester to pick it up';
     case 'in_qa': return 'In QA — awaiting test sign-off';
     case 'needs_attention': return 'Needs triage';
     default: return 'In progress — keep it moving';

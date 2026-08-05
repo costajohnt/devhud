@@ -109,7 +109,7 @@ export function saveState(path: string, state: State): void {
 export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
-    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
     todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     prLog: [],

@@ -25,7 +25,7 @@ function stateWithItem(overrides: Partial<Snapshot> = {}) {
         attention: ['ci_failing'], newComments: [{ source: 'github', author: 'a', body: 'b', createdAt: null }],
         comments: [], pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
       }],
-      in_progress: [], self_review: [], waiting_review: [], in_qa: [],
+      in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
     },
     todo: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
@@ -46,11 +46,11 @@ test('ack clears attention/newComments and moves needs_attention -> in_progress 
   expect(cardState(state, 'P-1').lastSeenPr).toBe('2026-07-01T00:00:00Z');
 });
 
-test('ack routes to in_qa when jiraStatus is the configured "In Test" status', () => {
+test('ack routes to qa_ready when jiraStatus is the configured "In Test" status', () => {
   const state = stateWithItem();
   state.snapshot!.buckets.needs_attention[0]!.jiraStatus = 'In Test';
   const result = applyAction({ state, config, type: 'ack', key: 'P-1' }) as LooseResult;
-  expect(result.bucket).toBe('in_qa');
+  expect(result.bucket).toBe('qa_ready');
 });
 
 test('ack honors an existing override instead of the default routing', () => {

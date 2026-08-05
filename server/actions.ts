@@ -2,7 +2,7 @@ import { cardState } from './state.ts';
 import { STATE_REASONS } from './classify.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
-export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'in_qa'];
+export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 
 // Union of already-acked reasons and the state-based reasons currently shown
 // on the item — unioned, not overwritten, because a previously acked reason
@@ -73,9 +73,11 @@ export function applyAction({ state, config, type, key, bucket }: {
       snap.buckets.needs_attention.splice(loc.i, 1);
       let dest: Bucket;
       if (cs.override) dest = cs.override;
-      else if (loc.item.jiraStatus === config.jira?.statuses?.inTest) dest = 'in_qa';
+      else if (loc.item.jiraStatus === config.jira?.statuses?.inTest) dest = 'qa_ready';
       else if (loc.item.pr?.state === 'open') {
-        if (loc.item.jiraStatus === 'Code Review' || loc.item.jiraStatus === 'In Review' || loc.item.pr.reviewState !== 'none') {
+        if (loc.item.pr.reviewState === 'approved') {
+          dest = 'mergeable';
+        } else if (loc.item.jiraStatus === 'Code Review' || loc.item.jiraStatus === 'In Review' || loc.item.pr.reviewState !== 'none') {
           dest = 'waiting_review';
         } else {
           dest = 'self_review';

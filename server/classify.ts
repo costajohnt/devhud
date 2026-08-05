@@ -64,14 +64,23 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   cs.ackedReasons = acked.length ? acked : null;
   const visible = attention.filter(r => !acked.includes(r));
 
+  // Auto-clear a stale override once the card reaches In Test or Done:
+  // the card's lifecycle has moved past developer-side bucketing.
+  if (cs.override && (card.status === statuses.inTest || card.status === statuses.done)) {
+    cs.override = null;
+    cs.overrideAt = null;
+  }
+
   let bucket: Bucket;
   if (pr?.state === 'open' && pr.isDraft) {
     bucket = 'self_review';
   } else if (visible.length) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
-  else if (card.status === statuses.inTest) bucket = 'in_qa';
+  else if (card.status === statuses.inTest) bucket = 'qa_ready';
   else if (pr?.state === 'open') {
-    if (card.status === 'Code Review' || card.status === 'In Review' || pr.reviewState !== 'none') {
+    if (pr.reviewState === 'approved') {
+      bucket = 'mergeable';
+    } else if (card.status === 'Code Review' || card.status === 'In Review' || pr.reviewState !== 'none') {
       bucket = 'waiting_review';
     } else {
       bucket = 'self_review';

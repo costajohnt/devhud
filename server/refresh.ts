@@ -62,7 +62,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   upsertPrLog(state, prs);
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
-  const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], in_qa: [] };
+  const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] };
   const todo: Snapshot['todo'] = [];
   const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
 

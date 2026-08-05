@@ -119,7 +119,7 @@ export interface Pr {
 
 // --- Board / snapshot payload (mirrors web/src/types.ts) ---
 
-export type Bucket = 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'in_qa';
+export type Bucket = 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'mergeable' | 'qa_ready' | 'in_qa';
 
 export interface NewComment {
   source: 'github' | 'jira';

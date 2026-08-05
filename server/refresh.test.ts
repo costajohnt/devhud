@@ -253,9 +253,9 @@ test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart'
   state.lastPrs = [staleGoodPr];
   const payload = await refresh({ config, state });
   expect(payload.errors.github).toContain('enrich failed');
-  // staleGoodPr has reviewState 'approved', which buckets it into waiting_review.
-  expect(payload.buckets.waiting_review[0]?.pr?.ciStatus).toBe('passing');
-  expect(payload.buckets.waiting_review[0]?.pr?.reviewState).toBe('approved');
+  // staleGoodPr has reviewState 'approved', which buckets it into mergeable.
+  expect(payload.buckets.mergeable[0]?.pr?.ciStatus).toBe('passing');
+  expect(payload.buckets.mergeable[0]?.pr?.reviewState).toBe('approved');
 });
 
 test('demo mode builds populated snapshot without network', async () => {
@@ -272,7 +272,7 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(boardCount).toBeGreaterThan(0);
   expect(p.todo.length).toBeGreaterThan(0);
   expect(p.buckets.needs_attention.length).toBeGreaterThan(0);
-  expect(p.buckets.in_qa.length).toBeGreaterThan(0);
+  expect(p.buckets.qa_ready.length).toBeGreaterThan(0);
   expect(p.doneCards.length).toBeGreaterThan(0);   // Jira-done cards drive the Done page
   expect(p.newlyDone.length).toBeGreaterThan(0);
   expect(p.unlinkedPrs.length).toBeGreaterThan(0);

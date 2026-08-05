@@ -1,8 +1,9 @@
-export type Bucket = 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'in_qa';
-export const BUCKET_ORDER: Bucket[] = ['needs_attention', 'in_progress', 'self_review', 'waiting_review', 'in_qa'];
+export type Bucket = 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'mergeable' | 'qa_ready' | 'in_qa';
+export const BUCKET_ORDER: Bucket[] = ['needs_attention', 'in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 export const BUCKET_LABEL: Record<Bucket, string> = {
   needs_attention: 'Needs Attention', in_progress: 'In Progress',
-  self_review: 'Self Review Needed', waiting_review: 'Waiting in Review', in_qa: 'In QA',
+  self_review: 'Self Review Needed', waiting_review: 'Waiting in Review',
+  mergeable: 'Mergeable', qa_ready: 'QA Ready', in_qa: 'In QA',
 };
 
 export interface PrRef { repo: string; number: number; url: string; branch: string;
