@@ -66,8 +66,11 @@ function UnreadSection({ label, comments }: { label: string; comments: Item['new
   return (
     <div class="pr-detail-field">
       <span class="pr-detail-field-label">{label} <span class="pr-detail-badge">{comments.length}</span></span>
-      {comments.map(c => (
-        <CommentRow key={`new-${c.source}-${c.createdAt}-${c.author}`} c={c} reason={`Unread · ${c.author}`} />
+      {comments.map((c, i) => (
+        // Index in the key: a review body and its inline comments from the
+        // same author routinely share a source/timestamp/author triple, and
+        // duplicate keys let preact reuse the wrong node.
+        <CommentRow key={`new-${i}-${c.source}-${c.createdAt}-${c.author}`} c={c} reason={`Unread · ${c.author}`} />
       ))}
     </div>
   );
@@ -81,8 +84,8 @@ function HistorySection({ label, comments }: { label: string; comments: Item['co
     <details class="pr-detail-history">
       <summary class="pr-detail-history-summary">{label} ({comments.length})</summary>
       <div class="pr-detail-history-body">
-        {comments.map(c => (
-          <CommentRow key={`all-${c.source}-${c.createdAt}-${c.author}`} c={c} />
+        {comments.map((c, i) => (
+          <CommentRow key={`all-${i}-${c.source}-${c.createdAt}-${c.author}`} c={c} />
         ))}
       </div>
     </details>

@@ -79,7 +79,6 @@ On the client, `useData()` polls: an initial `GET /api/data` on mount, a silent 
   cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt } },
   celebrated: [{ id: "org/repo#num", at: isoString | null }],  // legacy, load-only (see below)
   doneCelebrated: [{ id: "jiraKey", at: isoString | null }],
-  doneTotal: number,
   lastRefreshAt: isoString | null,
   snapshot: <last full payload, or null>,
   lastCards: <last successful Jira fetch, or null>,
@@ -90,7 +89,7 @@ On the client, `useData()` polls: an initial `GET /api/data` on mount, a silent 
 
 - **cards**: per-card local overrides. `override`/`overrideAt` record a manual bucket pin; `lastSeenPr`/`lastSeenJira` are the comment "seen" horizons used by `classifyCard` to decide what counts as new.
 - **celebrated**: legacy PR-merge celebration ids from older state files. No longer written — completion is now tracked by Jira Done, not PR merges — but still read at load time so `migratePrLog` can backfill `prLog` history for pre-`prLog` state files.
-- **doneCelebrated**: every Jira card ever observed in the Done category (keyed by card key), so `doneTotal` only increments once per card and the completion confetti only fires once. Completion — not a PR merge — is what the UI celebrates and counts.
+- **doneCelebrated**: every Jira card ever observed in the Done category (keyed by card key), so the completion confetti only fires once per card. The `doneTotal` counter is not derived from it — it's `doneCards.length`, so the number always matches the Done list. Completion — not a PR merge — is what the UI celebrates and counts.
 - **lastCards** / **lastPrs**: last-known-good fetch results, used to backfill the board on a partial or total source failure instead of blanking it.
 - **prLog**: full PR lifecycle history (see API.md), upserted from every fetched PR each refresh; never pruned.
 - **snapshot**: the exact payload the API returns; recomputed by `buildSnapshot` on every refresh, read as-is by `GET /api/data`.

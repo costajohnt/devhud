@@ -237,10 +237,10 @@ export interface State {
   // retained only so migratePrLog can backfill prLog history for pre-prLog
   // state files on load.
   celebrated: CelebratedEntry[];
-  // Cards celebrated as complete, keyed by Jira card key, and the running
-  // all-time total shown by the Done counter.
+  // Cards celebrated as complete, keyed by Jira card key, so the completion
+  // confetti fires once per card. The Done counter is not derived from this —
+  // it's the length of the current Done list (see buildSnapshot).
   doneCelebrated: CelebratedEntry[];
-  doneTotal: number;
   lastRefreshAt: string | null;
   snapshot: Snapshot | null;
   lastCards: Card[] | null;

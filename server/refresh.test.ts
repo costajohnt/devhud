@@ -61,7 +61,7 @@ test('an assigned card in the To Do category routes to Todo, not Needs Attention
   expect(p.buckets.needs_attention).toHaveLength(0);
 });
 
-test('a Jira-done card lands in doneCards with a running doneTotal, celebrated once, and off the board', () => {
+test('a Jira-done card lands in doneCards with a matching doneTotal, celebrated once, and off the board', () => {
   const state = emptyState();
   const cards = [card({ key: 'PROJ-D', status: 'Closed', statusCategory: 'done', updatedAt: '2026-07-08T00:00:00Z' })];
   const p1 = buildSnapshot({ cards, prs: [], state, config, errors: {} });
@@ -73,6 +73,17 @@ test('a Jira-done card lands in doneCards with a running doneTotal, celebrated o
   const p2 = buildSnapshot({ cards, prs: [], state, config, errors: {} });
   expect(p2.newlyDone).toEqual([]);     // celebrated already
   expect(p2.doneTotal).toBe(1);
+});
+
+test('doneTotal tracks the Done list when a celebrated card stops being fetched', () => {
+  const state = emptyState();
+  const done = card({ key: 'PROJ-OLD', status: 'Closed', statusCategory: 'done' });
+  expect(buildSnapshot({ cards: [done], prs: [], state, config, errors: {} }).doneTotal).toBe(1);
+  // PROJ-OLD ages out of the JQL window (or stops matching it): it's still in
+  // state.doneCelebrated, but the counter follows the list the user sees.
+  const p = buildSnapshot({ cards: [], prs: [], state, config, errors: {} });
+  expect(p.doneCards).toHaveLength(0);
+  expect(p.doneTotal).toBe(0);
 });
 
 test('board items carry the card fix versions', () => {

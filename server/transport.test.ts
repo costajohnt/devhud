@@ -32,9 +32,9 @@ test('serverAppearsRunning returns the pid for a live process', () => {
 test('saveStateGuarded saves normally when no server is running', () => {
   const statePath = tempStatePath();
   const state = emptyState();
-  state.doneTotal = 3;
+  state.lastRefreshAt = '2026-07-08T00:00:00Z';
   saveStateGuarded(statePath, state);
-  expect(loadState(statePath).doneTotal).toBe(3);
+  expect(loadState(statePath).lastRefreshAt).toBe('2026-07-08T00:00:00Z');
 });
 
 // TOCTOU: a call site's early guard check (serverAppearsRunning at the top

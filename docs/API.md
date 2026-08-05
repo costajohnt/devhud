@@ -116,7 +116,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   todo: TodoItem[],
   unlinkedPrs: UnlinkedPr[],
   doneCards: DoneCard[],           // cards Jira has marked Done — drives the /done page
-  doneTotal: number,               // running count of completed cards — the "Done" counter
+  doneTotal: number,               // doneCards.length — the "Done" counter
   newlyDone: string[],             // cards that reached Done on this refresh — drives confetti
   recentActivity: ActivityEntry[], // merged/closed/comment activity in the last 7 days
   prLog: PrLogEntry[]
@@ -190,7 +190,7 @@ There is no Merged or Closed page/counter/field. A merged PR surfaces only on it
 
 ### doneTotal / newlyDone
 
-`doneTotal` is a running counter, incremented once per Jira card the first time it's observed in the Done category (tracked via `state.doneCelebrated`, keyed by card key), never decremented. It survives cards aging out of Jira's fetch window, so it doesn't undercount.
+`doneTotal` is `doneCards.length` — the number of Done cards in the current fetch window, so the header counter always matches the `/done` list it labels. It is not an all-time total: cards that age out of Jira's fetch window (or stop matching the board's JQL) leave both the list and the count.
 
 `newlyDone` is the list of Jira keys that reached Done on *this* refresh only, empty on every refresh after the first celebration. Drives the completion confetti/toast in the UI.
 

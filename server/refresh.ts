@@ -59,7 +59,6 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   const ignoreAuthors = config.ignoreAuthors ?? [];
   state.prLog ??= {};
   state.doneCelebrated ??= [];
-  state.doneTotal ??= 0;
   upsertPrLog(state, prs);
   const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
 
@@ -92,12 +91,11 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // A merged PR is supporting context, not completion: it rides along on the
     // active card via prView(pr) (the board's "Merged" pill, the detail panel),
     // and stays on the board so QA can still reject it. Completion follows the
-    // Jira Done category below — a done card is celebrated once (running
-    // doneTotal) and drops off the active board.
+    // Jira Done category below — a done card is celebrated once and drops off
+    // the active board.
     if (isDone(card, statuses)) {
       if (!state.doneCelebrated.some(e => e.id === card.key)) {
         state.doneCelebrated.push({ id: card.key, at: card.updatedAt ?? new Date().toISOString() });
-        state.doneTotal += 1;
         newlyDone.push(card.key);
       }
       doneCards.push({ key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url, pr: prView(pr), doneAt: card.updatedAt });
@@ -156,7 +154,11 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     buckets, todo,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
-    doneCards, doneTotal: state.doneTotal, newlyDone, recentActivity,
+    // The Done counter is the size of the Done list it sits above: both are
+    // this refresh's Done-category cards. A running all-time counter drifted
+    // from the list it labelled (celebrated cards that later aged out of the
+    // JQL window, or stopped matching it, stayed in the count forever).
+    doneCards, doneTotal: doneCards.length, newlyDone, recentActivity,
     prLog: Object.values(state.prLog) as PrLogEntry[],
   };
 }

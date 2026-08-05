@@ -13,7 +13,6 @@ test('fresh state when file missing', () => {
   expect(s.cards).toEqual({});
   expect(s.celebrated).toEqual([]);
   expect(s.doneCelebrated).toEqual([]);
-  expect(s.doneTotal).toBe(0);
   expect(s.lastCards).toBeNull();
   expect(s.lastPrs).toBeNull();
   expect(s.prLog).toEqual({});
@@ -147,9 +146,9 @@ test('loadState coerces a malformed (non-array) ackedReasons to null', () => {
 test('loadState drops a null card entry without discarding the rest of the file', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');
-  writeFileSync(path, JSON.stringify({ doneTotal: 7, cards: { 'P-1': null, 'P-2': { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: null } } }));
+  writeFileSync(path, JSON.stringify({ lastRefreshAt: '2026-07-08T00:00:00Z', cards: { 'P-1': null, 'P-2': { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: null } } }));
   const s = loadState(path);
   expect(s.cards['P-1']).toBeUndefined();
   expect(s.cards['P-2']!.override).toBe('in_qa');
-  expect(s.doneTotal).toBe(7);
+  expect(s.lastRefreshAt).toBe('2026-07-08T00:00:00Z');
 });

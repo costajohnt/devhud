@@ -10,7 +10,7 @@ export function emptyState(): State {
   // to an inherited accessor like Object.prototype.__proto__ in the first
   // place — cardState()'s `??=` sees a real missing key and assigns
   // normally, no matter what string reaches it.
-  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], doneTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
+  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
 }
 
 // JSON.parse always produces normal-prototype objects, so the `cards` field
