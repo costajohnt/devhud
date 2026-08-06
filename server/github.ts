@@ -9,6 +9,7 @@ interface RawPr {
   body?: string;
   head?: { ref?: string; sha?: string };
   merged_at?: string | null;
+  closed_at?: string | null;
   state: string;
   created_at: string;
   updated_at: string;
@@ -51,6 +52,7 @@ export function mapPr(raw: RawPr, repo: string): Pr {
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     mergedAt: raw.merged_at ?? null,
+    closedAt: raw.closed_at ?? null,
     ciStatus: 'unknown',
     reviewState: 'none',
     comments: [],
@@ -98,13 +100,31 @@ export function reviewStateFrom(pr: { requested_reviewers?: unknown[]; requested
   return 'none';
 }
 
+// Conditional-request cache: GitHub 304s don't count against the rate
+// limit, and between refresh ticks most responses are byte-identical — with
+// the server polling every couple of minutes this turns almost the whole
+// sweep free. Keyed by path (token never varies within a process). Unbounded
+// by design: entries track the set of PRs/repos polled, which is small and
+// stable. ponytail: in-memory only, cold restart re-pays one full sweep.
+const etagCache = new Map<string, { etag: string; body: unknown }>();
+
 async function gh<T>(path: string, token: string): Promise<T> {
+  const cached = etagCache.get(path);
   const res = await fetch(`https://api.github.com${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    headers: {
+      Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
+      ...(cached ? { 'If-None-Match': cached.etag } : {}),
+    },
     signal: AbortSignal.timeout(30_000),
   });
+  if (res.status === 304 && cached) return cached.body as T;
   if (!res.ok) throw new Error(`GitHub ${res.status} ${path}: ${(await res.text()).slice(0, 200)}`);
-  return res.json() as Promise<T>;
+  const body = await res.json() as T;
+  // Optional chain: test stubs (and any minimal fetch shim) may return a
+  // response without a headers object.
+  const etag = res.headers?.get('etag');
+  if (etag) etagCache.set(path, { etag, body });
+  return body;
 }
 
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.

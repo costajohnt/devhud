@@ -19,7 +19,7 @@ const card = (o: Partial<Card> = {}): Card => ({ key: 'PROJ-1', summary: 'S', st
   myAccountId: 'me', comments: [], ...o });
 const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'o/r', number: 1, url: 'https://gh/o/r/pull/1', title: '', body: '',
   branch: 'PROJ-1-x', state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [],
-  createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-02T00:00:00Z', mergedAt: null, ...o });
+  createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-02T00:00:00Z', mergedAt: null, closedAt: null, ...o });
 
 test('buckets a linked open card', () => {
   const p = buildSnapshot({ cards: [card()], prs: [pr()], state: emptyState(), config, errors: {} });
@@ -265,10 +265,9 @@ test('a later-sequenced refresh that completes first is not overwritten by an ea
   resolveFirstCallPrs({ prs: [], errors: [] });
   const payloadA = await callA;
 
-  // A still gets its own payload back (its caller's own request/response is
-  // unaffected), but the shared board state must still reflect B — the
-  // later-sequenced, earlier-completing call — not regress to A's.
-  expect(payloadA).not.toBe(payloadB);
+  // A lost the sequence race, so it returns the AUTHORITATIVE snapshot (B's)
+  // rather than its own stale build — callers (the HTTP response, the SSE
+  // broadcast) must never receive data that state itself already rejected.
+  expect(payloadA).toBe(payloadB);
   expect(state.snapshot).toBe(payloadB);
-  expect(state.snapshot).not.toBe(payloadA);
 });

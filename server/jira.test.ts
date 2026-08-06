@@ -69,10 +69,19 @@ test('fetchJiraCards refetches the newest comments when the embedded list was tr
   const latestCommentsPayload = { comments: [
     { author: { accountId: 'a', displayName: 'A' }, body: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'newest' }] }] }, created: '2026-07-03T00:00:00.000+0000' },
   ] };
-  const fetchMock = vi.fn((url: string | URL) => {
+  // Throw on unmatched URLs (mirroring github.test.ts) and capture the
+  // primary request: a mock that answers ANY non-comment URL with the
+  // search payload would let a wrong endpoint, missing auth header, or
+  // broken JQL encoding pass silently.
+  let searchAuth: string | undefined;
+  const fetchMock = vi.fn((url: string | URL, init?: { headers?: Record<string, string> }) => {
     const u = String(url);
     if (u.includes('/comment?')) return Promise.resolve({ ok: true, json: () => Promise.resolve(latestCommentsPayload) });
-    return Promise.resolve({ ok: true, json: () => Promise.resolve(searchPayload) });
+    if (u.startsWith('https://x.atlassian.net/rest/api/3/search/jql?')) {
+      searchAuth = init?.headers?.Authorization;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(searchPayload) });
+    }
+    throw new Error(`unexpected URL ${u}`);
   });
   vi.stubGlobal('fetch', fetchMock);
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -81,6 +90,7 @@ test('fetchJiraCards refetches the newest comments when the embedded list was tr
   const cards = await fetchJiraCards(cfg);
   expect(cards[0]!.comments).toHaveLength(1);
   expect(cards[0]!.comments[0]!.body).toContain('newest');
+  expect(searchAuth).toBe('Basic ' + Buffer.from('a@b.c:t').toString('base64'));
   expect(warnSpy).toHaveBeenCalled();
   warnSpy.mockRestore();
 });

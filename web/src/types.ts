@@ -13,7 +13,11 @@ export interface NewComment { source: 'github' | 'jira'; author: string; body: s
 
 export interface Item { key: string; summary: string; jiraStatus: string; jiraUrl: string;
   bucket: Bucket; attention: string[]; newComments: NewComment[]; comments: NewComment[]; pr: PrRef | null;
-  createdAt: string; updatedAt: string; daysSinceActivity: number | null; }
+  // Nullable to match the server (jira.ts's iso() yields null for a missing
+  // field); typing these as plain string hid an "Invalid Date" render.
+  createdAt: string | null; updatedAt: string | null; daysSinceActivity: number | null; }
+
+export interface PrLogEntry { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null; }
 
 export interface DashboardData {
   updatedAt: string | null;
@@ -26,5 +30,5 @@ export interface DashboardData {
   newlyMerged: string[];
   recentActivity: { type: 'merged' | 'closed' | 'comment'; label: string; url: string; date: string }[];
   closedPrs: { repo: string; number: number; url: string; title: string; closedAt: string }[];
-  prLog: { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null }[];
+  prLog: PrLogEntry[];
 }

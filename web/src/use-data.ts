@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { DashboardData } from './types.js';
+import { applyEvent } from './live-event.js';
 
 export function useData() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -76,12 +77,10 @@ export function useData() {
     }
   };
 
-  // updatedAt of the last SSE event that fired onRefreshed. The server
-  // re-broadcasts the same snapshot on actions and on reconnect (the
-  // connect event replays current state), and its newlyMerged field only
-  // resets on the next real refresh — so firing onRefreshed (confetti) on
-  // every event would replay the celebration. Only a changed updatedAt
-  // means a genuinely fresh refresh.
+  // updatedAt of the last SSE event seen; undefined = none yet this page
+  // load. Fed to applyEvent (live-event.ts), which decides whether an event
+  // is a genuinely fresh refresh (fire confetti) or a replay (connect
+  // event, action re-broadcast, reconnect) — see that file for the rules.
   const lastEventAt = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
@@ -96,10 +95,9 @@ export function useData() {
       setData(d);
       setLoading(false);
       setConnError(null);
-      if (d.updatedAt !== lastEventAt.current) {
-        lastEventAt.current = d.updatedAt;
-        onRefreshed.current(d);
-      }
+      const { fire, next } = applyEvent(lastEventAt.current, d);
+      lastEventAt.current = next;
+      if (fire) onRefreshed.current(d);
     };
     // Fires on every reconnect attempt too; the banner clears on the next
     // successful message.

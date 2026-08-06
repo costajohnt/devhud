@@ -159,7 +159,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 { source: 'github' | 'jira', author: string, body: string, createdAt: string }
 ```
 
-`body` is truncated to 300 characters at the source (`refresh.js`/`classify.js`), not on the client.
+`body` is truncated to 300 characters at the source (`refresh.ts`/`classify.ts`), not on the client.
 
 `PrRef` (a trimmed view of the linked PR, `null` if the card has no linked PR):
 
@@ -246,7 +246,7 @@ Any request not starting with `/api/` is treated as a static file request agains
 - If the resolved path is a real file, it's served with a `content-type` derived from its extension (`.html`, `.js`, `.css`, `.svg`, `.woff2`, `.png`, `.json`; anything else falls back to `application/octet-stream`).
 - If the path doesn't resolve to a file (a client-side route like `/merged`, `/closed`, or any unknown path), the server falls back to serving `index.html` so the SPA router (`preact-iso`, reading `window.location` client-side) can render its own not-found or route view.
 
-`/api/*` paths that don't match `/api/data`, `/api/refresh`, or `/api/action` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
+`/api/*` paths that don't match `/api/data`, `/api/events`, `/api/refresh`, `/api/action`, or `/api/write` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
 
 ## Single-instance behavior
 

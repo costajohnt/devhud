@@ -88,6 +88,7 @@ export interface Pr {
   createdAt: string;
   updatedAt: string;
   mergedAt: string | null;
+  closedAt: string | null;
   ciStatus: CiStatus;
   reviewState: ReviewState;
   comments: PrComment[];

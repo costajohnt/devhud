@@ -45,7 +45,7 @@ test('reviewStateFrom', () => {
 test('enrichPr merges issue comments, review comments, and review bodies into one sorted (oldest-first) list, sets ciStatus/reviewState, and deletes _raw', async () => {
   const pr: Pr = {
     repo: 'o/r', number: 5, url: 'u', title: 'T', body: '', branch: 'b',
-    state: 'open', createdAt: 'c', updatedAt: 'u', mergedAt: null,
+    state: 'open', createdAt: 'c', updatedAt: 'u', mergedAt: null, closedAt: null,
     ciStatus: 'unknown', reviewState: 'none', comments: [],
     _raw: { head: { sha: 'abc123' }, requested_reviewers: [], requested_teams: [] },
   };
@@ -85,7 +85,7 @@ test('enrichPr merges issue comments, review comments, and review bodies into on
 test('enrichPr does not fetch check-runs for a non-open PR and leaves ciStatus unknown', async () => {
   const pr: Pr = {
     repo: 'o/r', number: 6, url: 'u', title: 'T', body: '', branch: 'b',
-    state: 'merged', createdAt: 'c', updatedAt: 'u', mergedAt: '2026-01-01T00:00:00Z',
+    state: 'merged', createdAt: 'c', updatedAt: 'u', mergedAt: '2026-01-01T00:00:00Z', closedAt: null,
     ciStatus: 'unknown', reviewState: 'none', comments: [],
     _raw: { head: { sha: 'zzz' } },
   };
@@ -140,4 +140,38 @@ test('fetchPrs isolates a per-repo failure into an "org/repo: message" error, wi
   expect(errors).toHaveLength(1);
   expect(errors[0]).toContain('o/bad:');
   expect(errors[0]).toContain('500');
+});
+
+test('gh() sends If-None-Match on repeat calls and serves the cached body on 304', async () => {
+  // Unique repo name: the etag cache is module-level and keyed by path, so
+  // this test must not collide with paths other tests use.
+  const listUrl = 'https://api.github.com/repos/etag-org/etag-repo/pulls?state=all&sort=updated&direction=desc&per_page=50';
+  const rawPr = { number: 1, html_url: 'u', state: 'open', created_at: 'c', updated_at: 'u2', user: { login: 'me' } };
+  let secondCallHeaders: Record<string, string> | undefined;
+  let call = 0;
+  const fetchMock = vi.fn((url: string, init: { headers: Record<string, string> }) => {
+    if (url !== listUrl) throw new Error(`unexpected URL ${url}`);
+    call++;
+    if (call === 1) {
+      return Promise.resolve({
+        ok: true, status: 200,
+        headers: { get: (h: string) => h.toLowerCase() === 'etag' ? '"abc123"' : null },
+        json: () => Promise.resolve([rawPr]),
+      });
+    }
+    secondCallHeaders = init.headers;
+    return Promise.resolve({ ok: false, status: 304, headers: { get: () => null } });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = { token: 't', org: 'etag-org', repos: ['etag-repo'], username: 'me' };
+
+  const first = await fetchPrs(cfg);
+  expect(first.prs).toHaveLength(1);
+
+  const second = await fetchPrs(cfg);
+  expect(secondCallHeaders?.['If-None-Match']).toBe('"abc123"');
+  // 304 is not an error: the cached body is served as if fresh.
+  expect(second.errors).toEqual([]);
+  expect(second.prs).toHaveLength(1);
+  expect(second.prs[0]!.number).toBe(1);
 });

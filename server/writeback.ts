@@ -222,6 +222,19 @@ export async function performWrite({
     return { error: gate.message ?? 'write-back disabled', status: 403 };
   }
 
+  // Scope, not just shape: KEY_RE/REPO_RE stop URL smuggling, but the trust
+  // question for the MCP surface is "is this a resource this dashboard
+  // manages" — board text is attacker-adjacent (see mcp/handlers.ts's
+  // UNTRUSTED_TEXT_NOTE), and without this a prompt-injected agent with
+  // writeEnabled on could transition/comment ANY issue or repo the tokens
+  // reach. Checked against the fresh liveConfig, same as the gate.
+  if ((type === 'transition' || type === 'comment') && !key!.startsWith(`${liveConfig.jira.projectKey}-`)) {
+    return { error: `key "${key}" is outside the configured project ${liveConfig.jira.projectKey}`, status: 403 };
+  }
+  if (type === 'pr_comment' && !liveConfig.github.repos.some(r => `${liveConfig.github.org}/${r}` === repo)) {
+    return { error: `repo "${repo}" is not in the configured github.repos list`, status: 403 };
+  }
+
   let result: { transitionedTo?: string };
   try {
     if (type === 'transition') result = await transitionCard(liveConfig.jira, key!, status);
@@ -232,23 +245,19 @@ export async function performWrite({
   }
 
   // Board reflects the write immediately instead of waiting for the next
-  // poll. refresh() logs an operational one-liner via console.log — fine
-  // for the server's own /api/refresh, but this call has no business
-  // writing to a CLI/MCP caller's stdout on its own; silence it.
+  // poll. quiet: this call has no business writing to a CLI/MCP caller's
+  // stdout on its own (and the old console.log monkeypatch here could
+  // permanently noop logging under concurrent server writes).
   //
   // The write itself already succeeded by this point — a refresh failure
   // (Jira/GitHub hiccup, network blip) must not turn a successful write
   // into a reported failure. Caught separately and returned as a warning
   // field instead.
-  const originalLog = console.log;
-  console.log = () => {};
   let refreshError: string | undefined;
   try {
-    await refreshFn({ config: liveConfig, state });
+    await refreshFn({ config: liveConfig, state, quiet: true });
   } catch (e) {
     refreshError = (e as Error).message;
-  } finally {
-    console.log = originalLog;
   }
 
   return refreshError ? { ok: true, ...result, refreshError } : { ok: true, ...result };

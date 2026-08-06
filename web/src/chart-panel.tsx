@@ -25,7 +25,9 @@ Chart.register(
   Legend,
 );
 
-export interface PrLogEntry { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null; }
+import type { PrLogEntry } from './types.js';
+// Re-exported for chart-panel-lazy's existing import path.
+export type { PrLogEntry };
 
 interface ChartPanelProps {
   prLog: PrLogEntry[];

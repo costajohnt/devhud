@@ -23,10 +23,19 @@ test('lastNMonths rolls over a UTC year boundary correctly', () => {
   // boundary regardless of when this test runs.
   const months = lastNMonths(13);
   expect(months).toHaveLength(13);
+  // 13 consecutive months always span exactly two calendar years.
   const years = new Set(months.map(m => m.split('-')[0]));
-  expect(years.size).toBeGreaterThanOrEqual(1); // sanity: all keys well-formed
+  expect(years.size).toBe(2);
   for (const m of months) {
     expect(m).toMatch(/^\d{4}-(0[1-9]|1[0-2])$/);
+  }
+  // The load-bearing assertion: consecutive keys exactly one month apart
+  // ACROSS the year boundary — a rollover bug that repeats or skips a month
+  // passes the format/count checks above but fails here.
+  for (let i = 1; i < months.length; i++) {
+    const [py, pm] = months[i - 1]!.split('-').map(Number);
+    const [cy, cm] = months[i]!.split('-').map(Number);
+    expect(cy! * 12 + (cm! - 1)).toBe(py! * 12 + (pm! - 1) + 1);
   }
 });
 

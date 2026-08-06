@@ -203,7 +203,7 @@ test('performWrite fails CLOSED when the config re-read throws, even if the in-m
 });
 
 test('performWrite: a successful write with a failing post-write refresh is still ok:true, with refreshError set', async () => {
-  const config = { demo: false, writeEnabled: true, jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't' } };
+  const config = { demo: false, writeEnabled: true, jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'P' } };
   const fetchMock = () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
   const originalFetch = global.fetch;
   global.fetch = fetchMock;
@@ -326,4 +326,42 @@ test('commentPr throws on a non-2xx response', async () => {
   vi.stubGlobal('fetch', fetchMock);
   const cfg: GithubConfig = { token: 't', org: 'acme', repos: [], username: 'me' };
   await expect(commentPr(cfg, 'acme/webapp', 482, 'hi')).rejects.toThrow(/GitHub 422/);
+});
+
+// --- write scope: shape-valid targets outside the configured project/repos ---
+
+const scopedConfig = {
+  demo: false, writeEnabled: true,
+  jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+  github: { token: 't', org: 'o', repos: ['r'], username: 'u' },
+};
+
+test('performWrite refuses a well-formed Jira key outside the configured project', async () => {
+  const result = await performWrite({
+    config: scopedConfig, state: emptyState(), type: 'comment', key: 'OTHER-1', body: 'hi',
+    loadConfigFn: stubLoadConfig(scopedConfig),
+  }) as LooseWrite;
+  expect(result.status).toBe(403);
+  expect(result.error).toContain('outside the configured project PROJ');
+});
+
+test('performWrite refuses a well-formed repo not in the configured github.repos list', async () => {
+  const result = await performWrite({
+    config: scopedConfig, state: emptyState(), type: 'pr_comment', repo: 'o/not-mine', number: 1, body: 'hi',
+    loadConfigFn: stubLoadConfig(scopedConfig),
+  }) as LooseWrite;
+  expect(result.status).toBe(403);
+  expect(result.error).toContain('not in the configured github.repos list');
+});
+
+test('performWrite allows in-scope targets through the scope check', async () => {
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+  vi.stubGlobal('fetch', fetchMock);
+  const result = await performWrite({
+    config: scopedConfig, state: emptyState(), type: 'pr_comment', repo: 'o/r', number: 1, body: 'hi',
+    loadConfigFn: stubLoadConfig(scopedConfig),
+    refreshFn: (async ({ state: s }: { state: { snapshot: unknown } }) => s.snapshot) as never,
+  }) as LooseWrite;
+  expect(result.ok).toBe(true);
+  expect(result.error).toBeUndefined();
 });

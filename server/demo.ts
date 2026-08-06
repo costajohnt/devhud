@@ -41,7 +41,7 @@ export function demoPrs(cfg: GithubConfig): Pr[] {
   const org = cfg.org || 'acme';
   const pr = (repo: string, number: number, branch: string, o: Partial<Pr> = {}): Pr => ({
     repo: `${org}/${repo}`, number, url: `https://github.com/${org}/${repo}/pull/${number}`,
-    title: '', body: '', branch, state: 'open', createdAt: iso(9), updatedAt: iso(1), mergedAt: null,
+    title: '', body: '', branch, state: 'open', createdAt: iso(9), updatedAt: iso(1), mergedAt: null, closedAt: null,
     ciStatus: 'passing', reviewState: 'none', comments: [], ...o,
   });
   return [

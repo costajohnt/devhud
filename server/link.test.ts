@@ -3,7 +3,7 @@ import { linkPrsToCards, unlinked } from './link.ts';
 import type { Card, Pr } from './types.ts';
 
 const card = (key: string, description = ''): Card => ({ key, url: `https://x.atlassian.net/browse/${key}`, description, summary: '', status: '', myAccountId: '', createdAt: null, updatedAt: null, comments: [] });
-const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'org/r', number: 1, url: 'https://github.com/org/r/pull/1', title: '', body: '', branch: '', state: 'open', createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z', mergedAt: null, ciStatus: 'unknown', reviewState: 'none', comments: [], ...o });
+const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'org/r', number: 1, url: 'https://github.com/org/r/pull/1', title: '', body: '', branch: '', state: 'open', createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z', mergedAt: null, closedAt: null, ciStatus: 'unknown', reviewState: 'none', comments: [], ...o });
 
 test('links by branch name, case-insensitive', () => {
   const m = linkPrsToCards([card('PROJ-12')], [pr({ branch: 'proj-12-fix-thing' })], 'PROJ');

@@ -5,7 +5,7 @@ import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done' };
 const base = { username: 'john', statuses };
 const card = (o: Partial<Card> = {}): Card => ({ key: 'P-1', status: 'In Progress', myAccountId: 'me', comments: [], summary: '', description: '', url: '', createdAt: null, updatedAt: null, ...o });
-const pr = (o: Partial<Pr> = {}): Pr => ({ state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [], repo: 'o/r', number: 1, url: '', title: '', body: '', branch: '', createdAt: '', updatedAt: '', mergedAt: null, ...o });
+const pr = (o: Partial<Pr> = {}): Pr => ({ state: 'open', ciStatus: 'passing', reviewState: 'none', comments: [], repo: 'o/r', number: 1, url: '', title: '', body: '', branch: '', createdAt: '', updatedAt: '', mergedAt: null, closedAt: null, ...o });
 const cs = (o: Partial<CardState> = {}): CardState => ({ lastSeenPr: '2026-07-01T00:00:00Z', lastSeenJira: '2026-07-01T00:00:00Z', override: null, overrideAt: null, ...o });
 
 test('ci failing -> needs_attention', () => {

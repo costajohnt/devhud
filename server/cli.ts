@@ -114,18 +114,10 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       } else {
         const blockingPid = serverAppearsRunning(statePath);
         if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
-        // refresh() logs an operational one-liner via console.log — fine
-        // when the server does it (that's its process log), but it would
-        // corrupt this command's stdout (plain status text, or --json).
-        // Silence it just for this call.
+        // quiet: refresh()'s operational log line would corrupt this
+        // command's stdout (plain status text, or --json).
         const state = loadState(statePath);
-        const originalLog = console.log;
-        console.log = () => {};
-        try {
-          payload = await refresh({ config, state });
-        } finally {
-          console.log = originalLog;
-        }
+        payload = await refresh({ config, state, quiet: true });
         // Re-checked immediately before the write (not just the early guard
         // above) — a server can start during the refresh itself.
         try {

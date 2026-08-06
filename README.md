@@ -34,6 +34,8 @@ Set `"demo": true` in `config.json` (or run with `SIMON_DASH_DEMO=1`; `JIRA_DASH
 
 ## Setup
 
+Requires **Node ≥ 22.18** — the whole repo runs TypeScript directly via Node's native type stripping; older Node fails at startup with `ERR_UNKNOWN_FILE_EXTENSION`.
+
 ### 1. Configure
 
 Copy `config.example.json` to `config.json` and fill in, then `chmod 600 config.json` — it holds long-lived Jira/GitHub credentials, and the default umask leaves it readable by every other account on the machine (`loadConfig` warns at startup if you skip this).

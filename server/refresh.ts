@@ -37,7 +37,10 @@ function upsertPrLog(state: State, prs: Pr[]): void {
       repo: p.repo,
       openedAt: p.createdAt ?? null,
       mergedAt: p.mergedAt ?? null,
-      closedAt: p.state === 'closed' ? (p.updatedAt ?? null) : null,
+      // closedAt from GitHub's own closed_at, not updatedAt: post-close
+      // activity (a comment, a label) bumps updated_at and would silently
+      // shift the PR between chart months on every refresh.
+      closedAt: p.state === 'closed' ? (p.closedAt ?? p.updatedAt ?? null) : null,
     };
   }
 }
@@ -87,7 +90,7 @@ export function buildSnapshot({ cards, prs, state, config, errors }: {
 
   const closedPrs: ClosedPr[] = prs
     .filter(p => p.state === 'closed' && !p.mergedAt)
-    .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, closedAt: p.updatedAt }))
+    .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, closedAt: p.closedAt ?? p.updatedAt }))
     .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
 
   const mergedActivity: ActivityEntry[] = prs
@@ -148,7 +151,12 @@ let lastCompletedRefreshSeq = 0;
 // On a source failure, reuse that source's last-known-good data instead of
 // blanking the board — a transient Jira/GitHub outage shouldn't wipe out
 // everything the user was tracking.
-export async function refresh({ config, state }: { config: Config; state: State }): Promise<Snapshot> {
+// `quiet` suppresses the operational log line — for callers whose stdout is
+// a protocol channel (MCP) or user-facing output (CLI, writeback's
+// post-write refresh), which previously monkeypatched the global
+// console.log around the call; under concurrent server requests two
+// interleaved patches could permanently noop console.log for the process.
+export async function refresh({ config, state, quiet }: { config: Config; state: State; quiet?: boolean }): Promise<Snapshot> {
   const seq = ++refreshSeq;
   const errors: { jira?: string; github?: string } = {};
   let cards: Card[], prs: Pr[];
@@ -163,12 +171,13 @@ export async function refresh({ config, state }: { config: Config; state: State 
       state.snapshot = payload;
       state.lastRefreshAt = payload.updatedAt;
     }
-    console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
-    return payload;
+    if (!quiet) console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
+    return state.snapshot ?? payload;
   }
+  let jiraOk = false, githubOk = false;
   try {
     cards = await fetchJiraCards(config.jira);
-    state.lastCards = cards;
+    jiraOk = true;
   } catch (e) {
     errors.jira = (e as Error).message;
     cards = state.lastCards ?? [];
@@ -202,7 +211,7 @@ export async function refresh({ config, state }: { config: Config; state: State 
       const idx = prs.indexOf(pr);
       if (idx >= 0) prs[idx] = fallback;
     });
-    state.lastPrs = prs;
+    githubOk = true;
   } catch (e) {
     errors.github = [errors.github, (e as Error).message].filter(Boolean).join('; ');
     prs = state.lastPrs ?? [];
@@ -212,7 +221,15 @@ export async function refresh({ config, state }: { config: Config; state: State 
     lastCompletedRefreshSeq = seq;
     state.snapshot = payload;
     state.lastRefreshAt = payload.updatedAt;
+    // The last-known-good caches live inside the same gate as the snapshot:
+    // they're the outage fallback, and an unguarded write let a slower stale
+    // refresh overwrite a fresher call's caches after the fact.
+    if (jiraOk) state.lastCards = cards;
+    if (githubOk) state.lastPrs = prs;
   }
-  console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
-  return payload;
+  if (!quiet) console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
+  // state.snapshot, not payload: if this call lost the seq race, the winner's
+  // snapshot is fresher — returning our own would hand callers (and the SSE
+  // broadcast) stale data that state itself already rejected.
+  return state.snapshot ?? payload;
 }

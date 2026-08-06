@@ -242,7 +242,7 @@ export function BoardList({ data, selectedKey, onSelect, board }:
                   <span class="pr-row-id">{i.key}</span>
                   <span class="pr-row-title">{i.summary}</span>
                   {i.pr && (
-                    <a class="pr-row-id" href={i.pr.url} target="_blank" onClick={e => e.stopPropagation()}>
+                    <a class="pr-row-id" href={i.pr.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
                       {i.pr.repo.split('/')[1]}#{i.pr.number}
                     </a>
                   )}

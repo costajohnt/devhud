@@ -4,6 +4,14 @@ import { ago } from './board.js';
 
 const MOVABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
 
+// Jira can omit created/updated (server sends null); an unguarded
+// `new Date(null)` rendered a literal "Invalid Date" here.
+function fmtDate(s: string | null): string {
+  if (!s) return '—';
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
+}
+
 function ciDotClass(status: string): string {
   switch (status) {
     case 'passing': return 'green';
@@ -116,12 +124,12 @@ export function Detail({ item, onClose, act, actionInFlight }:
 
         <div class="pr-detail-field">
           <span class="pr-detail-field-label">Created</span>
-          <span class="pr-detail-field-value">{new Date(item.createdAt).toLocaleDateString()}</span>
+          <span class="pr-detail-field-value">{fmtDate(item.createdAt)}</span>
         </div>
 
         <div class="pr-detail-field">
           <span class="pr-detail-field-label">Updated</span>
-          <span class="pr-detail-field-value">{new Date(item.updatedAt).toLocaleDateString()}</span>
+          <span class="pr-detail-field-value">{fmtDate(item.updatedAt)}</span>
         </div>
       </div>
 

@@ -458,7 +458,12 @@ function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; clos
         }
       });
       resolve({
-        next: () => queue.length ? Promise.resolve(queue.shift()!) : new Promise<Snapshot>(r => waiters.push(r)),
+        // Timeout so a dropped broadcast is an assertion failure with a
+        // message, not a silent hang until vitest's global timeout.
+        next: () => queue.length ? Promise.resolve(queue.shift()!) : Promise.race([
+          new Promise<Snapshot>(r => waiters.push(r)),
+          new Promise<Snapshot>((_, rej) => setTimeout(() => rej(new Error('no SSE event within 5s')), 5000).unref()),
+        ]),
         close: () => req.destroy(),
       });
     });
@@ -498,6 +503,75 @@ test('GET /api/events rejects a spoofed Host header', async () => {
   const { port } = new URL(base);
   const res = await requestWithHost(Number(port), '/api/events', 'evil.com', 'GET');
   expect(res.status).toBe(403);
+});
+
+// Spins up a server whose scheduled loop runs every second against an
+// injected refreshFn — the loop itself (tick → broadcast, error recovery,
+// no-op suppression) is otherwise unreachable from tests: the default
+// interval is 120s and the real refresh() needs network.
+async function startLoopServer(refreshFn: (args: { state: unknown }) => Promise<Snapshot>): Promise<{ server: http.Server; base: string }> {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-loop-'));
+  const loopStatePath = join(dir, 'state.json');
+  const webDist = join(dir, 'dist');
+  mkdirSync(webDist);
+  writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
+  const state = emptyState();
+  state.snapshot = makeSnapshot({ updatedAt: 't0' });
+  saveState(loopStatePath, state);
+  const loopServer = createServer({
+    config: makeConfig({ refreshIntervalSeconds: 1 }), statePath: loopStatePath, webDist,
+    refreshFn: refreshFn as never,
+  });
+  await new Promise<void>(r => loopServer.listen(0, () => r()));
+  return { server: loopServer, base: `http://127.0.0.1:${(loopServer.address() as AddressInfo).port}` };
+}
+
+test('scheduled loop broadcasts on tick and a failing tick does not kill the loop', async () => {
+  let calls = 0;
+  const { server: loopServer, base: loopBase } = await startLoopServer(async ({ state: s }) => {
+    calls++;
+    if (calls === 1) throw new Error('transient outage');
+    const snap = makeSnapshot({ updatedAt: `t${calls}`, mergedTotal: calls });
+    (s as { snapshot: Snapshot }).snapshot = snap;
+    return snap;
+  });
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const events = await openEvents(loopBase);
+    await events.next(); // connect replay of the seeded snapshot
+    const snap = await events.next(); // first successful tick's broadcast
+    expect(snap.updatedAt).toBe('t2'); // tick 1 threw; the loop survived and tick 2 ran
+    expect(calls).toBe(2);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('scheduled refresh failed: transient outage'));
+    events.close();
+  } finally {
+    errorSpy.mockRestore();
+    await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));
+  }
+});
+
+test('scheduled loop suppresses broadcasts when only updatedAt changed', async () => {
+  let calls = 0;
+  const { server: loopServer, base: loopBase } = await startLoopServer(async ({ state: s }) => {
+    calls++;
+    // Ticks 1 and 2 differ only in updatedAt; tick 3 changes real content.
+    const snap = makeSnapshot({ updatedAt: `t${calls}`, mergedTotal: calls >= 3 ? 9 : 0 });
+    (s as { snapshot: Snapshot }).snapshot = snap;
+    return snap;
+  });
+  try {
+    const events = await openEvents(loopBase);
+    await events.next(); // connect replay
+    const first = await events.next();
+    expect(first.updatedAt).toBe('t1'); // first tick always broadcasts (nothing prior)
+    const second = await events.next();
+    // t2 was suppressed (same content, new timestamp); next event is t3.
+    expect(second.updatedAt).toBe('t3');
+    expect(second.mergedTotal).toBe(9);
+    events.close();
+  } finally {
+    await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));
+  }
 });
 
 test('server.close() ends open event streams instead of hanging on them', async () => {

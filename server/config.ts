@@ -64,6 +64,22 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       if (!jira[key]) throw new Error(`config at ${path} is missing required key "jira.${key}"`);
     }
   }
+  // These values flow unescaped into query/path languages downstream —
+  // projectKey and accountId into JQL (jira.ts buildJql), org and repos[]
+  // into GitHub API URL paths (github.ts) — where a stray quote, slash, or
+  // "?" silently rewrites the query or re-routes the Bearer-tokened request
+  // to a different endpoint. Reject at load with a readable error instead.
+  if (!/^[A-Z][A-Z0-9_]*$/.test(jira.projectKey!)) {
+    throw new Error(`config at ${path} has an invalid "jira.projectKey" (${JSON.stringify(jira.projectKey)}); must match ^[A-Z][A-Z0-9_]*$`);
+  }
+  if (!/^[a-zA-Z0-9:_-]+$/.test(jira.accountId!)) {
+    throw new Error(`config at ${path} has an invalid "jira.accountId" (${JSON.stringify(jira.accountId)}); must match ^[a-zA-Z0-9:_-]+$`);
+  }
+  for (const [name, value] of [['github.org', github.org!], ...(github.repos ?? []).map((r): [string, string] => ['github.repos entry', r])] as [string, string][]) {
+    if (!/^[\w.-]+$/.test(value)) {
+      throw new Error(`config at ${path} has an invalid "${name}" (${JSON.stringify(value)}); must match ^[\\w.-]+$`);
+    }
+  }
   // A corrupted or hand-edited config.json can hand back a non-numeric or
   // out-of-range port; that value flows straight into `open`'s CLI command
   // (server/cli.ts's `open`) and into the server's own listen() call, so

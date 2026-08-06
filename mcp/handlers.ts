@@ -82,16 +82,9 @@ export async function doRefresh({ config, statePath }: Ctx): Promise<RefreshSumm
     const blockingPid = serverAppearsRunning(statePath);
     if (blockingPid) return { error: splitBrainError(blockingPid) };
     const state = loadState(statePath);
-    // refresh() logs an operational one-liner via console.log — fine when
-    // the server does it, but this call has no business writing to the
-    // MCP host's stdout/stderr on its own, so silence it for this call.
-    const originalLog = console.log;
-    console.log = () => {};
-    try {
-      payload = await refresh({ config, state });
-    } finally {
-      console.log = originalLog;
-    }
+    // quiet: this call has no business writing to the MCP host's
+    // stdout/stderr on its own (stdout is the protocol channel).
+    payload = await refresh({ config, state, quiet: true });
     // Re-checked immediately before the write, not just the early guard
     // above — a server can start during the refresh itself.
     try {

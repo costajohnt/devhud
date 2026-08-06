@@ -18,7 +18,13 @@ const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javasc
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  let s = ''; for await (const c of req) s += c;
+  let s = '';
+  for await (const c of req) {
+    s += c;
+    // Real bodies here are tiny JSON; without a ceiling any local process
+    // could balloon the heap with one giant POST.
+    if (s.length > 1_000_000) throw new Error('body too large');
+  }
   return JSON.parse(s || '{}') as Record<string, unknown>;
 }
 
@@ -60,8 +66,11 @@ function guardMutation(req: IncomingMessage): { status: number; error: string } 
   return null;
 }
 
-export function createServer({ config, statePath, webDist, configPath }: {
-  config: Config; statePath: string; webDist: string; configPath?: string;
+// `refreshFn` defaults to the real refresh() and exists so tests can drive
+// the scheduled loop (short interval + stub) without network or module
+// mocking — same convention as performWrite's refreshFn.
+export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh }: {
+  config: Config; statePath: string; webDist: string; configPath?: string; refreshFn?: typeof refresh;
 }): http.Server {
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
@@ -76,9 +85,27 @@ export function createServer({ config, statePath, webDist, configPath }: {
   // to after each refresh (server loop or manual) and each mutation, so all
   // tabs stay in sync without polling.
   const sseClients = new Set<ServerResponse>();
-  const broadcast = (snapshot: Snapshot) => {
+  // Only broadcast when content actually changed: updatedAt bumps on every
+  // refresh even when nothing else did, so comparing the snapshot minus
+  // updatedAt suppresses the every-tick full-board re-render in idle tabs.
+  // Mutation call sites (action/write) always pass force — their change is
+  // in-place and must reach other tabs even if serialization raced.
+  let lastBroadcastBody = '';
+  const broadcast = (snapshot: Snapshot, { force = false } = {}) => {
+    const body = JSON.stringify({ ...snapshot, updatedAt: null });
+    if (!force && body === lastBroadcastBody) return;
+    lastBroadcastBody = body;
     const msg = `data: ${JSON.stringify(snapshot)}\n\n`;
-    for (const client of sseClients) client.write(msg);
+    for (const client of sseClients) {
+      // Per-client isolation: one torn-down socket (destroyed between its
+      // teardown and its 'close' event) must not abort the fan-out for the
+      // rest, nor turn an already-saved refresh into a 500.
+      try {
+        if (!client.destroyed) client.write(msg);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
   };
   const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const start = Date.now();
@@ -96,6 +123,10 @@ export function createServer({ config, statePath, webDist, configPath }: {
         return send(200, state.snapshot ?? emptySnapshot());
       }
       if (url.pathname === '/api/events' && req.method === 'GET') {
+        // Cap held-open streams: each one buffers every future broadcast if
+        // its consumer stalls, so an unbounded set is a local memory-DoS
+        // vector. 32 covers any realistic number of own tabs.
+        if (sseClients.size >= 32) return send(503, { error: 'too many event streams' });
         res.writeHead(200, {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
@@ -108,12 +139,15 @@ export function createServer({ config, statePath, webDist, configPath }: {
         res.write(`data: ${JSON.stringify(state.snapshot ?? emptySnapshot())}\n\n`);
         sseClients.add(res);
         res.on('close', () => sseClients.delete(res));
+        // Async write failures on a held-open response otherwise surface as
+        // unhandled 'error' emissions and crash the process.
+        res.on('error', () => sseClients.delete(res));
         return; // held open; broadcast() writes future events
       }
       if (url.pathname === '/api/refresh' && req.method === 'POST') {
         const guardErr = guardMutation(req);
         if (guardErr) return send(guardErr.status, { error: guardErr.error });
-        const payload = await refresh({ config, state });
+        const payload = await refreshFn({ config, state });
         saveState(statePath, state);
         broadcast(payload);
         return send(200, payload);
@@ -133,7 +167,7 @@ export function createServer({ config, statePath, webDist, configPath }: {
         saveState(statePath, state);
         // Actions (drag overrides, dismissals) mutate the snapshot in place;
         // push so every other tab reflects the change immediately.
-        if (state.snapshot) broadcast(state.snapshot);
+        if (state.snapshot) broadcast(state.snapshot, { force: true });
         return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {
@@ -154,7 +188,7 @@ export function createServer({ config, statePath, webDist, configPath }: {
         const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         if (!('demo' in result && result.demo)) saveState(statePath, state);
-        if (state.snapshot) broadcast(state.snapshot);
+        if (state.snapshot) broadcast(state.snapshot, { force: true });
         return send(200, result);
       }
       if (url.pathname.startsWith('/api/')) {
@@ -172,7 +206,16 @@ export function createServer({ config, statePath, webDist, configPath }: {
         p = resolve(root, 'index.html');
       }
       const buf = readFileSync(p);
-      res.writeHead(200, { 'content-type': MIME[extname(p)] ?? 'application/octet-stream' });
+      // Response-side hardening. 'unsafe-inline' is required by the
+      // pre-paint theme <script> in index.html and inline style attributes,
+      // so this CSP doesn't stop injected inline code — what it does buy is
+      // exfil resistance (no external script/style/img/connect targets) and
+      // no framing. Primary XSS defense remains Preact's text escaping.
+      res.writeHead(200, {
+        'content-type': MIME[extname(p)] ?? 'application/octet-stream',
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      });
       res.end(buf);
     } catch (e) {
       // One handler covers both API and static branches, so it can't tell
@@ -189,9 +232,15 @@ export function createServer({ config, statePath, webDist, configPath }: {
   // cost one Jira/GitHub sweep instead of N. unref() keeps this timer from
   // holding the process (or a test run) alive on its own.
   const intervalMs = (config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS) * 1000;
-  const timer = setInterval(async () => {
+  // Self-rescheduling timeout, not setInterval: a sweep slower than the
+  // interval (many repos, cold ETag cache) must not overlap itself — the
+  // seq gate in refresh() protects snapshot ordering but not the doubled
+  // API spend. The next tick arms only after the current one completes.
+  let timer: NodeJS.Timeout;
+  let closed = false;
+  const tick = async () => {
     try {
-      const snapshot = await refresh({ config, state });
+      const snapshot = await refreshFn({ config, state });
       saveState(statePath, state);
       broadcast(snapshot);
     } catch (e) {
@@ -199,7 +248,9 @@ export function createServer({ config, statePath, webDist, configPath }: {
       // live updates for the rest of the process lifetime.
       console.error(`scheduled refresh failed: ${(e as Error).message}`);
     }
-  }, intervalMs);
+    if (!closed) { timer = setTimeout(tick, intervalMs); timer.unref(); }
+  };
+  timer = setTimeout(tick, intervalMs);
   timer.unref();
   // Cleanup must run when close() is CALLED, not on the 'close' event: that
   // event only fires after every connection ends, and a held-open SSE
@@ -207,7 +258,8 @@ export function createServer({ config, statePath, webDist, configPath }: {
   // forever — the cleanup that would unblock it would never run.
   const origClose = server.close.bind(server);
   server.close = ((cb?: (err?: Error) => void) => {
-    clearInterval(timer);
+    closed = true;
+    clearTimeout(timer);
     for (const client of sseClients) client.destroy();
     sseClients.clear();
     return origClose(cb);

@@ -173,6 +173,22 @@ test('throws a readable error for a non-integer port (fraction or string)', () =
   expect(() => loadConfig(p2)).toThrow(/invalid "port"/);
 });
 
+test('rejects config values that would rewrite downstream queries/paths (JQL, GitHub URL)', () => {
+  const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' } };
+  const cases: [string, object][] = [
+    ['bad-projectkey', { ...base, jira: { ...base.jira, projectKey: 'PROJ" OR project = "X' } }],
+    ['bad-accountid', { ...base, jira: { ...base.jira, accountId: 'id" OR x="y' } }],
+    ['bad-org', { ...base, github: { ...base.github, org: 'o/../other' } }],
+    ['bad-repo', { ...base, github: { ...base.github, repos: ['r?per_page=1'] } }],
+  ];
+  for (const [name, cfg] of cases) {
+    const p = join(dir, `${name}.json`);
+    writeFileSync(p, JSON.stringify(cfg));
+    expect(() => loadConfig(p), name).toThrow(/invalid "(jira\.(projectKey|accountId)|github\.(org|repos entry))"/);
+  }
+});
+
 test('passes refreshIntervalSeconds through and leaves it undefined when absent', () => {
   const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
     github: { org: 'o', repos: ['r'], username: 'u' } };
