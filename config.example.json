@@ -8,7 +8,8 @@
     "statuses": {
       "todo": "To Do",
       "inTest": "In Test",
-      "done": "Done"
+      "done": "Done",
+      "canceled": "Canceled"
     }
   },
   "github": {
@@ -19,6 +20,10 @@
     ],
     "username": "REPLACE"
   },
+  "ignoreAuthors": [
+    "John",
+    "Rovo"
+  ],
   "port": 3010,
   "refreshIntervalSeconds": 120,
   "demo": false,

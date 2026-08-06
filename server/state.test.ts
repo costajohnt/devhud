@@ -12,7 +12,7 @@ test('fresh state when file missing', () => {
   const s = loadState(p);
   expect(s.cards).toEqual({});
   expect(s.celebrated).toEqual([]);
-  expect(s.mergedTotal).toBe(0);
+  expect(s.doneCelebrated).toEqual([]);
   expect(s.lastCards).toBeNull();
   expect(s.lastPrs).toBeNull();
   expect(s.prLog).toEqual({});
@@ -134,4 +134,21 @@ test('saveState rotates the previous file to .bak before writing', () => {
   saveState(path, s2);
   expect(JSON.parse(readFileSync(path + '.bak', 'utf8')).cards.A.override).toBe('in_progress');
   expect(JSON.parse(readFileSync(path, 'utf8')).cards.B.override).toBe('in_qa');
+});
+
+test('loadState coerces a malformed (non-array) ackedReasons to null', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify({ cards: { 'P-1': { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: 'ci_failing' } } }));
+  expect(loadState(path).cards['P-1']!.ackedReasons).toBeNull();
+});
+
+test('loadState drops a null card entry without discarding the rest of the file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify({ lastRefreshAt: '2026-07-08T00:00:00Z', cards: { 'P-1': null, 'P-2': { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: null } } }));
+  const s = loadState(path);
+  expect(s.cards['P-1']).toBeUndefined();
+  expect(s.cards['P-2']!.override).toBe('in_qa');
+  expect(s.lastRefreshAt).toBe('2026-07-08T00:00:00Z');
 });

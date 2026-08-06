@@ -32,9 +32,10 @@ function needsAttentionItem(overrides: Partial<Item> = {}): Item {
 function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+    todo: [], unlinkedPrs: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
+    prLog: [],
     ...overrides,
   };
 }
@@ -72,23 +73,23 @@ test('status --json in direct mode against a populated temp state file returns t
   const statePath = tempStatePath();
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], waiting_review: [], in_qa: [] },
-    mergedTotal: 3,
+    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+    doneTotal: 3,
   });
   saveState(statePath, state);
   const { code, out } = await run(['status', '--json'], { config, statePath });
   expect(code).toBe(0);
-  expect(JSON.parse(out).mergedTotal).toBe(3);
+  expect(JSON.parse(out).doneTotal).toBe(3);
 });
 
 test('status human output includes needs-attention rows with key/summary/reasons', () => {
   const out = formatStatus(makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem({ summary: 'Fix it' })], in_progress: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [needsAttentionItem({ summary: 'Fix it' })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
     todo: [{ key: 'T-1', summary: '', jiraUrl: '', createdAt: null }, { key: 'T-2', summary: '', jiraUrl: '', createdAt: null }],
-    mergedTotal: 5,
+    doneTotal: 5,
   }));
   expect(out).toContain('Needs Attention: 1');
-  expect(out).toContain('TODO: 2  Merged: 5');
+  expect(out).toContain('Todo: 2  Done: 5');
   expect(out).toContain('P-1  Fix it  [ci_failing]');
 });
 
@@ -97,7 +98,7 @@ test('ack via the shared action function persists a bucket change to disk (direc
   const state = emptyState();
   state.snapshot = makeSnapshot({
     updatedAt: '2026-07-01T00:00:00Z',
-    buckets: { needs_attention: [needsAttentionItem({ summary: 'S' })], in_progress: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [needsAttentionItem({ summary: 'S' })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
   });
   saveState(statePath, state);
 
@@ -125,7 +126,7 @@ test('move --json in direct mode reports the resulting bucket', async () => {
   const statePath = tempStatePath();
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [], in_progress: [needsAttentionItem({ key: 'P-2', bucket: 'in_progress', attention: [] })], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [], in_progress: [needsAttentionItem({ key: 'P-2', bucket: 'in_progress', attention: [] })], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
   });
   saveState(statePath, state);
   const { code, out } = await run(['move', 'P-2', 'in_qa', '--json'], { config, statePath });
@@ -151,7 +152,7 @@ test('direct-mode ack refuses when a server.pid exists for a live process (split
   const statePath = tempStatePath();
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
   });
   saveState(statePath, state);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
@@ -183,7 +184,7 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
   const statePath = tempStatePath();
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], waiting_review: [], in_qa: [] },
+    buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
   });
   saveState(statePath, state);
   // A pid essentially guaranteed not to be alive.
@@ -295,8 +296,8 @@ beforeAll(async () => {
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem({ key: 'P-9', summary: 'S' })], in_progress: [], waiting_review: [], in_qa: [] },
-    mergedTotal: 7,
+    buckets: { needs_attention: [needsAttentionItem({ key: 'P-9', summary: 'S' })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+    doneTotal: 7,
   });
   saveState(statePath, state);
   serverConfig = makeConfig({ port: 0 });
@@ -310,7 +311,7 @@ test('status goes through the HTTP transport when a server is listening on the c
   const { code, out, err } = await run(['status', '--json'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json' });
   expect(code).toBe(0);
   expect(err).toBe('via server');
-  expect(JSON.parse(out).mergedTotal).toBe(7);
+  expect(JSON.parse(out).doneTotal).toBe(7);
 });
 
 test('ack goes through the HTTP transport and reports the resulting bucket', async () => {

@@ -10,7 +10,7 @@ export function emptyState(): State {
   // to an inherited accessor like Object.prototype.__proto__ in the first
   // place — cardState()'s `??=` sees a real missing key and assigns
   // normally, no matter what string reaches it.
-  return { cards: Object.create(null) as State['cards'], celebrated: [], mergedTotal: 0, lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
+  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
 }
 
 // JSON.parse always produces normal-prototype objects, so the `cards` field
@@ -19,6 +19,26 @@ export function emptyState(): State {
 // only protects state built fresh via emptyState().
 function withNullProtoCards(state: State): State {
   state.cards = Object.assign(Object.create(null), state.cards) as State['cards'];
+  // state.json is hand-editable: coerce a non-array ackedReasons to null here
+  // at the load boundary so one bad field can't throw inside classifyCard on
+  // every subsequent refresh (or silently spread a string into characters in
+  // ackReasons). classifyCard filters element junk against STATE_REASONS.
+  for (const k of Object.keys(state.cards)) {
+    const cs = state.cards[k];
+    // A null/non-object entry (plausible hand-edit to "reset" a card) must
+    // not throw here — that would send a perfectly parseable file down the
+    // corruption path and discard it wholesale. Drop the entry instead;
+    // cardState() recreates it on demand.
+    if (cs === null || typeof cs !== 'object') {
+      console.warn(`simon-dash: card ${k} has a malformed entry in the state file; dropping it`);
+      delete state.cards[k];
+      continue;
+    }
+    if (cs.ackedReasons != null && !Array.isArray(cs.ackedReasons)) {
+      console.warn(`simon-dash: card ${k} has a malformed ackedReasons in the state file; resetting it`);
+      cs.ackedReasons = null;
+    }
+  }
   return state;
 }
 
@@ -83,15 +103,16 @@ export function saveState(path: string, state: State): void {
 // Placeholder shape for GET /api/data (and the CLI's direct-mode `status`)
 // before any refresh has ever run, so callers get a well-formed empty board
 // instead of null. Must carry every top-level key buildSnapshot() produces —
-// board.tsx and friends read fields like closedPrs.length unconditionally,
+// board.tsx and friends read fields like doneCards.length unconditionally,
 // so a missing key here crashes the web client on true first boot rather
 // than just showing an empty state.
 export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
-    buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+    todo: [], unlinkedPrs: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
+    prLog: [],
   };
 }
 

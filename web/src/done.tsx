@@ -3,10 +3,13 @@ import type { DashboardData } from './types.js';
 
 type SortDir = 'asc' | 'desc';
 
-export function MergedPage({ data }: { data: DashboardData }) {
+// The Done page: work is complete only when its Jira card is marked Done (not
+// merely because a linked PR merged). Rows come from the server's doneCards,
+// which already excludes Canceled and gates on the Jira Done category.
+export function DonePage({ data }: { data: DashboardData }) {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const rows = [...data.mergedCards].sort((a, b) =>
-    sortDir === 'desc' ? b.mergedAt.localeCompare(a.mergedAt) : a.mergedAt.localeCompare(b.mergedAt));
+  const rows = [...data.doneCards].sort((a, b) =>
+    sortDir === 'desc' ? b.doneAt.localeCompare(a.doneAt) : a.doneAt.localeCompare(b.doneAt));
   const arrow = sortDir === 'asc' ? '▲' : '▼';
 
   return (
@@ -14,17 +17,18 @@ export function MergedPage({ data }: { data: DashboardData }) {
       <div class="merged-view-header">
         <a href="/" class="merged-view-back">← Back</a>
         <div>
-          <h2 class="merged-view-title">Merged</h2>
-          <span class="merged-view-subtitle">{data.mergedTotal} total</span>
+          <h2 class="merged-view-title">Done</h2>
+          <span class="merged-view-subtitle">{data.doneTotal} total</span>
         </div>
       </div>
       {rows.length === 0 ? (
-        <div class="merged-view-empty">No merged cards found. Run a dashboard refresh to populate.</div>
+        <div class="merged-view-empty">No done cards yet. A card lands here once Jira marks it Done.</div>
       ) : (
         <table class="merged-table">
           <thead>
             <tr>
               <th scope="col">Card</th>
+              <th scope="col">Status</th>
               <th scope="col">PR</th>
               <th
                 scope="col"
@@ -41,9 +45,9 @@ export function MergedPage({ data }: { data: DashboardData }) {
                   }}
                   tabIndex={0}
                   role="button"
-                  aria-label="Sort by date merged"
+                  aria-label="Sort by date done"
                 >
-                  Date merged <span class="sort-arrow">{arrow}</span>
+                  Date done <span class="sort-arrow">{arrow}</span>
                 </span>
               </th>
             </tr>
@@ -56,19 +60,26 @@ export function MergedPage({ data }: { data: DashboardData }) {
                   <div class="merged-table-pr-title">{m.summary}</div>
                 </td>
                 <td>
-                  <a class="merged-table-pr-link" href={m.pr.url} target="_blank" rel="noopener noreferrer">
-                    {m.pr.repo}#{m.pr.number}
-                  </a>
+                  <span class="merged-table-status">{m.jiraStatus}</span>
                 </td>
                 <td>
-                  <span class="merged-table-date">{new Date(m.mergedAt).toLocaleDateString()}</span>
+                  {m.pr ? (
+                    <a class="merged-table-pr-link" href={m.pr.url} target="_blank" rel="noopener noreferrer">
+                      {m.pr.repo}#{m.pr.number}
+                    </a>
+                  ) : (
+                    <span class="merged-table-status">—</span>
+                  )}
+                </td>
+                <td>
+                  <span class="merged-table-date">{new Date(m.doneAt).toLocaleDateString()}</span>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      <p class="merged-view-subtitle">Total counts every celebrated merge; rows show cards still in Jira's recent window.</p>
+      <p class="merged-view-subtitle">Completion follows the Jira card's Done status; a merged PR alone is not done.</p>
     </div>
   );
 }

@@ -11,7 +11,17 @@ export interface JiraStatuses {
   todo: string;
   inTest: string;
   done: string;
+  // Status name that means the work was abandoned (Jira puts it in the Done
+  // category, but it is not a completion). Cards in this status are excluded
+  // from the whole dashboard. Optional so existing { todo, inTest, done }
+  // config/test fixtures keep working; defaults to 'Canceled' in loadConfig.
+  canceled?: string;
 }
+
+// Jira status categories: every status rolls up to one of these three. Used
+// for To Do / Done routing that must not depend on an exact status name
+// ('Assigned' is To Do, 'Canceled' is Done, etc.).
+export type StatusCategory = 'new' | 'indeterminate' | 'done' | '';
 
 export interface JiraConfig {
   baseUrl?: string;
@@ -38,6 +48,11 @@ export interface Config {
   // Optional so test fixtures and older config.json files need no change;
   // the server applies DEFAULT_REFRESH_INTERVAL_SECONDS when absent.
   refreshIntervalSeconds?: number;
+  // Comment authors (case-insensitive substring match) whose comments never
+  // trigger Needs Attention triage and never enter the actionable New
+  // Comments queue — e.g. the user themselves ('John') and the Rovo agent.
+  // They remain visible in the full activity history. Defaults in loadConfig.
+  ignoreAuthors?: string[];
 }
 
 // --- Jira cards ---
@@ -53,6 +68,12 @@ export interface Card {
   key: string;
   summary: string;
   status: string;
+  // Jira status category key ('new' | 'indeterminate' | 'done'). Optional so
+  // existing fixtures without it fall back to exact status-name matching.
+  statusCategory?: StatusCategory;
+  // Jira Fix Version names (a card can target more than one release). Empty
+  // array means no Fix Version is set, which the detail view flags explicitly.
+  fixVersions?: string[];
   description: string;
   url: string;
   createdAt: string | null;
@@ -91,6 +112,7 @@ export interface Pr {
   closedAt: string | null;
   ciStatus: CiStatus;
   reviewState: ReviewState;
+  isDraft?: boolean;
   comments: PrComment[];
   _raw?: {
     head: { sha?: string };
@@ -101,7 +123,7 @@ export interface Pr {
 
 // --- Board / snapshot payload (mirrors web/src/types.ts) ---
 
-export type Bucket = 'needs_attention' | 'in_progress' | 'waiting_review' | 'in_qa';
+export type Bucket = 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'mergeable' | 'qa_ready' | 'in_qa';
 
 export interface NewComment {
   source: 'github' | 'jira';
@@ -118,6 +140,7 @@ export interface PrRef {
   state: PrState;
   ciStatus: CiStatus;
   reviewState: ReviewState;
+  isDraft?: boolean;
 }
 
 export interface Item {
@@ -125,6 +148,7 @@ export interface Item {
   summary: string;
   jiraStatus: string;
   jiraUrl: string;
+  fixVersions?: string[];
   bucket: Bucket;
   attention: string[];
   newComments: NewComment[];
@@ -150,20 +174,15 @@ export interface UnlinkedPr {
   state: string;
 }
 
-export interface ClosedPr {
-  repo: string;
-  number: number;
-  url: string;
-  title: string;
-  closedAt: string;
-}
-
-export interface MergedCard {
+// A card Jira has marked complete (Done category, excluding Canceled). Drives
+// the Done page. Carries the linked PR (if any) purely as supporting context.
+export interface DoneCard {
   key: string;
   summary: string;
+  jiraStatus: string;
   jiraUrl: string;
   pr: PrRef | null;
-  mergedAt: string | null;
+  doneAt: string | null;
 }
 
 export interface ActivityEntry {
@@ -187,11 +206,14 @@ export interface Snapshot {
   buckets: Record<Bucket, Item[]>;
   todo: TodoItem[];
   unlinkedPrs: UnlinkedPr[];
-  mergedCards: MergedCard[];
-  mergedTotal: number;
-  newlyMerged: string[];
+  // Completion is driven by the Jira Done category (a merged PR only means code
+  // is ready for QA). A merged PR rides along on its active card's `pr` as
+  // supporting context; merged/closed PRs in the last 7 days show in
+  // recentActivity. There is no Merged/Closed page or counter.
+  doneCards: DoneCard[];
+  doneTotal: number;
+  newlyDone: string[];
   recentActivity: ActivityEntry[];
-  closedPrs: ClosedPr[];
   prLog: PrLogEntry[];
 }
 
@@ -202,6 +224,10 @@ export interface CardState {
   lastSeenJira: string | null;
   override: Bucket | null;
   overrideAt: string | null;
+  // State-based attention reasons (STATE_REASONS in classify.ts) the user
+  // acknowledged; classifyCard mutes and prunes these — see the comment
+  // there. Optional: absent in pre-existing state files.
+  ackedReasons?: string[] | null;
 }
 
 export interface CelebratedEntry {
@@ -211,8 +237,14 @@ export interface CelebratedEntry {
 
 export interface State {
   cards: Record<string, CardState>;
+  // Legacy: PR-merge celebration ids from older state files. No longer written;
+  // retained only so migratePrLog can backfill prLog history for pre-prLog
+  // state files on load.
   celebrated: CelebratedEntry[];
-  mergedTotal: number;
+  // Cards celebrated as complete, keyed by Jira card key, so the completion
+  // confetti fires once per card. The Done counter is not derived from this —
+  // it's the length of the current Done list (see buildSnapshot).
+  doneCelebrated: CelebratedEntry[];
   lastRefreshAt: string | null;
   snapshot: Snapshot | null;
   lastCards: Card[] | null;

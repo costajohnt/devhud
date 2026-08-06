@@ -4,8 +4,7 @@ import { useData } from './use-data.js';
 import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.js';
 import { Detail } from './detail.js';
 import { Extras } from './extras.js';
-import { MergedPage } from './merged.js';
-import { ClosedPage } from './closed.js';
+import { DonePage } from './done.js';
 import { fireConfetti } from './celebrate.js';
 import { SkeletonLoader } from './skeleton-loader.js';
 import { LazyChartPanel } from './chart-panel-lazy.js';
@@ -61,9 +60,11 @@ function AppContent() {
 
   useEffect(() => {
     onRefreshed.current = (d) => {
-      if (d.newlyMerged.length) {
+      // Completion — a Jira card reaching Done — is what we celebrate now, not
+      // a PR merge (a merge only means the code is ready for QA).
+      if (d.newlyDone.length) {
         fireConfetti();
-        setToast(`${d.newlyMerged.join(', ')} merged 🎉`);
+        setToast(`${d.newlyDone.join(', ')} done 🎉`);
         if (toastTimeout.current) clearTimeout(toastTimeout.current);
         toastTimeout.current = setTimeout(() => setToast(null), 5000);
       }
@@ -78,11 +79,11 @@ function AppContent() {
     return () => clearInterval(id);
   }, []);
 
-  // Glanceable tab title: a backgrounded tab shows "(2) simon-dash" when
-  // cards need attention.
+  // Glanceable tab title: a backgrounded tab shows "(2) simon" when cards need
+  // attention.
   useEffect(() => {
     const n = data?.buckets.needs_attention.length ?? 0;
-    document.title = n > 0 ? `(${n}) simon-dash` : 'simon-dash';
+    document.title = n > 0 ? `(${n}) simon` : 'simon';
   }, [data]);
 
   // Scroll to top on every route change (e.g. Board <-> Merged).
@@ -140,18 +141,37 @@ function AppContent() {
     ? Object.values(data.buckets).flat().find(i => i.key === selected) ?? null
     : null;
 
+  // Acknowledging a Needs Attention card moves it out of that bucket; advance
+  // the selection to the next card still needing attention so triage keeps
+  // flowing. If it was the last one, leave selection as-is (the acked card,
+  // now in another bucket) — the pre-existing fallback behavior.
+  const onAct = async (body: object) => {
+    const b = body as { type?: string; key?: string };
+    let nextKey: string | null = null;
+    if (b.type === 'ack' && data) {
+      const na = data.buckets.needs_attention;
+      const idx = na.findIndex(i => i.key === b.key);
+      if (idx >= 0) {
+        const neighbor = na[idx + 1] ?? na[idx - 1];
+        if (neighbor) nextKey = neighbor.key;
+      }
+    }
+    await act(body);
+    if (nextKey) setSelected(nextKey);
+  };
+
   return (
     <div class="dashboard">
       <header class="dashboard-header">
         <div class="header-brand">
           <img class="header-icon" src="/favicon.svg" alt="" width="32" height="32" />
-          <h1>simon<span class="wordmark-accent">-dash</span></h1>
+          <h1>simon</h1>
         </div>
         <div class="header-bar">
           <div class="header-stats">
             <span><span class="val" style={{ color: 'var(--green)' }}>{inFlight}</span> in flight</span>
             <span class="header-sep" />
-            <span><span class="val" style={{ color: 'var(--purple)' }}>{data.mergedTotal}</span> merged</span>
+            <span><span class="val" style={{ color: 'var(--purple)' }}>{data.doneTotal}</span> done</span>
           </div>
           <div class="header-right">
             <span class="last-updated">{formatUpdated(data.updatedAt)}</span>
@@ -179,10 +199,8 @@ function AppContent() {
       {data.errors.jira && <div class="partial-banner" role="status"><span>Jira fetch failed: {data.errors.jira}</span></div>}
       {data.errors.github && <div class="partial-banner" role="status"><span>GitHub fetch failed: {data.errors.github}</span></div>}
       <main id="main-content" class="dashboard-main">
-        {path === '/merged' ? (
-          <MergedPage data={data} />
-        ) : path === '/closed' ? (
-          <ClosedPage data={data} />
+        {path === '/done' ? (
+          <DonePage data={data} />
         ) : path === '/' ? (
           <>
             <BoardStats data={data} />
@@ -190,7 +208,7 @@ function AppContent() {
             <div class="dashboard-content animate-in delay-3">
               <BoardList data={data} selectedKey={selected} onSelect={setSelected} board={board} />
               {selectedItem && (
-                <Detail item={selectedItem} onClose={() => setSelected(null)} act={act} actionInFlight={actionInFlight} />
+                <Detail item={selectedItem} onClose={() => setSelected(null)} act={onAct} actionInFlight={actionInFlight} />
               )}
             </div>
             {data.prLog.length > 0 && (
@@ -212,8 +230,8 @@ function AppContent() {
             </div>
             <div class="merged-view-empty">
               <p>
-                The path <code>{path}</code> doesn't match any known route. Try the dashboard home, or one of the
-                stat cards to navigate to merged / closed.
+                The path <code>{path}</code> doesn't match any known route. Try the dashboard home, or the
+                Done stat card.
               </p>
             </div>
           </div>

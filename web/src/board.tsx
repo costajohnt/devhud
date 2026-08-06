@@ -12,12 +12,16 @@ export const ago = (iso: string | null) => {
 // Attention reasons (CI failing, unseen comments) always outrank "Merged" —
 // a merged PR that still needs a look shouldn't hide behind a muted pill.
 function pill(item: Item): { text: string; cls: string } | null {
-  if (item.attention.includes('ci_failing')) return { text: 'CI Failing', cls: 'pill pill--red' };
+  // Driven by the PR fact, not the attention flag: acknowledging mutes the
+  // needs_attention nag, but red CI is still red and must stay visible.
+  if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') return { text: 'CI Failing', cls: 'pill pill--red' };
   const n = item.newComments.length;
   if (n) return { text: `${n} new comment${n > 1 ? 's' : ''}`, cls: 'pill pill--red' };
   if (item.pr?.state === 'merged') return { text: 'Merged', cls: 'pill pill--muted' };
   if (item.pr?.reviewState === 'changes_requested') return { text: 'Changes Requested', cls: 'pill pill--amber' };
+  if (item.bucket === 'self_review') return { text: 'Self Review Needed', cls: 'pill pill--purple' };
   if (item.bucket === 'waiting_review') return { text: 'Awaiting Review', cls: 'pill pill--blue' };
+  if (item.bucket === 'mergeable') return { text: 'Approved', cls: 'pill pill--green' };
   return null;
 }
 
@@ -27,7 +31,10 @@ function pill(item: Item): { text: string; cls: string } | null {
 const STAT_COLOR: Record<Bucket, string> = {
   needs_attention: 'red',
   in_progress: 'blue',
+  self_review: 'purple',
   waiting_review: 'amber',
+  mergeable: 'green',
+  qa_ready: 'teal',
   in_qa: 'teal',
 };
 
@@ -36,7 +43,7 @@ const STAT_COLOR: Record<Bucket, string> = {
 const DOT_COLOR: Record<Bucket, string> = STAT_COLOR;
 
 // needs_attention is excluded: the server rejects moves into that bucket.
-const DROPPABLE: Bucket[] = ['in_progress', 'waiting_review', 'in_qa'];
+const DROPPABLE: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 
 // Owns the search text, drag-and-drop state, and derived filter counts that
 // the stats bar, filter bar, and section list all need to share. Lifted out
@@ -137,17 +144,13 @@ export function BoardStats({ data }: { data: DashboardData }) {
         return (
           <Tag class="stat-card muted" {...(data.todo.length > 0 ? { href: '#todo' } : {})}>
             <span class="stat-value"><AnimatedValue value={data.todo.length} /></span>
-            <span class="stat-label">TODO</span>
+            <span class="stat-label">Todo</span>
           </Tag>
         );
       })()}
-      <a class="stat-card purple" href="/merged">
-        <span class="stat-value"><AnimatedValue value={data.mergedTotal} /></span>
-        <span class="stat-label">Merged</span>
-      </a>
-      <a class="stat-card red" href="/closed">
-        <span class="stat-value"><AnimatedValue value={data.closedPrs.length} /></span>
-        <span class="stat-label">Closed</span>
+      <a class="stat-card purple" href="/done">
+        <span class="stat-value"><AnimatedValue value={data.doneTotal} /></span>
+        <span class="stat-label">Done</span>
       </a>
     </div>
   );

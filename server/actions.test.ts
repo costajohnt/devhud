@@ -25,10 +25,11 @@ function stateWithItem(overrides: Partial<Snapshot> = {}) {
         attention: ['ci_failing'], newComments: [{ source: 'github', author: 'a', body: 'b', createdAt: null }],
         comments: [], pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
       }],
-      in_progress: [], waiting_review: [], in_qa: [],
+      in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
     },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    todo: [], unlinkedPrs: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
+    prLog: [],
     ...overrides,
   };
   return state;
@@ -45,11 +46,11 @@ test('ack clears attention/newComments and moves needs_attention -> in_progress 
   expect(cardState(state, 'P-1').lastSeenPr).toBe('2026-07-01T00:00:00Z');
 });
 
-test('ack routes to in_qa when jiraStatus is the configured "In Test" status', () => {
+test('ack routes to qa_ready when jiraStatus is the configured "In Test" status', () => {
   const state = stateWithItem();
   state.snapshot!.buckets.needs_attention[0]!.jiraStatus = 'In Test';
   const result = applyAction({ state, config, type: 'ack', key: 'P-1' }) as LooseResult;
-  expect(result.bucket).toBe('in_qa');
+  expect(result.bucket).toBe('qa_ready');
 });
 
 test('ack honors an existing override instead of the default routing', () => {
@@ -121,4 +122,47 @@ test('applyAction rejects a falsy or non-string key before touching state (cover
   }
   // Nothing got written into state.cards for any of these.
   expect(Object.keys(state.cards)).toEqual([]);
+});
+
+test('ack records state-based reasons so the next refresh keeps them muted', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').ackedReasons).toEqual(['ci_failing']);
+});
+
+test('ack unions with prior acked reasons instead of overwriting them', () => {
+  const state = stateWithItem();
+  cardState(state, 'P-1').ackedReasons = ['merged_not_in_test'];
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').ackedReasons!.sort()).toEqual(['ci_failing', 'merged_not_in_test']);
+});
+
+test('ack with only comment-based attention leaves ackedReasons null', () => {
+  const state = stateWithItem();
+  state.snapshot!.buckets.needs_attention[0]!.attention = ['new_pr_comments'];
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').ackedReasons).toBeNull();
+});
+
+test('ack routes to waiting_review when the PR is open with review activity', () => {
+  const state = stateWithItem();
+  state.snapshot!.buckets.needs_attention[0]!.pr = {
+    repo: 'o/r', number: 1, url: '', branch: '', state: 'open', ciStatus: 'failing', reviewState: 'review_required',
+  };
+  const result = applyAction({ state, config, type: 'ack', key: 'P-1' }) as LooseResult;
+  expect(result.bucket).toBe('waiting_review');
+});
+
+test('move records state-based reasons the same way ack does', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' });
+  expect(cardState(state, 'P-1').ackedReasons).toEqual(['ci_failing']);
+});
+
+test('move clears attention and newComments like ack does', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' });
+  const item = state.snapshot!.buckets.in_qa[0]!;
+  expect(item.attention).toEqual([]);
+  expect(item.newComments).toEqual([]);
 });

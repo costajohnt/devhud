@@ -44,10 +44,11 @@ function seedSnapshot(statePath: string) {
         comments: [{ source: 'github', author: 'sarah', body: 'ping', createdAt: '2026-07-01T00:00:00Z' }],
         pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
       }],
-      in_progress: [], waiting_review: [], in_qa: [],
+      in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
     },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 3, newlyMerged: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    todo: [], unlinkedPrs: [],
+    doneCards: [], doneTotal: 3, newlyDone: [], recentActivity: [],
+    prLog: [],
   };
   state.snapshot = snapshot;
   saveState(statePath, state);
@@ -65,7 +66,7 @@ test('boardStatus returns the persisted snapshot as-is', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
   const snap = await boardStatus({ config, statePath }) as Snapshot;
-  expect(snap.mergedTotal).toBe(3);
+  expect(snap.doneTotal).toBe(3);
   expect(snap.buckets.needs_attention[0]!.key).toBe('P-1');
 });
 
@@ -126,18 +127,18 @@ test('cardComments marks the payload as containing untrusted third-party text', 
 });
 
 // The card_comments MCP tool description explicitly documents this
-// fallback ("a card that has already merged and moved into mergedCards is
-// found but returns empty comments/newComments arrays") but nothing
-// verified it — MergedCard carries no comments/newComments fields, so
-// cardComments' `?? (snapshot.mergedCards ?? []).find(...)` fallback (and
-// the `as {...}` cast right after it) is the only thing standing between
-// that documented behavior and either a runtime crash or silently wrong
-// data if a future refactor breaks the shape assumption.
-test('cardComments finds a merged card via the mergedCards fallback, returning empty comments/newComments (not an error)', async () => {
+// fallback ("a card Jira has marked Done and moved into doneCards is found
+// but returns empty comments/newComments arrays") but nothing verified it —
+// DoneCard carries no comments/newComments fields, so cardComments'
+// `?? (snapshot.doneCards ?? []).find(...)` fallback (and the `as {...}` cast
+// right after it) is the only thing standing between that documented behavior
+// and either a runtime crash or silently wrong data if a future refactor
+// breaks the shape assumption.
+test('cardComments finds a done card via the doneCards fallback, returning empty comments/newComments (not an error)', async () => {
   const statePath = tempStatePath();
   const state = seedSnapshot(statePath);
-  state.snapshot!.mergedCards = [
-    { key: 'P-9', summary: 'Shipped it', jiraUrl: 'https://x/browse/P-9', pr: null, mergedAt: '2026-07-01T00:00:00Z' },
+  state.snapshot!.doneCards = [
+    { key: 'P-9', summary: 'Shipped it', jiraStatus: 'Done', jiraUrl: 'https://x/browse/P-9', pr: null, doneAt: '2026-07-01T00:00:00Z' },
   ];
   saveState(statePath, state);
 
@@ -155,12 +156,12 @@ test('cardComments on an unknown key returns an error shape, not a throw', async
   expect(result.error).toContain('NOPE-1');
 });
 
-test('doRefresh in demo mode returns bucket counts, errors, and newlyMerged without touching the network', async () => {
+test('doRefresh in demo mode returns bucket counts, errors, and newlyDone without touching the network', async () => {
   const statePath = tempStatePath();
-  const summary = await doRefresh({ config, statePath }) as { counts: Record<string, number>; errors: unknown; newlyMerged: unknown[] };
+  const summary = await doRefresh({ config, statePath }) as { counts: Record<string, number>; errors: unknown; newlyDone: unknown[] };
   expect(summary.errors).toEqual({ jira: null, github: null });
   expect(Object.values(summary.counts).some(n => n > 0)).toBe(true);
-  expect(Array.isArray(summary.newlyMerged)).toBe(true);
+  expect(Array.isArray(summary.newlyDone)).toBe(true);
 });
 
 // Split-brain guard: a live server.pid blocks direct-mode writes (ack/move/
@@ -253,5 +254,5 @@ test('boardStatus (read-only) still works direct-mode even with a server.pid pre
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
   const snap = await boardStatus({ config, statePath }) as Snapshot;
-  expect(snap.mergedTotal).toBe(3);
+  expect(snap.doneTotal).toBe(3);
 });

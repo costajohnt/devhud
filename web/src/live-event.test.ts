@@ -2,16 +2,16 @@ import { test, expect } from 'vitest';
 import { applyEvent } from './live-event.js';
 import type { DashboardData } from './types.js';
 
-const snap = (updatedAt: string | null, newlyMerged: string[] = ['P-1']): DashboardData => ({
+const snap = (updatedAt: string | null, newlyDone: string[] = ['P-1']): DashboardData => ({
   updatedAt,
   errors: { jira: null, github: null },
-  buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-  todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged, recentActivity: [],
-  closedPrs: [], prLog: [],
+  buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+  todo: [], unlinkedPrs: [], doneCards: [], doneTotal: 0, newlyDone, recentActivity: [],
+  prLog: [],
 });
 
 test('never fires on the first event of a page load — the connect message is a replay', () => {
-  // Even with a non-empty newlyMerged persisted in the snapshot: this is
+  // Even with a non-empty newlyDone persisted in the snapshot: this is
   // exactly the case that replayed confetti on every reload/reconnect.
   const { fire, next } = applyEvent(undefined, snap('2026-08-06T12:00:00Z'));
   expect(fire).toBe(false);

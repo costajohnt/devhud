@@ -30,9 +30,10 @@ function needsAttentionItem(overrides: Partial<Item> = {}): Item {
 function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     updatedAt: 'x', errors: { jira: null, github: null },
-    buckets: { needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] },
-    todo: [], unlinkedPrs: [], mergedCards: [], mergedTotal: 0, newlyMerged: [], recentActivity: [],
-    closedPrs: [], prLog: [],
+    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+    todo: [], unlinkedPrs: [],
+    doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
+    prLog: [],
     ...overrides,
   };
 }
@@ -75,8 +76,7 @@ async function startServer(): Promise<{ server: http.Server; base: string; state
   writeFileSync(join(webDist, 'index.html'), '<html>app</html>');
   const state = emptyState();
   state.snapshot = makeSnapshot({
-    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], waiting_review: [], in_qa: [] },
-    closedPrs: [{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }],
+    buckets: { needs_attention: [needsAttentionItem()], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
     prLog: [{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }],
   });
   saveState(statePath, state);
@@ -113,9 +113,8 @@ test('GET /api/data returns snapshot', async () => {
   expect(d.buckets.needs_attention[0].key).toBe('P-1');
 });
 
-test('GET /api/data carries closedPrs and prLog through unchanged', async () => {
+test('GET /api/data carries prLog through unchanged', async () => {
   const d = await (await fetch(`${base}/api/data`)).json();
-  expect(d.closedPrs).toEqual([{ repo: 'o/r', number: 9, url: 'https://gh/o/r/pull/9', title: 'stale', closedAt: '2026-01-01T00:00:00Z' }]);
   expect(d.prLog).toEqual([{ id: 'o/r#9', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: '2026-01-01T00:00:00Z' }]);
 });
 
@@ -424,8 +423,8 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
     const freshBase = `http://127.0.0.1:${(freshServer.address() as AddressInfo).port}`;
     const d = await (await fetch(`${freshBase}/api/data`)).json();
     expect(d.updatedAt).toBeNull();
-    expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], waiting_review: [], in_qa: [] });
-    expect(d.mergedTotal).toBe(0);
+    expect(d.buckets).toEqual({ needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] });
+    expect(d.doneTotal).toBe(0);
   } finally {
     freshServer.close();
   }
@@ -531,7 +530,7 @@ test('scheduled loop broadcasts on tick and a failing tick does not kill the loo
   const { server: loopServer, base: loopBase } = await startLoopServer(async ({ state: s }) => {
     calls++;
     if (calls === 1) throw new Error('transient outage');
-    const snap = makeSnapshot({ updatedAt: `t${calls}`, mergedTotal: calls });
+    const snap = makeSnapshot({ updatedAt: `t${calls}`, doneTotal: calls });
     (s as { snapshot: Snapshot }).snapshot = snap;
     return snap;
   });
@@ -555,7 +554,7 @@ test('scheduled loop suppresses broadcasts when only updatedAt changed', async (
   const { server: loopServer, base: loopBase } = await startLoopServer(async ({ state: s }) => {
     calls++;
     // Ticks 1 and 2 differ only in updatedAt; tick 3 changes real content.
-    const snap = makeSnapshot({ updatedAt: `t${calls}`, mergedTotal: calls >= 3 ? 9 : 0 });
+    const snap = makeSnapshot({ updatedAt: `t${calls}`, doneTotal: calls >= 3 ? 9 : 0 });
     (s as { snapshot: Snapshot }).snapshot = snap;
     return snap;
   });
@@ -567,7 +566,7 @@ test('scheduled loop suppresses broadcasts when only updatedAt changed', async (
     const second = await events.next();
     // t2 was suppressed (same content, new timestamp); next event is t3.
     expect(second.updatedAt).toBe('t3');
-    expect(second.mergedTotal).toBe(9);
+    expect(second.doneTotal).toBe(9);
     events.close();
   } finally {
     await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));

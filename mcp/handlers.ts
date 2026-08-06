@@ -63,7 +63,7 @@ export async function boardStatus(ctx: Ctx): Promise<(Snapshot & { _note: string
 export interface RefreshSummary {
   counts: Record<string, number>;
   errors: { jira: string | null; github: string | null };
-  newlyMerged: string[];
+  newlyDone: string[];
 }
 
 export async function doRefresh({ config, statePath }: Ctx): Promise<RefreshSummary | ErrorShape> {
@@ -94,7 +94,7 @@ export async function doRefresh({ config, statePath }: Ctx): Promise<RefreshSumm
     }
   }
   const counts = Object.fromEntries(Object.entries(payload.buckets).map(([b, items]) => [b, items.length]));
-  return { counts, errors: payload.errors, newlyMerged: payload.newlyMerged };
+  return { counts, errors: payload.errors, newlyDone: payload.newlyDone };
 }
 
 export interface ActionShape {
@@ -211,7 +211,7 @@ export async function cardComments(ctx: Ctx & { key: string }): Promise<CardComm
   const snapshot = await getSnapshot(ctx);
   if ('error' in snapshot) return snapshot;
   const item = Object.values(snapshot.buckets ?? {}).flat().find(i => i.key === key)
-    ?? (snapshot.mergedCards ?? []).find(i => i.key === key) as { key: string; comments?: unknown[]; newComments?: unknown[] } | undefined;
+    ?? (snapshot.doneCards ?? []).find(i => i.key === key) as { key: string; comments?: unknown[]; newComments?: unknown[] } | undefined;
   if (!item) return { error: `no card with key "${key}" found on the current board` };
   return { key: item.key, comments: item.comments ?? [], newComments: item.newComments ?? [], _note: UNTRUSTED_TEXT_NOTE };
 }

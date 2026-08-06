@@ -1,6 +1,13 @@
 {
   "name": "simon-dash",
   "private": true,
+  "description": "Local dashboard for Jira and GitHub PRs: one board, attention-based buckets, no tab hopping",
+  "license": "MIT",
+  "author": "John Costa <costajohnt@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/costajohnt/simon-dash.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.18"
