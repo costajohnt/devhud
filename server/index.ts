@@ -18,15 +18,26 @@ const DEFAULT_REFRESH_INTERVAL_SECONDS = 120;
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
 
+export class BodyTooLarge extends Error {}
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   let s = '';
   for await (const c of req) {
     s += c;
     // Real bodies here are tiny JSON; without a ceiling any local process
     // could balloon the heap with one giant POST.
-    if (s.length > 1_000_000) throw new Error('body too large');
+    if (s.length > 1_000_000) throw new BodyTooLarge('body too large');
   }
   return JSON.parse(s || '{}') as Record<string, unknown>;
+}
+
+// The deliberate size limit must be distinguishable from a malformed body
+// and from a server bug: 413 for the former, 400 for bad JSON, never the
+// generic 500.
+function bodyError(e: unknown): { status: number; error: string } {
+  return e instanceof BodyTooLarge
+    ? { status: 413, error: 'body too large' }
+    : { status: 400, error: 'invalid JSON body' };
 }
 
 // DNS-rebinding protection for every /api/* route, reads included. Host
@@ -94,9 +105,15 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   let lastBroadcastBody = '';
   const broadcast = (snapshot: Snapshot, { force = false } = {}) => {
     const body = JSON.stringify({ ...snapshot, updatedAt: null });
-    if (!force && body === lastBroadcastBody) return;
-    lastBroadcastBody = body;
-    const msg = `data: ${JSON.stringify(snapshot)}\n\n`;
+    // Suppressed tick still sends a named "tick" event carrying just the
+    // fresh updatedAt: the header's "Updated Xm ago" renders exactly that
+    // field, and with no event at all an idle board's label froze at the
+    // last content change instead of the last successful check.
+    const suppressed = !force && body === lastBroadcastBody;
+    const msg = suppressed
+      ? `event: tick\ndata: ${JSON.stringify({ updatedAt: snapshot.updatedAt })}\n\n`
+      : `data: ${JSON.stringify(snapshot)}\n\n`;
+    if (!suppressed) lastBroadcastBody = body;
     for (const client of sseClients) {
       // Per-client isolation: one torn-down socket (destroyed between its
       // teardown and its 'close' event) must not abort the fan-out for the
@@ -159,8 +176,9 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         let body: Record<string, unknown>;
         try {
           body = await readBody(req);
-        } catch {
-          return send(400, { error: 'invalid JSON body' });
+        } catch (e) {
+          const be = bodyError(e);
+          return send(be.status, { error: be.error });
         }
         const { type, key, bucket } = body as { type?: string; key?: unknown; bucket?: string };
         const result = applyAction({ state, config, type: type ?? '', key, bucket });
@@ -187,8 +205,9 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         let body: Record<string, unknown>;
         try {
           body = await readBody(req);
-        } catch {
-          return send(400, { error: 'invalid JSON body' });
+        } catch (e) {
+          const be = bodyError(e);
+          return send(be.status, { error: be.error });
         }
         // Explicit destructure, not `...body`: a spread would let a client
         // smuggle arbitrary keys (e.g. "config"/"state") into performWrite's
@@ -252,12 +271,24 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   const tick = async () => {
     try {
       const snapshot = await refreshFn({ config, state });
-      saveState(statePath, state);
+      // Save failure isolated from the broadcast: refresh() already updated
+      // the in-memory snapshot (which /api/data serves), so skipping the
+      // broadcast would leave every tab permanently stale over a disk-full/
+      // permissions problem that repeats each tick. Unlike /api/action's
+      // save-then-broadcast rule this is not a user mutation that could
+      // silently revert — it re-fetches identically on the next tick.
+      try {
+        saveState(statePath, state);
+      } catch (e) {
+        console.error('scheduled refresh saved nothing (memory is fresh, disk is stale):', e);
+      }
       broadcast(snapshot);
     } catch (e) {
       // Keep the loop alive: a transient Jira/GitHub outage shouldn't kill
-      // live updates for the rest of the process lifetime.
-      console.error(`scheduled refresh failed: ${(e as Error).message}`);
+      // live updates for the rest of the process lifetime. Full error object
+      // (not just message): what lands here is saveState-class faults and
+      // code bugs, and a recurring bare message every tick is undiagnosable.
+      console.error('scheduled refresh failed:', e);
     }
     if (!closed) { timer = setTimeout(tick, intervalMs); timer.unref(); }
   };

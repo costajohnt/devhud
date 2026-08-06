@@ -2,7 +2,6 @@ import { test, expect } from 'vitest';
 import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded, writePidFile } from './transport.ts';
 import { emptyState, loadState } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { join, dirname } from 'node:path';
@@ -12,12 +11,10 @@ function tempStatePath() {
   return join(mkdtempSync(join(tmpdir(), 'jd-transport-')), 'state.json');
 }
 
-// A pid guaranteed dead: spawn a real child and let it exit — unlike a
-// hardcoded big number, which is only out of pid range on macOS (Linux
-// pid_max can be 4194304, where a hardcoded value can be a live process).
-function reapedPid(): number {
-  return spawnSync(process.execPath, ['-e', '']).pid!;
-}
+// A pid guaranteed dead on both platforms: above pid_max on macOS (99998)
+// and Linux (max 4194304), still a valid int32 for process.kill — never a
+// live pid, and no reuse race a spawned-and-reaped child pid would carry.
+const DEAD_PID = 2147483647;
 
 // A port with nothing listening: bind to 0 (OS-assigned), then release it —
 // unlike a hardcoded port, which flakes if any local process claims it.
@@ -39,7 +36,7 @@ test('serverAppearsRunning returns null when no pid file exists', () => {
 
 test('serverAppearsRunning returns null for a stale pid (dead process)', () => {
   const statePath = tempStatePath();
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: reapedPid(), port: 1, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: DEAD_PID, port: 1, startedAt: 'x' }));
   expect(serverAppearsRunning(statePath)).toBeNull();
 });
 

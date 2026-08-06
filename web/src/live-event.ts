@@ -7,7 +7,7 @@ import type { DashboardData } from './types.js';
 //
 // fire rules:
 // - never on the first event: the connect message is a REPLAY of current
-//   state (whose persisted newlyMerged can be non-empty), not a fresh
+//   state (whose persisted newlyDone can be non-empty), not a fresh
 //   refresh — firing there replayed confetti on every reload/reconnect.
 // - otherwise only when updatedAt changed: the server re-broadcasts the
 //   same snapshot after actions, and a reconnect replays it too; neither

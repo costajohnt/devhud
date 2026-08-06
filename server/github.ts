@@ -107,9 +107,12 @@ export function reviewStateFrom(pr: { requested_reviewers?: unknown[]; requested
 // Conditional-request cache: GitHub 304s don't count against the rate
 // limit, and between refresh ticks most responses are byte-identical — with
 // the server polling every couple of minutes this turns almost the whole
-// sweep free. Keyed by path (token never varies within a process). Unbounded
-// by design: entries track the set of PRs/repos polled, which is small and
-// stable. ponytail: in-memory only, cold restart re-pays one full sweep.
+// sweep free. Keyed by path (token never varies within a process). Most key
+// families are stable (search per repo, comments/reviews per PR), but the
+// check-runs path is keyed by head SHA — a new entry per push, forever — so
+// a long-lived server needs the size cap below.
+// ponytail: bulk-drop at the cap (one re-paid sweep), LRU if it ever matters.
+const ETAG_CACHE_MAX = 500;
 const etagCache = new Map<string, { etag: string; body: unknown }>();
 
 async function gh<T>(path: string, token: string): Promise<T> {
@@ -127,7 +130,10 @@ async function gh<T>(path: string, token: string): Promise<T> {
   // Optional chain: test stubs (and any minimal fetch shim) may return a
   // response without a headers object.
   const etag = res.headers?.get('etag');
-  if (etag) etagCache.set(path, { etag, body });
+  if (etag) {
+    if (etagCache.size >= ETAG_CACHE_MAX) etagCache.clear();
+    etagCache.set(path, { etag, body });
+  }
   return body;
 }
 
@@ -140,8 +146,8 @@ interface RawSearchResult {
 // Author filtering happens server-side. The old approach asked /pulls for the
 // repo's 50 most-recently-updated PRs and then filtered by author locally, but
 // on a busy repo the author's PRs are almost never inside that window — ~95% of
-// them were dropped before any dashboard logic ran, starving the board, the
-// Merged page, and the charts. The Search API applies the per_page window to
+// them were dropped before any dashboard logic ran, starving the board,
+// Recent Activity, and the charts. The Search API applies the per_page window to
 // *the user's* PRs instead of the repo's, so it returns the author's 50 newest.
 export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: string[] }> {
   const prs: Pr[] = [];

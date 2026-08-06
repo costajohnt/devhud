@@ -7,7 +7,6 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import type { Config, Snapshot, Item } from './types.ts';
 
@@ -201,7 +200,10 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
   });
   saveState(statePath, state);
   // A pid essentially guaranteed not to be alive.
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: spawnSync(process.execPath, ["-e", ""]).pid!, port: FREE_PORT, startedAt: "x" }));
+  // Above pid_max on macOS (99998) and Linux (max 4194304), still a valid
+  // int32 for process.kill: never a live pid, no reuse race — unlike a
+  // spawned-and-reaped child, whose pid is immediately eligible for reuse.
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: 2147483647, port: FREE_PORT, startedAt: 'x' }));
   const { code, out } = await run(['ack', 'P-1'], { config, statePath });
   expect(code).toBe(0);
   expect(out).toBe('P-1 -> in_progress');

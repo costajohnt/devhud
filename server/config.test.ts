@@ -185,8 +185,16 @@ test('rejects config values that would rewrite downstream queries/paths (JQL, Gi
   for (const [name, cfg] of cases) {
     const p = join(dir, `${name}.json`);
     writeFileSync(p, JSON.stringify(cfg));
-    expect(() => loadConfig(p), name).toThrow(/invalid "(jira\.(projectKey|accountId)|github\.(org|repos entry))"/);
+    expect(() => loadConfig(p), name).toThrow(/invalid "(jira\.(projectKey|accountId)|github\.(org|repos))"/);
   }
+  // Qualified "owner/name" entries are a supported fetchPrs form (cross-org
+  // repos) and must pass — exactly one slash.
+  const ok = join(dir, 'qualified-repo.json');
+  writeFileSync(ok, JSON.stringify({ ...base, github: { ...base.github, repos: ['r', 'otherorg/svc'] } }));
+  expect(loadConfig(ok).github.repos).toEqual(['r', 'otherorg/svc']);
+  const twoSlashes = join(dir, 'two-slash-repo.json');
+  writeFileSync(twoSlashes, JSON.stringify({ ...base, github: { ...base.github, repos: ['a/b/c'] } }));
+  expect(() => loadConfig(twoSlashes)).toThrow(/invalid "github\.repos"/);
 });
 
 test('passes refreshIntervalSeconds through and leaves it undefined when absent', () => {

@@ -14,10 +14,12 @@ class StubEventSource {
   static instances: StubEventSource[] = [];
   onmessage: ((ev: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  listeners: Record<string, ((ev: { data: string }) => void) | undefined> = {};
   closed = false;
   constructor(public url: string) {
     StubEventSource.instances.push(this);
   }
+  addEventListener(name: string, fn: (ev: { data: string }) => void) { this.listeners[name] = fn; }
   close() { this.closed = true; }
   emit(d: unknown) { this.onmessage?.({ data: JSON.stringify(d) }); }
 }
@@ -79,4 +81,42 @@ test('a connection error surfaces in connError and the next message clears it', 
 test('unmount closes the EventSource', () => {
   act(() => { render(null, host); });
   expect(es().closed).toBe(true);
+});
+
+test('an SSE message supersedes an in-flight manual refresh (stale response discarded)', async () => {
+  // Deferred fetch: refresh() is awaiting the network when a fresher SSE
+  // snapshot lands. The late response must NOT clobber it.
+  let resolveFetch!: (r: unknown) => void;
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(r => { resolveFetch = r; })));
+
+  let refreshDone: Promise<void>;
+  act(() => { refreshDone = hook.refresh(); });
+  act(() => { es().emit(snap('fresh-from-sse')); });
+  await act(async () => {
+    resolveFetch({ ok: true, json: async () => snap('stale-from-refresh') });
+    await refreshDone;
+  });
+
+  expect(hook.data?.updatedAt).toBe('fresh-from-sse');
+});
+
+test('a tick event advances only updatedAt, without firing onRefreshed', () => {
+  const fired: unknown[] = [];
+  hook.onRefreshed.current = (d) => fired.push(d);
+  act(() => { es().emit(snap('t1', ['P-1'])); });
+
+  act(() => {
+    const listener = es().listeners['tick'];
+    listener?.({ data: JSON.stringify({ updatedAt: 't2' }) });
+  });
+  expect(hook.data?.updatedAt).toBe('t2');
+  expect(hook.data?.newlyDone).toEqual(['P-1']); // rest of the snapshot untouched
+  expect(fired).toEqual([]);
+});
+
+test('a torn SSE frame sets connError instead of throwing, and the next good frame clears it', () => {
+  act(() => { es().onmessage?.({ data: '{"updatedAt": "tor' }); });
+  expect(hook.connError).toContain('connection lost');
+  act(() => { es().emit(snap('t1')); });
+  expect(hook.connError).toBeNull();
 });

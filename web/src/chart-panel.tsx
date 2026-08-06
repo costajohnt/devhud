@@ -124,7 +124,7 @@ export function ChartPanel({ prLog, theme }: ChartPanelProps) {
   // Monthly activity line chart (Opened/Merged/Closed). Created once, then
   // updated in place: fresh array/object identities arrive on every refresh,
   // and destroy-and-recreate would replay the entrance animation on every
-  // poll (mirrors oss-autopilot dashboard's chart-panel #1459 fix).
+  // SSE event (mirrors oss-autopilot dashboard's chart-panel #1459 fix).
   useEffect(() => {
     const canvas = lineCanvasRef.current;
     if (!canvas) return;

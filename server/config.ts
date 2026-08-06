@@ -81,9 +81,15 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   if (!/^[a-zA-Z0-9:_-]+$/.test(jira.accountId!)) {
     throw new Error(`config at ${path} has an invalid "jira.accountId" (${JSON.stringify(jira.accountId)}); must match ^[a-zA-Z0-9:_-]+$`);
   }
-  for (const [name, value] of [['github.org', github.org!], ...(github.repos ?? []).map((r): [string, string] => ['github.repos entry', r])] as [string, string][]) {
-    if (!/^[\w.-]+$/.test(value)) {
-      throw new Error(`config at ${path} has an invalid "${name}" (${JSON.stringify(value)}); must match ^[\\w.-]+$`);
+  if (!/^[\w.-]+$/.test(github.org!)) {
+    throw new Error(`config at ${path} has an invalid "github.org" (${JSON.stringify(github.org)}); must match ^[\\w.-]+$`);
+  }
+  // Repos allow one optional "owner/" segment: fetchPrs (github.ts) supports
+  // fully-qualified cross-org entries like "otherorg/svc" and a test relies
+  // on it. Exactly one slash — still no path smuggling.
+  for (const r of github.repos ?? []) {
+    if (!/^[\w.-]+(\/[\w.-]+)?$/.test(r)) {
+      throw new Error(`config at ${path} has an invalid "github.repos" entry (${JSON.stringify(r)}); must be "name" or "owner/name" using only [\\w.-] characters`);
     }
   }
   // A corrupted or hand-edited config.json can hand back a non-numeric or
@@ -98,7 +104,7 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     throw new Error(`config at ${path} has an invalid "port" (${JSON.stringify(c.port)}); must be an integer between 0 and 65535`);
   }
   // Same shape of failure as a bad port: a hand-edited value flows straight
-  // into setInterval, where 0/negative/NaN would spin a hot refresh loop
+  // into the server's self-rescheduling refresh timer, where 0/negative/NaN would spin a hot loop
   // hammering Jira and GitHub. Reject anything but a positive integer.
   if (c.refreshIntervalSeconds !== undefined &&
       (!Number.isInteger(c.refreshIntervalSeconds) || c.refreshIntervalSeconds < 1)) {

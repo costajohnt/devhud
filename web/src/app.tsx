@@ -86,7 +86,7 @@ function AppContent() {
     document.title = n > 0 ? `(${n}) simon` : 'simon';
   }, [data]);
 
-  // Scroll to top on every route change (e.g. Board <-> Merged).
+  // Scroll to top on every route change (e.g. Board <-> Done).
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [path]);
@@ -115,7 +115,10 @@ function AppContent() {
     document.documentElement.dataset.theme = t;
   };
 
-  if (loading && !data) {
+  // connError falls through to the "Server unreachable" branch below (with
+  // its Retry button) — without it, a server that's down at page load left
+  // the skeleton up forever with the error banner unreachable behind it.
+  if (loading && !data && !connError) {
     return (
       <div class="skeleton-wrapper">
         <SkeletonLoader />

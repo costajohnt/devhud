@@ -14,16 +14,17 @@
 - **refresh.ts**: Orchestrates one refresh cycle: fetch (or demo-generate), link, classify, build the full snapshot payload (`buildSnapshot`), including `prLog` upsert and the `recentActivity`/`doneCards` derivations. Also the fallback-to-last-known-good logic on partial fetch failure.
 - **demo.ts**: Canned cards/PRs shaped to match `jira.ts`/`github.ts` output, so demo mode runs the real `buildSnapshot` pipeline with no network.
 - **actions.ts**: `applyAction()` — shared ack/move logic used by the HTTP handler (`POST /api/action`) and the CLI's `ack`/`move` commands, so the two transports can't drift on semantics. Also exports `BUCKETS`, the list of buckets a manual move can target (excludes `needs_attention`).
-- **transport.ts**: Dual-transport primitives shared by the CLI and MCP server: `probeServer()` (is a real server answering on the configured port), `serverAppearsRunning()`/`saveStateGuarded()` (the split-brain guard for direct-mode writes — see Concurrency below).
+- **transport.ts**: Dual-transport primitives shared by the CLI and MCP server: `probeServer()` (is a real server answering on the configured port), `writePidFile()` (the writer half of the pid-file contract), `serverAppearsRunning()`/`saveStateGuarded()` (the split-brain guard for direct-mode writes — see Concurrency below).
+- **ops.ts**: The dual-transport OPERATIONS built on those primitives — `opSnapshot`/`opRefresh`/`opAction`/`opWrite`, each deciding once between the HTTP proxy path (a live server's in-memory state is the source of truth) and the direct-disk path with the split-brain guards. The CLI and MCP handlers both consume these; callers own presentation only.
 - **writeback.ts**: `performWrite()` — the single entry point for every write-back path (`POST /api/write`, the CLI's `transition`/`comment`/`pr-comment` commands, the MCP write tools). Builds the minimal ADF doc for Jira comments, re-reads `config.json` fresh on every call so `writeEnabled` takes effect without a restart, and refreshes the board after a successful write.
-- **cli.ts**: `simon-dash` CLI (`status`/`refresh`/`ack`/`move`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Same dual-transport rule as everything else: proxies through a running server's HTTP API when one's up, otherwise operates directly on `data/state.json` via the modules above.
+- **cli.ts**: `simon-dash` CLI (`status`/`refresh`/`ack`/`move`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Argv parsing and output formatting only — the actual operations come from `ops.ts`, so the CLI and MCP server can't drift on transport semantics.
 - **types.ts**: Shared types (Card, Pr, Item, Snapshot, State, Config, ActionResult, WriteResult) mirroring `web/src/types.ts`'s payload shapes.
 
 ### MCP (`mcp/`, TypeScript, erasable-syntax only, no build step)
 
 A stdio MCP server exposing the board to Claude sessions, using the exact same dual-transport rule as the CLI (see `transport.ts` above and the Concurrency section below — MCP direct-mode writes go through the same split-brain guard).
 
-- **handlers.ts**: Tool handler functions (`boardStatus`, `doRefresh`, `ackCard`, `moveCard`, `cardComments`, `transitionCard`, `commentCard`, `commentPr`), kept separate from the stdio wiring so they're callable directly in tests without a real MCP transport. Each probes for a running server first, proxies through its HTTP API if one's up, and falls back to direct disk access (via `server/state.ts`/`refresh.ts`/`actions.ts`/`writeback.ts`) otherwise.
+- **handlers.ts**: Tool handler functions (`boardStatus`, `doRefresh`, `ackCard`, `moveCard`, `cardComments`, `transitionCard`, `commentCard`, `commentPr`), kept separate from the stdio wiring so they're callable directly in tests without a real MCP transport. All four operations delegate to `server/ops.ts` (the shared dual-transport layer, see below); this file only shapes tool results (summaries, untrusted-text notes) on top.
 - **index.ts**: Registers the 8 tools above on an `McpServer` and connects a `StdioServerTransport`. Read tools (`board_status`, `refresh`, `ack_card`, `move_card`, `card_comments`) are always available; the three write tools (`transition_card`, `comment_card`, `comment_pr`) are real mutations gated by `writeEnabled` and always a no-op in demo mode, and their tool descriptions explicitly instruct the calling model to draft content and get the user's approval before calling them.
 
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
@@ -102,12 +103,20 @@ Writes go through a temp file (`state.json.tmp`) and `renameSync`, so a crash mi
 
 ## Classification rules
 
+Evaluated top to bottom; the first matching row wins:
+
 | Bucket | Condition |
 |---|---|
-| `needs_attention` | Any attention trigger fires (see below), regardless of any override. |
-| `in_qa` | No attention trigger, and either the card has a manual override to `in_qa`, or (no override) the Jira status equals the configured "In Test" status. |
-| `waiting_review` | No attention trigger, no override pointing elsewhere, PR is open with a non-`none` review state. |
+| `self_review` | PR is open and a draft — always, even over attention triggers and overrides. |
+| `needs_attention` | Any visible attention trigger fires (see below; acked state-based reasons are muted while continuously true). |
+| *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear once the card reaches In Test or Done. |
+| `qa_ready` | Jira status equals the configured "In Test" status. |
+| `mergeable` | PR is open and approved. |
+| `waiting_review` | PR is open, and either the card is in "Code Review"/"In Review" or the PR has any review activity. |
+| `self_review` | PR is open with no review activity and the card isn't in a review status. |
 | `in_progress` | Default: none of the above apply. |
+
+`in_qa` is reachable only via a manual move (a pinned override) — the classifier itself never routes there.
 
 Attention triggers (any one of these puts the card in `needs_attention`, appended to `item.attention`):
 

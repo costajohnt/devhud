@@ -46,14 +46,16 @@ export async function opSnapshot(ctx: OpCtx): Promise<Snapshot | OpError> {
 
 export async function opRefresh(ctx: OpCtx): Promise<Snapshot | OpError> {
   if (await probed(ctx)) {
-    let res: Response;
+    // res.json() inside the try too: a non-JSON 200 must come back as
+    // { error }, not escape the op as a raw throw (MCP would leak it to
+    // the SDK; the CLI would mask it in its top-level catch).
     try {
-      res = await fetch(`${base(ctx.config)}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+      const res = await fetch(`${base(ctx.config)}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+      if (!res.ok) return { error: `HTTP ${res.status}` };
+      return await res.json() as Snapshot;
     } catch (e) {
       return { error: (e as Error).message };
     }
-    if (!res.ok) return { error: `HTTP ${res.status}` };
-    return await res.json() as Snapshot;
   }
   const blockingPid = serverAppearsRunning(ctx.statePath);
   if (blockingPid) return { error: splitBrainError(blockingPid) };

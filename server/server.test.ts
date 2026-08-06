@@ -67,7 +67,9 @@ const postWithHost = (port: number, path: string, host: string) => requestWithHo
 // test ran before them, which only worked because vitest happens to run a
 // file's tests in declaration order by default. Nothing here changed
 // behaviorally; this is purely an isolation fix.
-async function startServer(): Promise<{ server: http.Server; base: string; statePath: string; configPath: string }> {
+async function startServer({ writeEnabled = false, refreshFn }: {
+  writeEnabled?: boolean; refreshFn?: (args: { state: unknown }) => Promise<Snapshot>;
+} = {}): Promise<{ server: http.Server; base: string; statePath: string; configPath: string }> {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const statePath = join(dir, 'state.json');
   const webDist = join(dir, 'dist');
@@ -90,9 +92,9 @@ async function startServer(): Promise<{ server: http.Server; base: string; state
     port: 0,
     jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
     github: { org: 'o', repos: ['r'], username: 'u' },
-    writeEnabled: false, demo: false,
+    writeEnabled, demo: false,
   }));
-  const server = createServer({ config, statePath, webDist, configPath });
+  const server = createServer({ config, statePath, webDist, configPath, refreshFn: refreshFn as never });
   await new Promise<void>(r => server.listen(0, () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { server, base, statePath, configPath };
@@ -435,13 +437,15 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
 // Minimal SSE reader over node:http (EventSource doesn't exist in Node):
 // splits the stream on the \n\n event boundary and hands back parsed
 // snapshots one at a time.
-function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; close: () => void }> {
+interface SseFrame { event: string | null; data: string; }
+
+function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; nextTick: () => Promise<{ updatedAt: string | null }>; close: () => void }> {
   const { hostname, port } = new URL(base);
   return new Promise((resolve, reject) => {
     const req = http.request({ host: hostname, port, path: '/api/events', method: 'GET' }, (res) => {
       let buf = '';
-      const queue: Snapshot[] = [];
-      const waiters: ((s: Snapshot) => void)[] = [];
+      const queue: SseFrame[] = [];
+      const waiters: { match: (f: SseFrame) => boolean; resolve: (f: SseFrame) => void }[] = [];
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
         buf += chunk;
@@ -449,20 +453,31 @@ function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; clos
         while ((i = buf.indexOf('\n\n')) >= 0) {
           const raw = buf.slice(0, i);
           buf = buf.slice(i + 2);
-          const data = raw.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('');
-          if (!data) continue;
-          const snap = JSON.parse(data) as Snapshot;
-          const waiter = waiters.shift();
-          if (waiter) waiter(snap); else queue.push(snap);
+          const lines = raw.split('\n');
+          const frame: SseFrame = {
+            event: lines.find(l => l.startsWith('event: '))?.slice(7) ?? null,
+            data: lines.filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join(''),
+          };
+          if (!frame.data) continue;
+          const wi = waiters.findIndex(w => w.match(frame));
+          if (wi >= 0) waiters.splice(wi, 1)[0]!.resolve(frame); else queue.push(frame);
         }
       });
+      // Timeout so a dropped broadcast is an assertion failure with a
+      // message, not a silent hang until vitest's global timeout.
+      const take = (match: (f: SseFrame) => boolean): Promise<SseFrame> => {
+        const qi = queue.findIndex(match);
+        if (qi >= 0) return Promise.resolve(queue.splice(qi, 1)[0]!);
+        return Promise.race([
+          new Promise<SseFrame>(r => waiters.push({ match, resolve: r })),
+          new Promise<SseFrame>((_, rej) => setTimeout(() => rej(new Error('no matching SSE event within 5s')), 5000).unref()),
+        ]);
+      };
       resolve({
-        // Timeout so a dropped broadcast is an assertion failure with a
-        // message, not a silent hang until vitest's global timeout.
-        next: () => queue.length ? Promise.resolve(queue.shift()!) : Promise.race([
-          new Promise<Snapshot>(r => waiters.push(r)),
-          new Promise<Snapshot>((_, rej) => setTimeout(() => rej(new Error('no SSE event within 5s')), 5000).unref()),
-        ]),
+        // Unnamed events are full snapshots; named "tick" events are the
+        // suppressed-broadcast heartbeat.
+        next: () => take(f => f.event === null).then(f => JSON.parse(f.data) as Snapshot),
+        nextTick: () => take(f => f.event === 'tick').then(f => JSON.parse(f.data) as { updatedAt: string | null }),
         close: () => req.destroy(),
       });
     });
@@ -541,7 +556,8 @@ test('scheduled loop broadcasts on tick and a failing tick does not kill the loo
     const snap = await events.next(); // first successful tick's broadcast
     expect(snap.updatedAt).toBe('t2'); // tick 1 threw; the loop survived and tick 2 ran
     expect(calls).toBe(2);
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('scheduled refresh failed: transient outage'));
+    // Full error object logged (message + stack), not a bare string.
+    expect(errorSpy).toHaveBeenCalledWith('scheduled refresh failed:', expect.objectContaining({ message: 'transient outage' }));
     events.close();
   } finally {
     errorSpy.mockRestore();
@@ -563,13 +579,81 @@ test('scheduled loop suppresses broadcasts when only updatedAt changed', async (
     await events.next(); // connect replay
     const first = await events.next();
     expect(first.updatedAt).toBe('t1'); // first tick always broadcasts (nothing prior)
+    // t2 was suppressed as a full snapshot but still heartbeats its fresh
+    // updatedAt, so an idle board's "Updated Xm ago" tracks the last
+    // successful check.
+    const tick = await events.nextTick();
+    expect(tick.updatedAt).toBe('t2');
     const second = await events.next();
-    // t2 was suppressed (same content, new timestamp); next event is t3.
     expect(second.updatedAt).toBe('t3');
     expect(second.doneTotal).toBe(9);
     events.close();
   } finally {
     await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));
+  }
+});
+
+// Raw node-http POST (not fetch): the write-broadcast test stubs global
+// fetch for the server's outbound Jira calls, so the test's own request to
+// the server must not go through the stub.
+function postJson(base: string, path: string, body: unknown): Promise<{ status: number | undefined }> {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: hostname, port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode }));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+test('a content-identical action broadcast is forced through suppression as a full snapshot', async () => {
+  // refreshFn re-stamps updatedAt but keeps content identical to the seeded
+  // snapshot, arming lastBroadcastBody with exactly the body a subsequent
+  // no-op action will produce.
+  const { server: s2, base: b2 } = await startServer({
+    refreshFn: async ({ state: s }) => {
+      const st = s as { snapshot: Snapshot };
+      st.snapshot = { ...st.snapshot, updatedAt: 'r1' };
+      return st.snapshot;
+    },
+  });
+  try {
+    const events = await openEvents(b2);
+    await events.next(); // connect replay
+    await postJson(b2, '/api/refresh', {});
+    expect((await events.next()).updatedAt).toBe('r1');
+    // Ack of an unknown key mutates cardState but leaves the snapshot's
+    // content untouched — without force this would degrade to a tick
+    // heartbeat and other tabs would never re-sync, so next() would hang.
+    const res = await postJson(b2, '/api/action', { type: 'ack', key: 'GHOST-1' });
+    expect(res.status).toBe(200);
+    expect((await events.next()).updatedAt).toBe('r1');
+    events.close();
+  } finally {
+    await new Promise<void>((res, rej) => s2.close((e) => e ? rej(e) : res()));
+  }
+});
+
+test('POST /api/write broadcasts the refreshed snapshot after a successful write', async () => {
+  const { server: s2, base: b2 } = await startServer({ writeEnabled: true });
+  // Stub every outbound call performWrite makes (the Jira comment POST and
+  // the post-write refresh's Jira/GitHub reads) with benign empty JSON.
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) } as unknown as Response,
+  );
+  try {
+    const events = await openEvents(b2);
+    const seeded = await events.next(); // connect replay
+    const res = await postJson(b2, '/api/write', { type: 'comment', key: 'PROJ-1', body: 'hi' });
+    expect(res.status).toBe(200);
+    const snap = await events.next(); // the write path's forced broadcast
+    expect(snap.updatedAt).not.toBe(seeded.updatedAt); // post-write refresh rebuilt it
+    events.close();
+  } finally {
+    fetchSpy.mockRestore();
+    await new Promise<void>((res, rej) => s2.close((e) => e ? rej(e) : res()));
   }
 });
 

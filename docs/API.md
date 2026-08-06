@@ -14,7 +14,7 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
 {
   "updatedAt": null,
   "errors": { "jira": null, "github": null },
-  "buckets": { "needs_attention": [], "in_progress": [], "self_review": [], "waiting_review": [], "in_qa": [] },
+  "buckets": { "needs_attention": [], "in_progress": [], "self_review": [], "waiting_review": [], "mergeable": [], "qa_ready": [], "in_qa": [] },
   "todo": [], "unlinkedPrs": [],
   "doneCards": [], "doneTotal": 0, "newlyDone": [], "recentActivity": [],
   "prLog": []
@@ -27,11 +27,13 @@ This placeholder carries every top-level key a real snapshot has (empty arrays/z
 
 Server-Sent Events stream of snapshots. On connect the server immediately sends the current snapshot (same shape and placeholder rules as `GET /api/data`), then pushes a new event after every refresh — the server's own scheduled refresh loop (see `refreshIntervalSeconds` in the README), a manual `POST /api/refresh`, or a successful write — and after every `POST /api/action` mutation. Each event is one `data:` line holding the full snapshot JSON.
 
+A refresh whose content is identical to the last broadcast (only `updatedAt` moved) is not re-sent in full; instead the stream carries a named `tick` event whose data is `{ "updatedAt": "..." }`, so clients can keep their "last checked" display current without re-rendering an unchanged board.
+
 This is what makes the web UI live: the client holds one `EventSource` open instead of polling, so every open tab re-renders within one server tick of anything changing, and background-tab timer throttling doesn't matter.
 
 ## POST /api/refresh
 
-Fetches fresh data from Jira and GitHub (or generates canned data in demo mode, see Demo Mode below), rebuilds the snapshot, persists state to disk, and returns the new snapshot. This is the only endpoint that talks to the network.
+Fetches fresh data from Jira and GitHub (or generates canned data in demo mode, see Demo Mode below), rebuilds the snapshot, persists state to disk, and returns the new snapshot. The server's own scheduled loop runs this same pipeline on an interval, and `POST /api/write` also reaches Jira/GitHub — this is just the only way to *request* a fetch.
 
 No request body. Response is the full payload described in Payload Shape.
 
@@ -55,14 +57,14 @@ Acknowledges a card's attention flags:
 
 - Clears `item.attention` and `item.newComments` on the in-memory snapshot.
 - Resets the "seen" horizon (`cardState.lastSeenPr` and `lastSeenJira`) to the *data horizon*, not wall-clock time: the last snapshot's `updatedAt`. This matters because a comment that arrived between the last refresh and this ack must still be treated as new on the *next* refresh, not silently swallowed.
-- If the card was in `needs_attention`, moves it out: to its existing override bucket if one is set (`cardState.override`), otherwise to `in_qa` if the Jira status equals the configured "In Test" status, otherwise `in_progress`.
+- If the card was in `needs_attention`, moves it out: to its existing override bucket if one is set (`cardState.override`); otherwise to `qa_ready` if the Jira status equals the configured "In Test" status; otherwise, with an open PR, to `mergeable` (approved), `waiting_review` (review activity or a Code Review/In Review card), or `self_review`; otherwise `in_progress`.
 - Does **not** clear a prior override. Acking only dismisses the attention flags; it doesn't undo a previous manual move.
 
 ### `type: "move"`
 
 Pins a card to a specific bucket:
 
-- `bucket` must be one of `in_progress`, `self_review`, `waiting_review`, `in_qa`. Moving to `needs_attention` is rejected (see 400 cases below). That bucket is server-computed only, not a manual destination.
+- `bucket` must be one of `in_progress`, `self_review`, `waiting_review`, `mergeable`, `qa_ready`, `in_qa`. Moving to `needs_attention` is rejected (see 400 cases below). That bucket is server-computed only, not a manual destination.
 - Sets `cardState.override` to the target bucket and stamps `overrideAt`.
 - Also resets the seen horizon (same as `ack`), so comments the classifier already accounted for don't immediately bounce the card back into `needs_attention` on the very next refresh.
 - Splices the card out of its current bucket in the live snapshot and into the target bucket.
@@ -76,7 +78,7 @@ The override persists across refreshes: on every `/api/refresh`, `classifyCard` 
 ### 400 cases
 
 - Body is not valid JSON: `{ "error": "invalid JSON body" }`.
-- `type: "move"` with `bucket` not in `in_progress` / `self_review` / `waiting_review` / `in_qa` (including `needs_attention`): `{ "error": "bucket must be one of in_progress, self_review, waiting_review, in_qa" }`.
+- `type: "move"` with `bucket` not in the six movable buckets (including `needs_attention`): `{ "error": "bucket must be one of in_progress, self_review, waiting_review, mergeable, qa_ready, in_qa" }`.
 - `type` is anything other than `"ack"` or `"move"`: `{ "error": "unknown action type" }`.
 
 An action against an unknown `key` (a card not present in any bucket, or never seen before) does not 400. `cardState` is created lazily and the horizon fields are still written to `data/state.json`, but there's no matching snapshot item to move, so the action is a no-op on the visible board. This is intentional: it makes acking a card that just left the board (e.g. Jira marked it Done and it moved to `doneCards` between page load and the click) harmless instead of an error.
@@ -117,7 +119,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   updatedAt: string,               // ISO timestamp of this snapshot
   errors: { jira: string | null, github: string | null },
   buckets: {
-    needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], in_qa: Item[]
+    needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], mergeable: Item[], qa_ready: Item[], in_qa: Item[]
   },
   todo: TodoItem[],
   unlinkedPrs: UnlinkedPr[],

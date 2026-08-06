@@ -19,7 +19,7 @@ export function useData() {
   // get() racing a refresh() (or a second get()). Without this, a slow
   // get() that started before a refresh() but resolves after it completes
   // would overwrite the fresh refreshed snapshot with stale data, and the
-  // UI would silently revert until the next poll. If a newer request has
+  // UI would silently revert until the next SSE broadcast. If a newer request has
   // been issued by the time this one resolves, its result is discarded.
   const requestSeq = useRef(0);
 
@@ -90,7 +90,15 @@ export function useData() {
     // after laptop sleep or a server restart.
     const es = new EventSource('/api/events');
     es.onmessage = (ev) => {
-      const d = JSON.parse(ev.data) as DashboardData;
+      let d: DashboardData;
+      // A torn frame (server killed mid-write) must not throw inside
+      // onmessage and vanish; surface it like any other connection blip.
+      try {
+        d = JSON.parse(ev.data) as DashboardData;
+      } catch {
+        setConnError('connection lost — retrying');
+        return;
+      }
       ++requestSeq.current; // supersede any in-flight get()/refresh()
       setData(d);
       setLoading(false);
@@ -99,6 +107,16 @@ export function useData() {
       lastEventAt.current = next;
       if (fire) onRefreshed.current(d);
     };
+    // Suppressed server ticks (content unchanged) send only the fresh
+    // updatedAt so the header's "Updated Xm ago" tracks the last successful
+    // check, not the last content change.
+    es.addEventListener('tick', (ev) => {
+      try {
+        const { updatedAt } = JSON.parse((ev as MessageEvent).data) as { updatedAt: string | null };
+        setData(d => d && { ...d, updatedAt });
+        setConnError(null);
+      } catch { /* torn frame; the next event corrects it */ }
+    });
     // Fires on every reconnect attempt too; the banner clears on the next
     // successful message.
     es.onerror = () => setConnError('connection lost — retrying');

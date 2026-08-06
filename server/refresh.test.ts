@@ -311,8 +311,11 @@ test('a later-sequenced refresh that completes first is not overwritten by an ea
   const payloadB = await callB;
   expect(state.snapshot).toBe(payloadB); // B, the only completed call so far, has written
 
-  // Now let A's PR fetch resolve, so it finishes after B already completed.
-  resolveFirstCallPrs({ prs: [], errors: [] });
+  const lastPrsAfterB = state.lastPrs;
+
+  // Now let A's PR fetch resolve — with a distinctive PR, so an unguarded
+  // cache write would be detectable — after B already completed.
+  resolveFirstCallPrs({ prs: [pr({ repo: 'o/stale', number: 99 })], errors: [] });
   const payloadA = await callA;
 
   // A lost the sequence race, so it returns the AUTHORITATIVE snapshot (B's)
@@ -320,6 +323,10 @@ test('a later-sequenced refresh that completes first is not overwritten by an ea
   // broadcast) must never receive data that state itself already rejected.
   expect(payloadA).toBe(payloadB);
   expect(state.snapshot).toBe(payloadB);
+  // The outage-fallback caches sit inside the same seq gate: A's stale PR
+  // list must not overwrite the fresher cache B installed.
+  expect(state.lastPrs).toBe(lastPrsAfterB);
+  expect(state.lastPrs!.some(p => p.repo === 'o/stale')).toBe(false);
 });
 
 test('item comment history is capped per source so a chatty PR cannot evict Jira history', () => {

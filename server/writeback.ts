@@ -231,7 +231,10 @@ export async function performWrite({
   if ((type === 'transition' || type === 'comment') && !key!.startsWith(`${liveConfig.jira.projectKey}-`)) {
     return { error: `key "${key}" is outside the configured project ${liveConfig.jira.projectKey}`, status: 403 };
   }
-  if (type === 'pr_comment' && !liveConfig.github.repos.some(r => `${liveConfig.github.org}/${r}` === repo)) {
+  // Same normalization rule as fetchPrs (github.ts): a repos[] entry may
+  // already be fully qualified ("otherorg/svc"); only bare names get the
+  // configured org prefixed.
+  if (type === 'pr_comment' && !liveConfig.github.repos.some(r => (r.includes('/') ? r : `${liveConfig.github.org}/${r}`) === repo)) {
     return { error: `repo "${repo}" is not in the configured github.repos list`, status: 403 };
   }
 

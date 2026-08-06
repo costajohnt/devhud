@@ -4,7 +4,7 @@ Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serv
 
 See [docs/API.md](docs/API.md) for the full HTTP API reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the module map, data flow, and design decisions.
 
-![Board view: cards grouped into Needs Attention, In Progress, Waiting in Review, and In QA, with stat cards for each bucket plus Merged and Closed totals.](docs/images/board.jpg)
+![Board view: cards grouped into buckets from Needs Attention through In QA, with stat cards for each bucket plus Todo and Done totals.](docs/images/board.jpg)
 
 The board groups cards into buckets, with filters for status and repo and a search box above the list.
 
@@ -19,9 +19,9 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 ## Features
 
 - **Live updates**: the server refreshes Jira/GitHub on its own schedule (`refreshIntervalSeconds` in `config.json`, default 120) and pushes every new snapshot to open tabs over Server-Sent Events (`GET /api/events`) — leave it on a screen and it stays current, no clicking refresh, and N open tabs still cost one API sweep. Moves and acks in one tab appear in every other tab immediately.
-- **Buckets**: cards land in Needs Attention, In Progress, Waiting in Review, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
+- **Buckets**: cards land in Needs Attention, In Progress, Self Review Needed, Waiting in Review, Mergeable, QA Ready, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
 - **Attention triggers**: a card surfaces in Needs Attention on CI failing, new PR comments, new Jira comments, or a merged PR whose card isn't yet In Test/Done.
-- **Drag-and-drop**: drag a card between In Progress, Waiting in Review, and In QA to pin it there (an override), independent of what the classifier would otherwise pick.
+- **Drag-and-drop**: drag a card between any bucket except Needs Attention (In Progress, Self Review Needed, Waiting in Review, Mergeable, QA Ready, In QA) to pin it there (an override), independent of what the classifier would otherwise pick.
 - **Charts**: a Monthly Activity line chart (Opened/Merged/Closed) and a Top Repos stacked bar chart (Active/Merged/Closed), built from the full PR lifecycle log.
 - **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
 - **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
@@ -137,7 +137,7 @@ Or add it directly to `.mcp.json`:
 Tools exposed:
 
 - `board_status`: the full current board snapshot (same payload as `GET /api/data`).
-- `refresh`: fetch fresh Jira/GitHub data and return a summary (bucket counts, errors, newly merged cards).
+- `refresh`: fetch fresh Jira/GitHub data and return a summary (bucket counts, errors, newly Done cards).
 - `ack_card`: acknowledge a card's attention flags.
 - `move_card`: pin a card to a bucket.
 - `card_comments`: one card's comment history and unseen comments.
@@ -159,10 +159,14 @@ Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the
 
 ## Buckets
 
-- **needs_attention**: Triggered by new PR comments from others since last-seen, new Jira card comments from others since last-seen, CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done" status. These "live" triggers (CI failing, merged-not-in-test) re-flag the card on the next refresh regardless of any override. Only the comment-based triggers are silenced by acking/moving, since those reset the seen horizon. A manual move pins the card to that bucket until a fresh attention trigger fires.
-- **in_qa**: Jira card status is "In Test".
-- **waiting_review**: Open PR with review requests or active review comments.
+- **needs_attention**: Triggered by new PR comments from others since last-seen, new Jira card comments from others since last-seen, CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done" status. Comment triggers are silenced by acking/moving (those reset the seen horizon); the state-based triggers (CI failing, merged-not-in-test) stay muted after an ack only while they remain continuously true, and re-fire as new events once they clear and recur.
+- **self_review**: Open draft PR (always), or an open PR with no review activity and a card not yet in a review status.
+- **waiting_review**: Open PR with review activity (or the card is in "Code Review"/"In Review") that isn't approved yet.
+- **mergeable**: Open PR approved.
+- **qa_ready**: Jira card status is "In Test".
+- **in_qa**: Manual-move destination for cards actively being tested (a pinned override; the classifier itself routes In Test cards to QA Ready).
 - **in_progress**: Everything else (default).
+- A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear once the card reaches In Test or Done.
 
 ## Local State
 
