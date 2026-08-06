@@ -8,7 +8,11 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
-import type { Config, State } from './types.ts';
+import type { Config, State, Snapshot } from './types.ts';
+
+// Server-side poll cadence when config.json doesn't set refreshIntervalSeconds.
+// 2 minutes keeps a busy repo list well inside GitHub's 5000 req/hr budget.
+const DEFAULT_REFRESH_INTERVAL_SECONDS = 120;
 
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
@@ -68,7 +72,15 @@ export function createServer({ config, statePath, webDist, configPath }: {
   // happen at an `await` boundary, at which point no partial mutation is
   // ever visible to the next handler.
   const state: State = loadState(statePath);
-  return http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  // Live-update push channel: every open GET /api/events response. Written
+  // to after each refresh (server loop or manual) and each mutation, so all
+  // tabs stay in sync without polling.
+  const sseClients = new Set<ServerResponse>();
+  const broadcast = (snapshot: Snapshot) => {
+    const msg = `data: ${JSON.stringify(snapshot)}\n\n`;
+    for (const client of sseClients) client.write(msg);
+  };
+  const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const start = Date.now();
     res.on('finish', () => {
       console.log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - start}ms`);
@@ -83,11 +95,27 @@ export function createServer({ config, statePath, webDist, configPath }: {
       if (url.pathname === '/api/data' && req.method === 'GET') {
         return send(200, state.snapshot ?? emptySnapshot());
       }
+      if (url.pathname === '/api/events' && req.method === 'GET') {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        });
+        // Current snapshot immediately on connect: the client renders from
+        // this event alone, no separate /api/data fetch needed, and an
+        // EventSource auto-reconnect (laptop wake, server restart) re-syncs
+        // the same way.
+        res.write(`data: ${JSON.stringify(state.snapshot ?? emptySnapshot())}\n\n`);
+        sseClients.add(res);
+        res.on('close', () => sseClients.delete(res));
+        return; // held open; broadcast() writes future events
+      }
       if (url.pathname === '/api/refresh' && req.method === 'POST') {
         const guardErr = guardMutation(req);
         if (guardErr) return send(guardErr.status, { error: guardErr.error });
         const payload = await refresh({ config, state });
         saveState(statePath, state);
+        broadcast(payload);
         return send(200, payload);
       }
       if (url.pathname === '/api/action' && req.method === 'POST') {
@@ -103,6 +131,9 @@ export function createServer({ config, statePath, webDist, configPath }: {
         const result = applyAction({ state, config, type: type ?? '', key, bucket });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         saveState(statePath, state);
+        // Actions (drag overrides, dismissals) mutate the snapshot in place;
+        // push so every other tab reflects the change immediately.
+        if (state.snapshot) broadcast(state.snapshot);
         return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {
@@ -123,6 +154,7 @@ export function createServer({ config, statePath, webDist, configPath }: {
         const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         if (!('demo' in result && result.demo)) saveState(statePath, state);
+        if (state.snapshot) broadcast(state.snapshot);
         return send(200, result);
       }
       if (url.pathname.startsWith('/api/')) {
@@ -152,6 +184,35 @@ export function createServer({ config, statePath, webDist, configPath }: {
       send(500, { error: 'internal error' });
     }
   });
+  // Server-owned poll loop: freshness no longer depends on a browser tab
+  // being open and focused (background tabs throttle timers), and N tabs
+  // cost one Jira/GitHub sweep instead of N. unref() keeps this timer from
+  // holding the process (or a test run) alive on its own.
+  const intervalMs = (config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS) * 1000;
+  const timer = setInterval(async () => {
+    try {
+      const snapshot = await refresh({ config, state });
+      saveState(statePath, state);
+      broadcast(snapshot);
+    } catch (e) {
+      // Keep the loop alive: a transient Jira/GitHub outage shouldn't kill
+      // live updates for the rest of the process lifetime.
+      console.error(`scheduled refresh failed: ${(e as Error).message}`);
+    }
+  }, intervalMs);
+  timer.unref();
+  // Cleanup must run when close() is CALLED, not on the 'close' event: that
+  // event only fires after every connection ends, and a held-open SSE
+  // response would keep the server (and any test's afterEach) waiting
+  // forever — the cleanup that would unblock it would never run.
+  const origClose = server.close.bind(server);
+  server.close = ((cb?: (err?: Error) => void) => {
+    clearInterval(timer);
+    for (const client of sseClients) client.destroy();
+    sseClients.clear();
+    return origClose(cb);
+  }) as typeof server.close;
+  return server;
 }
 
 // main

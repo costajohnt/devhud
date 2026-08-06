@@ -430,3 +430,80 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
     freshServer.close();
   }
 });
+
+// --- /api/events (SSE live updates) ---
+
+// Minimal SSE reader over node:http (EventSource doesn't exist in Node):
+// splits the stream on the \n\n event boundary and hands back parsed
+// snapshots one at a time.
+function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; close: () => void }> {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: hostname, port, path: '/api/events', method: 'GET' }, (res) => {
+      let buf = '';
+      const queue: Snapshot[] = [];
+      const waiters: ((s: Snapshot) => void)[] = [];
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        buf += chunk;
+        let i: number;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const raw = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const data = raw.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('');
+          if (!data) continue;
+          const snap = JSON.parse(data) as Snapshot;
+          const waiter = waiters.shift();
+          if (waiter) waiter(snap); else queue.push(snap);
+        }
+      });
+      resolve({
+        next: () => queue.length ? Promise.resolve(queue.shift()!) : new Promise<Snapshot>(r => waiters.push(r)),
+        close: () => req.destroy(),
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('GET /api/events sends the current snapshot on connect', async () => {
+  const events = await openEvents(base);
+  try {
+    const snap = await events.next();
+    expect(snap.buckets.needs_attention.map(i => i.key)).toEqual(['P-1']);
+  } finally {
+    events.close();
+  }
+});
+
+test('POST /api/action broadcasts the updated snapshot to open event streams', async () => {
+  const events = await openEvents(base);
+  try {
+    await events.next(); // connect event
+    const res = await fetch(`${base}/api/action`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'move', key: 'P-1', bucket: 'in_qa' }),
+    });
+    expect(res.status).toBe(200);
+    const snap = await events.next();
+    expect(snap.buckets.in_qa.map(i => i.key)).toEqual(['P-1']);
+    expect(snap.buckets.needs_attention).toEqual([]);
+  } finally {
+    events.close();
+  }
+});
+
+test('GET /api/events rejects a spoofed Host header', async () => {
+  const { port } = new URL(base);
+  const res = await requestWithHost(Number(port), '/api/events', 'evil.com', 'GET');
+  expect(res.status).toBe(403);
+});
+
+test('server.close() ends open event streams instead of hanging on them', async () => {
+  const events = await openEvents(base);
+  await events.next();
+  // afterEach calls server.close(); if the held-open SSE response kept the
+  // server alive this await would never resolve.
+  await new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
+});

@@ -18,6 +18,7 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 
 ## Features
 
+- **Live updates**: the server refreshes Jira/GitHub on its own schedule (`refreshIntervalSeconds` in `config.json`, default 120) and pushes every new snapshot to open tabs over Server-Sent Events (`GET /api/events`) — leave it on a screen and it stays current, no clicking refresh, and N open tabs still cost one API sweep. Moves and acks in one tab appear in every other tab immediately.
 - **Buckets**: cards land in Needs Attention, In Progress, Waiting in Review, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
 - **Attention triggers**: a card surfaces in Needs Attention on CI failing, new PR comments, new Jira comments, or a merged PR whose card isn't yet In Test/Done.
 - **Drag-and-drop**: drag a card between In Progress, Waiting in Review, and In QA to pin it there (an override), independent of what the classifier would otherwise pick.

@@ -1,6 +1,6 @@
 # API Reference
 
-simon-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Three endpoints under `/api/`, plus static file serving for the SPA.
+simon-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Five endpoints under `/api/`, plus static file serving for the SPA.
 
 There are two other ways to reach the same board: `server/cli.ts` (a plain-TS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
 
@@ -21,6 +21,12 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
 ```
 
 This placeholder carries every top-level key a real snapshot has (empty arrays/zeros in place of real data), so callers — the web client, the CLI's direct-mode `status` — never have to special-case true first boot before any refresh has ever run.
+
+## GET /api/events
+
+Server-Sent Events stream of snapshots. On connect the server immediately sends the current snapshot (same shape and placeholder rules as `GET /api/data`), then pushes a new event after every refresh — the server's own scheduled refresh loop (see `refreshIntervalSeconds` in the README), a manual `POST /api/refresh`, or a successful write — and after every `POST /api/action` mutation. Each event is one `data:` line holding the full snapshot JSON.
+
+This is what makes the web UI live: the client holds one `EventSource` open instead of polling, so every open tab re-renders within one server tick of anything changing, and background-tab timer throttling doesn't matter.
 
 ## POST /api/refresh
 

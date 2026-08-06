@@ -172,3 +172,24 @@ test('throws a readable error for a non-integer port (fraction or string)', () =
   writeFileSync(p2, JSON.stringify({ ...base, port: '3010' }));
   expect(() => loadConfig(p2)).toThrow(/invalid "port"/);
 });
+
+test('passes refreshIntervalSeconds through and leaves it undefined when absent', () => {
+  const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' } };
+  const p0 = join(dir, 'interval-absent.json');
+  writeFileSync(p0, JSON.stringify(base));
+  expect(loadConfig(p0).refreshIntervalSeconds).toBeUndefined();
+  const p1 = join(dir, 'interval-set.json');
+  writeFileSync(p1, JSON.stringify({ ...base, refreshIntervalSeconds: 60 }));
+  expect(loadConfig(p1).refreshIntervalSeconds).toBe(60);
+});
+
+test('throws a readable error for a non-positive or non-integer refreshIntervalSeconds', () => {
+  const base = { jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' } };
+  for (const [name, value] of [['zero', 0], ['negative', -5], ['fraction', 1.5], ['string', '60']] as const) {
+    const p = join(dir, `interval-${name}.json`);
+    writeFileSync(p, JSON.stringify({ ...base, refreshIntervalSeconds: value }));
+    expect(() => loadConfig(p)).toThrow(/invalid "refreshIntervalSeconds"/);
+  }
+});

@@ -35,6 +35,9 @@ export interface Config {
   port: number;
   demo: boolean;
   writeEnabled: boolean;
+  // Optional so test fixtures and older config.json files need no change;
+  // the server applies DEFAULT_REFRESH_INTERVAL_SECONDS when absent.
+  refreshIntervalSeconds?: number;
 }
 
 // --- Jira cards ---

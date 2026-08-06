@@ -9,9 +9,7 @@ export function useData() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const onRefreshed = useRef<(d: DashboardData) => void>(() => {});
-  // Ref (not state) so the 3s/10-min scheduled callbacks — closed over at
-  // effect-setup time — always see the current in-flight status rather than
-  // a stale snapshot from whenever the effect ran.
+  // Guards two manual refreshes from overlapping (rapid double-click).
   const refreshInFlight = useRef(false);
   // Monotonic request counter: get()/refresh() each grab the next value
   // before awaiting their fetch, then compare against the current value
@@ -44,7 +42,9 @@ export function useData() {
       if (seq === requestSeq.current) {
         setData(d);
         setConnError(null);
-        onRefreshed.current(d);
+        // onRefreshed (confetti) is NOT fired here: the server broadcasts
+        // this same refresh over /api/events, and the SSE handler fires it
+        // exactly once per new updatedAt. Firing here too would double it.
       }
     } catch (e) {
       if (seq === requestSeq.current) setConnError((e as Error).message);
@@ -76,11 +76,35 @@ export function useData() {
     }
   };
 
+  // updatedAt of the last SSE event that fired onRefreshed. The server
+  // re-broadcasts the same snapshot on actions and on reconnect (the
+  // connect event replays current state), and its newlyMerged field only
+  // resets on the next real refresh — so firing onRefreshed (confetti) on
+  // every event would replay the celebration. Only a changed updatedAt
+  // means a genuinely fresh refresh.
+  const lastEventAt = useRef<string | null | undefined>(undefined);
+
   useEffect(() => {
-    get().catch(() => setLoading(false));
-    const t0 = setTimeout(() => { if (!refreshInFlight.current) refresh(); }, 3000); // silent refresh shortly after load
-    const t = setInterval(() => { if (!refreshInFlight.current) refresh(); }, 10 * 60 * 1000); // every 10 min while tab open
-    return () => { clearTimeout(t0); clearInterval(t); };
+    // Server pushes the current snapshot on connect and after every
+    // refresh/mutation, replacing the old client-side poll timers (which
+    // throttled in background tabs). EventSource reconnects on its own
+    // after laptop sleep or a server restart.
+    const es = new EventSource('/api/events');
+    es.onmessage = (ev) => {
+      const d = JSON.parse(ev.data) as DashboardData;
+      ++requestSeq.current; // supersede any in-flight get()/refresh()
+      setData(d);
+      setLoading(false);
+      setConnError(null);
+      if (d.updatedAt !== lastEventAt.current) {
+        lastEventAt.current = d.updatedAt;
+        onRefreshed.current(d);
+      }
+    };
+    // Fires on every reconnect attempt too; the banner clears on the next
+    // successful message.
+    es.onerror = () => setConnError('connection lost — retrying');
+    return () => es.close();
   }, []);
 
   const clearActionError = () => setActionError(null);

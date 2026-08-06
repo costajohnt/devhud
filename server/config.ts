@@ -20,6 +20,7 @@ interface RawConfig {
   port?: number;
   demo?: boolean;
   writeEnabled?: boolean;
+  refreshIntervalSeconds?: number;
 }
 
 export function loadConfig(path: string = fileURLToPath(new URL('../config.json', import.meta.url))): Config {
@@ -74,6 +75,13 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`config at ${path} has an invalid "port" (${JSON.stringify(c.port)}); must be an integer between 0 and 65535`);
   }
+  // Same shape of failure as a bad port: a hand-edited value flows straight
+  // into setInterval, where 0/negative/NaN would spin a hot refresh loop
+  // hammering Jira and GitHub. Reject anything but a positive integer.
+  if (c.refreshIntervalSeconds !== undefined &&
+      (!Number.isInteger(c.refreshIntervalSeconds) || c.refreshIntervalSeconds < 1)) {
+    throw new Error(`config at ${path} has an invalid "refreshIntervalSeconds" (${JSON.stringify(c.refreshIntervalSeconds)}); must be a positive integer`);
+  }
   // Off by default: write-back (Jira transitions/comments, PR comments) must
   // be explicitly opted into. See server/writeback.ts's checkWriteGate.
   return {
@@ -89,5 +97,6 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     port,
     demo,
     writeEnabled: Boolean(c.writeEnabled),
+    refreshIntervalSeconds: c.refreshIntervalSeconds,
   };
 }

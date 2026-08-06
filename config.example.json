@@ -20,6 +20,7 @@
     "username": "REPLACE"
   },
   "port": 3010,
+  "refreshIntervalSeconds": 120,
   "demo": false,
   "writeEnabled": false
 }

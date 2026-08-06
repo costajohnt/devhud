@@ -4,7 +4,7 @@
 
 ### Server (`server/`, TypeScript, erasable-syntax only, no build step — Node's native type stripping runs `.ts` files directly)
 
-- **index.ts**: HTTP server (`node:http`). Routes `/api/data`, `/api/refresh`, `/api/action`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object and the single-instance guard.
+- **index.ts**: HTTP server (`node:http`). Routes `/api/data`, `/api/events` (SSE), `/api/refresh`, `/api/action`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object, the scheduled refresh loop, the SSE broadcast set, and the single-instance guard.
 - **config.ts**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses), reads `GITHUB_TOKEN` env var as a token fallback.
 - **state.ts**: `data/state.json` load/save, migrations (`celebrated` string→object, `prLog` backfill), and `cardState` (per-card override/seen-horizon lookup, created lazily).
 - **jira.ts**: Jira Cloud REST client: JQL search, ADF-to-plain-text flattening, comment pagination fallback for cards with more comments than the search endpoint embeds.
@@ -29,8 +29,8 @@ A stdio MCP server exposing the board to Claude sessions, using the exact same d
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
 
 - **main.tsx**: Entry point: mounts `<App>` wrapped in an `<ErrorBoundary>`.
-- **app.tsx**: Top-level shell: polling/refresh lifecycle wiring, theme state (OS-aware), route branching (`/`, `/merged`, `/closed`, 404), header, banners, toast.
-- **use-data.ts**: `useData()` hook: fetches `/api/data` on mount, silent refresh 3s after load then every 10 minutes, exposes `act()` for `/api/action` calls with error handling.
+- **app.tsx**: Top-level shell: live-update/refresh wiring, theme state (OS-aware), route branching (`/`, `/merged`, `/closed`, 404), header, banners, toast.
+- **use-data.ts**: `useData()` hook: holds an `EventSource` on `/api/events` for all data (initial render included), exposes `refresh()` for the manual button and `act()` for `/api/action` calls with error handling.
 - **board.tsx**: `useBoardFilter()` hook (search/status/repo filter state, drag-and-drop handlers) plus `BoardStats`, `BoardFilterBar`, `BoardList` components.
 - **detail.tsx**: Card detail side panel: PR/CI/review status, new comments, full comment history, ack/move actions.
 - **extras.tsx**: TODO section, Unlinked PRs section, Recent Activity (grouped by merged/closed/comment).
@@ -71,7 +71,7 @@ POST /api/refresh   ▼
 
 `POST /api/action` (ack/move) mutates `state.snapshot` in place (splicing the item between bucket arrays, clearing attention) and persists, without going through `buildSnapshot` again. It's a local edit of the last snapshot, not a new fetch.
 
-On the client, `useData()` polls: an initial `GET /api/data` on mount, a silent `POST /api/refresh` 3 seconds later, then every 10 minutes. The manual Refresh button also calls `/api/refresh`.
+Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshIntervalSeconds`, default 120s) and broadcasts every new snapshot over `GET /api/events` (Server-Sent Events) — after scheduled refreshes, manual `/api/refresh` calls, actions, and writes. On the client, `useData()` holds one `EventSource` open and renders whatever arrives; the initial render comes from the connect event (the server sends the current snapshot immediately), so there is no mount-time `/api/data` fetch and no client-side poll timer. The manual Refresh button still calls `/api/refresh` directly.
 
 ## state.json anatomy
 
