@@ -1,6 +1,6 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
@@ -8,6 +8,7 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
+import { writePidFile } from './transport.ts';
 import type { Config, State, Snapshot } from './types.ts';
 
 // Server-side poll cadence when config.json doesn't set refreshIntervalSeconds.
@@ -295,7 +296,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     throw e;
   });
   server.listen(config.port, '127.0.0.1', () => {
-    writeFileSync(pidPath, JSON.stringify({ pid: process.pid, port: config.port, startedAt: new Date().toISOString() }));
+    writePidFile(pidPath, config.port);
     console.log(`simon-dash on http://localhost:${config.port}`);
   });
   const shutdown = () => {

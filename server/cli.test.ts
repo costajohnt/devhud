@@ -6,12 +6,25 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import { createServer as createNetServer } from 'node:net';
+import { spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import type { Config, Snapshot, Item } from './types.ts';
 
+// OS-allocated then released, so "nothing listens here" is actually true on
+// this machine — a hardcoded port silently flips direct-mode tests into
+// via-server mode if any local process happens to bind it.
+const FREE_PORT = await (async () => {
+  const srv = createNetServer();
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
+  const port = (srv.address() as AddressInfo).port;
+  await new Promise<void>(r => srv.close(() => r()));
+  return port;
+})();
+
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
-    port: 39217, // unused by direct-mode tests; a port nothing is listening on
+    port: FREE_PORT, // unused by direct-mode tests; nothing is listening on it
     jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
     github: { username: 'john', org: 'o', token: '', repos: [] },
     demo: false, writeEnabled: false,
@@ -58,7 +71,7 @@ function tempConfigFile(overrides: { demo?: boolean; writeEnabled?: boolean }): 
 }
 
 test('probeServer returns false when nothing is listening on the port', async () => {
-  expect(await probeServer(39217, { timeoutMs: 100 })).toBe(false);
+  expect(await probeServer(FREE_PORT, { timeoutMs: 100 })).toBe(false);
 });
 
 test('status in direct mode against a fresh temp state file prints the empty-board message', async () => {
@@ -155,7 +168,7 @@ test('direct-mode ack refuses when a server.pid exists for a live process (split
     buckets: { needs_attention: [needsAttentionItem({ attention: [] })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
   });
   saveState(statePath, state);
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
 
   const { code, err } = await run(['ack', 'P-1'], { config, statePath });
   expect(code).toBe(1);
@@ -166,7 +179,7 @@ test('direct-mode ack refuses when a server.pid exists for a live process (split
 
 test('direct-mode refresh refuses when a server.pid exists for a live process', async () => {
   const statePath = tempStatePath();
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
   const { code, err } = await run(['refresh'], { config, statePath });
   expect(code).toBe(1);
   expect(err).toContain('appears to be running but did not answer the probe');
@@ -174,7 +187,7 @@ test('direct-mode refresh refuses when a server.pid exists for a live process', 
 
 test('status still works direct-mode even with a server.pid present (read-only)', async () => {
   const statePath = tempStatePath();
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
   const { code, out } = await run(['status'], { config, statePath });
   expect(code).toBe(0);
   expect(out).toBe('No data yet — run `simon-dash refresh` to fetch a snapshot.');
@@ -188,7 +201,7 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
   });
   saveState(statePath, state);
   // A pid essentially guaranteed not to be alive.
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: 999999, port: 39217, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: spawnSync(process.execPath, ["-e", ""]).pid!, port: FREE_PORT, startedAt: "x" }));
   const { code, out } = await run(['ack', 'P-1'], { config, statePath });
   expect(code).toBe(0);
   expect(out).toBe('P-1 -> in_progress');
@@ -247,7 +260,7 @@ test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', asy
 test('direct-mode transition refuses when a server.pid exists for a live process (split-brain guard)', async () => {
   const statePath = tempStatePath();
   const writeEnabledConfig = makeConfig({ demo: false, writeEnabled: true });
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 39217, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
   const { code, err } = await run(['transition', 'P-1', 'Done'], { config: writeEnabledConfig, statePath });
   expect(code).toBe(1);
   expect(err).toContain(`a server (pid ${process.pid}) appears to be running`);

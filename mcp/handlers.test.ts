@@ -6,10 +6,21 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Config, Snapshot } from '../server/types.ts';
 
-// Same port convention as server/cli.test.ts: nothing listens here, so every
-// handler in this file exercises the direct-mode (no running server) path.
+// Same convention as server/cli.test.ts: an OS-allocated-then-released port,
+// so "nothing listens here" is actually true and every handler in this file
+// exercises the direct-mode (no running server) path.
+import { createServer as createNetServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
+const FREE_PORT = await (async () => {
+  const srv = createNetServer();
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
+  const port = (srv.address() as AddressInfo).port;
+  await new Promise<void>(r => srv.close(() => r()));
+  return port;
+})();
+
 const config: Config = {
-  port: 39218,
+  port: FREE_PORT,
   jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
   github: { username: 'costajohnt', org: 'acme', token: '', repos: [] },
   demo: true,

@@ -1,6 +1,6 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
-import { classifyCard, isTodo, isDone, isCanceled } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards } from './jira.ts';
 import { fetchPrs, enrichPr } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
@@ -20,8 +20,8 @@ const newestFirst = (a: NewComment, b: NewComment) => (b.createdAt ?? '').locale
 // Independent of newComments, which is seen-horizon-filtered and drives
 // attention/badges.
 const itemComments = (card: Card, pr: Pr | null): NewComment[] => {
-  const fromPr: NewComment[] = (pr?.comments ?? []).map(c => ({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt ?? null }));
-  const fromJira: NewComment[] = (card.comments ?? []).map(c => ({ source: 'jira', author: c.author || c.authorId || '', body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt }));
+  const fromPr: NewComment[] = (pr?.comments ?? []).map(githubNewComment);
+  const fromJira: NewComment[] = (card.comments ?? []).map(jiraNewComment);
   const top10 = (cs: NewComment[]) => cs.sort(newestFirst).slice(0, 10);
   return [...top10(fromPr), ...top10(fromJira)].sort(newestFirst);
 };

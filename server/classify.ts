@@ -1,4 +1,14 @@
-import type { Card, Pr, CardState, JiraStatuses, Bucket, NewComment } from './types.ts';
+import type { Card, Pr, CardState, JiraStatuses, Bucket, NewComment, PrComment, JiraComment } from './types.ts';
+
+// The one place a raw PR/Jira comment becomes a NewComment (300-char body
+// cap, source tag, author fallback). classify's attention queue and
+// refresh's itemComments both consume these; they used to each hand-roll
+// the mapping and had already drifted on the Jira author fallback (`||` vs
+// `??` — an empty-string author should fall through to authorId).
+export const githubNewComment = (c: PrComment): NewComment =>
+  ({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt ?? null });
+export const jiraNewComment = (c: JiraComment): NewComment =>
+  ({ source: 'jira', author: c.author || c.authorId || '', body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt });
 
 const after = (ts: string | null | undefined, since: string | null | undefined): boolean => !since || (!!ts && ts > since);
 
@@ -36,7 +46,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
 
   for (const c of pr?.comments ?? []) {
     if (c.author !== username && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {
-      newComments.push({ source: 'github', author: c.author, body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt ?? null });
+      newComments.push(githubNewComment(c));
     }
   }
   if (newComments.length) attention.push('new_pr_comments');
@@ -45,7 +55,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
     c.authorId !== card.myAccountId && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenJira));
   if (jiraNew.length) {
     attention.push('new_jira_comments');
-    newComments.push(...jiraNew.map(c => ({ source: 'jira' as const, author: c.author ?? c.authorId ?? '', body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt })));
+    newComments.push(...jiraNew.map(jiraNewComment));
   }
 
   if (pr?.state === 'merged' && card.status !== statuses.inTest && card.status !== statuses.done) {

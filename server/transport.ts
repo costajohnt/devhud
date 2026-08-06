@@ -5,10 +5,18 @@
 // directly on disk via the same server/*.ts modules the server itself uses
 // (loadState/saveState/refresh/applyAction), so behavior is identical
 // either way.
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { saveState } from './state.ts';
 import type { State } from './types.ts';
+
+// Writer half of the pid-file contract serverAppearsRunning() reads. Lives
+// here (not inline in index.ts's main block) so the { pid, port, startedAt }
+// shape exists in exactly one place — a field rename can no longer pass the
+// suite while breaking the split-brain guard in production.
+export function writePidFile(pidPath: string, port: number): void {
+  writeFileSync(pidPath, JSON.stringify({ pid: process.pid, port, startedAt: new Date().toISOString() }));
+}
 
 // ~500ms budget: long enough that a live server on loopback always answers,
 // short enough that "no server running" doesn't make every command feel stuck.

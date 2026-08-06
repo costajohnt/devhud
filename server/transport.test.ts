@@ -1,7 +1,10 @@
 import { test, expect } from 'vitest';
-import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
+import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded, writePidFile } from './transport.ts';
 import { emptyState, loadState } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -9,8 +12,25 @@ function tempStatePath() {
   return join(mkdtempSync(join(tmpdir(), 'jd-transport-')), 'state.json');
 }
 
+// A pid guaranteed dead: spawn a real child and let it exit — unlike a
+// hardcoded big number, which is only out of pid range on macOS (Linux
+// pid_max can be 4194304, where a hardcoded value can be a live process).
+function reapedPid(): number {
+  return spawnSync(process.execPath, ['-e', '']).pid!;
+}
+
+// A port with nothing listening: bind to 0 (OS-assigned), then release it —
+// unlike a hardcoded port, which flakes if any local process claims it.
+async function vacatedPort(): Promise<number> {
+  const srv = createServer();
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
+  const port = (srv.address() as AddressInfo).port;
+  await new Promise<void>(r => srv.close(() => r()));
+  return port;
+}
+
 test('probeServer returns false when nothing is listening on the port', async () => {
-  expect(await probeServer(39299, { timeoutMs: 100 })).toBe(false);
+  expect(await probeServer(await vacatedPort(), { timeoutMs: 100 })).toBe(false);
 });
 
 test('serverAppearsRunning returns null when no pid file exists', () => {
@@ -19,8 +39,19 @@ test('serverAppearsRunning returns null when no pid file exists', () => {
 
 test('serverAppearsRunning returns null for a stale pid (dead process)', () => {
   const statePath = tempStatePath();
-  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: 999999, port: 1, startedAt: 'x' }));
+  writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: reapedPid(), port: 1, startedAt: 'x' }));
   expect(serverAppearsRunning(statePath)).toBeNull();
+});
+
+// Round-trip through the real writer: index.ts's main block calls
+// writePidFile on listen, and every split-brain scenario depends on
+// serverAppearsRunning being able to read what it wrote. Before writePidFile
+// existed the shape lived as copy-pasted literals in three test files, so a
+// writer-side field rename would have passed the whole suite.
+test('writePidFile round-trips through serverAppearsRunning', () => {
+  const statePath = tempStatePath();
+  writePidFile(join(dirname(statePath), 'server.pid'), 1);
+  expect(serverAppearsRunning(statePath)).toBe(process.pid);
 });
 
 test('serverAppearsRunning returns the pid for a live process', () => {

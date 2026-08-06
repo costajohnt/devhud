@@ -12,11 +12,9 @@ import { spawnSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
-import { loadState, emptySnapshot } from './state.ts';
-import { refresh } from './refresh.ts';
-import { applyAction, BUCKETS } from './actions.ts';
-import { performWrite } from './writeback.ts';
-import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
+import { BUCKETS } from './actions.ts';
+import { opSnapshot, opRefresh, opAction, opWrite } from './ops.ts';
+import { probeServer } from './transport.ts';
 import type { Config, Snapshot } from './types.ts';
 
 // Re-exported for backward compatibility: server/cli.test.ts imports
@@ -100,37 +98,16 @@ export async function run(argv: string[], { config, statePath, configPath }: {
     return { code: 0, out: `Opening ${url}`, err: '' };
   }
 
+  // Probed once here (not inside each op) so the transport note on stderr
+  // can never disagree with the path the op actually took.
   const viaServer = await probeServer(config.port);
   const err = viaServer ? 'via server' : 'direct';
-  const base = `http://127.0.0.1:${config.port}`;
+  const ctx = { config, statePath, configPath, viaServer };
 
   if (cmd === 'status' || cmd === 'refresh') {
-    let payload: Snapshot;
-    if (cmd === 'refresh') {
-      if (viaServer) {
-        const res = await fetch(`${base}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
-        if (!res.ok) return { code: 1, out: '', err: [err, `HTTP ${res.status}`].join('\n') };
-        payload = await res.json() as Snapshot;
-      } else {
-        const blockingPid = serverAppearsRunning(statePath);
-        if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
-        // quiet: refresh()'s operational log line would corrupt this
-        // command's stdout (plain status text, or --json).
-        const state = loadState(statePath);
-        payload = await refresh({ config, state, quiet: true });
-        // Re-checked immediately before the write (not just the early guard
-        // above) — a server can start during the refresh itself.
-        try {
-          saveStateGuarded(statePath, state);
-        } catch (e) {
-          return { code: 1, out: '', err: [err, (e as Error).message].join('\n') };
-        }
-      }
-    } else {
-      payload = viaServer
-        ? await (await fetch(`${base}/api/data`)).json() as Snapshot
-        : (loadState(statePath).snapshot ?? emptySnapshot());
-    }
+    const result = cmd === 'refresh' ? await opRefresh(ctx) : await opSnapshot(ctx);
+    if ('error' in result) return { code: 1, out: '', err: [err, result.error].join('\n') };
+    const payload = result as Snapshot;
     const out = values.json ? JSON.stringify(payload) : formatStatus(payload);
     return { code: 0, out, err };
   }
@@ -143,32 +120,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       return { code: 1, out: '', err: [err, usage].join('\n') };
     }
 
-    let result: { ok: true; bucket: string | null } | { error: string };
-    if (viaServer) {
-      const body = cmd === 'move' ? { type: 'move', key, bucket } : { type: 'ack', key };
-      const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      // /api/action's own response already carries the resulting bucket —
-      // no need for a second round-trip to /api/data just to look it up.
-      const j = await res.json().catch(() => ({})) as { bucket?: string | null; error?: string };
-      result = res.ok ? { ok: true, bucket: j.bucket ?? null } : { error: j.error ?? `HTTP ${res.status}` };
-    } else {
-      const blockingPid = serverAppearsRunning(statePath);
-      if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
-      const state = loadState(statePath);
-      const r = applyAction({ state, config, type: cmd, key, bucket });
-      if ('error' in r) {
-        result = { error: r.error };
-      } else {
-        // Re-checked immediately before the write, not just the early guard
-        // above — closes the gap a slow applyAction call could open.
-        try {
-          saveStateGuarded(statePath, state);
-          result = { ok: true, bucket: r.bucket };
-        } catch (e) {
-          result = { error: (e as Error).message };
-        }
-      }
-    }
+    const result = await opAction(ctx, { type: cmd, key, bucket });
 
     if (values.json) {
       const out = JSON.stringify(
@@ -205,35 +157,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       }
     }
 
-    const writeArgs = { type, key, repo: repoRef, number, body, status };
-    let result: Record<string, unknown>;
-    if (viaServer) {
-      const res = await fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs) });
-      result = await res.json().catch(() => ({})) as Record<string, unknown>;
-      if (!res.ok && !result.error) result.error = `HTTP ${res.status}`;
-    } else {
-      // The write call itself is a network call to Jira/GitHub with no
-      // local state — but performWrite's post-write refresh does write
-      // state.json (same operation `refresh` guards), so this needs the
-      // same split-brain guard.
-      const blockingPid = serverAppearsRunning(statePath);
-      if (blockingPid) return { code: 1, out: '', err: [err, splitBrainError(blockingPid)].join('\n') };
-      const state = loadState(statePath);
-      result = await performWrite({ config, state, ...writeArgs, configPath }) as unknown as Record<string, unknown>;
-      if (result.ok && !result.demo) {
-        // Re-checked immediately before the write, not just the early guard
-        // above. The external Jira/GitHub write already went through by
-        // this point though — a save being blocked here must not read as
-        // the whole command having failed (nothing needs retrying upstream,
-        // and retrying could double-post a comment); it's a warning field
-        // on an otherwise-successful result, same treatment as refreshError.
-        try {
-          saveStateGuarded(statePath, state);
-        } catch (e) {
-          result = { ...result, saveBlockedError: (e as Error).message };
-        }
-      }
-    }
+    const result = await opWrite(ctx, { type, key, repo: repoRef, number, body, status });
 
     if (values.json) {
       return { code: result.error ? 1 : 0, out: JSON.stringify(result), err };
