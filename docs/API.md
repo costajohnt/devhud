@@ -104,7 +104,10 @@ Gate semantics:
 - `writeEnabled: false` (the default) outside demo mode: `403`, `{ "error": "write-back disabled; set writeEnabled: true in config.json" }`. Nothing is written, nothing is refreshed.
 - Demo mode: **always** refuses, regardless of `writeEnabled` — there's nothing real to write to. Unlike the case above this is `200`, not `403`: `{ "ok": true, "demo": true, "message": "demo mode: write-back is a no-op (nothing real to write to)" }`. It's a stub success, not an error, because nothing is misconfigured.
 - Unknown `type`, or missing required fields for the given `type`: `400`.
+- A target outside the dashboard's own scope: `403`. `key` must start with the configured `jira.projectKey` (`{ "error": "key \"OTHER-1\" is outside the configured project PROJ" }`), and `repo` must be a member of the configured `github.repos` list, normalized the same way `fetchPrs` normalizes it — a bare `name` entry is read as `<org>/<name>`, an `owner/name` entry is taken as-is (`{ "error": "repo \"o/not-mine\" is not in the configured github.repos list" }`). This is a *scope* check, distinct from the syntax check below: the well-formed key `OTHER-1` passes validation and still fails here. It exists because the MCP surface hands these tools to a model reading third-party Jira/GitHub text, so "well-formed" is not the same question as "a resource this dashboard manages".
+- A malformed `key` (not `ABC-123` shaped) or `repo` (not `owner/name` shaped), or a non-integer PR number: `400`.
 - The underlying Jira/GitHub call failing (bad key, no matching transition, network error): `502`, with the upstream error message.
+- The config re-read itself failing (file deleted or unreadable mid-edit): `403`, refusing the write rather than falling back to an in-memory config — see the fail-closed note above.
 
 On a real success (`writeEnabled: true`, not demo, the write succeeded), the server immediately runs the same refresh pipeline `/api/refresh` uses (so the board reflects the change without waiting for the next poll), persists `data/state.json`, and responds `{ "ok": true, ...writeSpecificFields }` — e.g. `{ "ok": true, "transitionedTo": "In Review" }` for a transition.
 
@@ -222,6 +225,8 @@ Flat list across three types, all within the last 7 days, newest first:
 
 One entry per PR ever fetched, keyed by `org/repo#number` (`id`). Upserted (not appended) on every refresh, real or demo, from the live fetched PR list: `openedAt` from `createdAt`, `mergedAt` as-is, `closedAt` only when `state === 'closed'` and there's no `mergedAt` (a merged PR never carries `closedAt`). Entries are never deleted, so this is a full history, not just what's currently open. Powers the Monthly Activity line chart (Opened/Merged/Closed series) and the Top Repos stacked bar chart in the web UI. States created before this field existed get a synthesized entry per legacy `celebrated` merge (`openedAt`/`closedAt` unknown, only `mergedAt` recoverable).
 
+`state.doneCelebrated` has the same append-only, unbounded character as `prLog` below: one `{ id, at }` entry per card that has ever reached Done, never pruned. It's much smaller per entry and isn't part of the payload, but it does grow every `state.json` write forever.
+
 **Known limitation: `prLog` is append-only and unbounded.** There is no eviction, no age-based pruning, and no cap on entry count — every PR the account has ever had fetched into it (across every repo in `github.repos`, for as long as `data/state.json` has existed) stays in `prLog` forever, growing `state.json` and the `/api/data`/`/api/refresh` payload size a little more with each newly-seen PR. For a single-user personal tool at realistic PR volumes this is a non-issue in practice, but it's a real limitation if this ever needs to scale to a high-volume repo or run unattended for years.
 
 ## Error semantics
@@ -234,6 +239,23 @@ One entry per PR ever fetched, keyed by `org/repo#number` (`id`). Upserted (not 
 - If the whole GitHub fetch step throws unexpectedly, `errors.github` is set and `prs` falls back to `state.lastPrs` wholesale.
 
 `errors` on the payload always reflects the current refresh's outcome (not accumulated across refreshes); a clean refresh after a failed one resets both back to `null`.
+
+## Request guards and status codes
+
+Guards that apply across routes, rather than to one endpoint. A client written only against the per-endpoint sections above will otherwise meet these as surprises.
+
+| Code | When | Body |
+| --- | --- | --- |
+| `403` | **Every** `/api/*` route, reads included: the `Host` header is not `127.0.0.1:<port>` or `localhost:<port>` (the port the connection actually landed on). | `{ "error": "invalid Host header" }` |
+| `415` | `POST /api/refresh`, `/api/action`, `/api/write`: `Content-Type` is not `application/json`. | `{ "error": "Content-Type must be application/json" }` |
+| `413` | `POST /api/action`, `/api/write`: request body exceeded the 1 MB cap. | `{ "error": "body too large" }` |
+| `400` | `POST /api/action`, `/api/write`: body is not parseable JSON (distinct from the size cap above). | `{ "error": "invalid JSON body" }` |
+| `503` | `GET /api/events`: 32 event streams are already open. | `{ "error": "too many event streams" }` |
+| `500` | Any unhandled error. The real error (which can carry filesystem paths) is logged server-side only. | `{ "error": "internal error" }` |
+
+The `Host` check is DNS-rebinding protection, and it covers reads for a reason: binding to `127.0.0.1` does not defend against rebinding on its own, and a read-only endpoint is exactly what a rebinding attack targets (confidentiality, not mutation). The `Content-Type` requirement is the CSRF gate — none of the CORS-safelisted content types qualify as JSON, so a cross-origin caller needs a preflight, and this server never sends `Access-Control-Allow-Origin`.
+
+Static responses (not `/api/*`) additionally carry `X-Content-Type-Options: nosniff` and a `Content-Security-Policy` restricting scripts, styles, images, and connections to `'self'` with `frame-ancestors 'none'`. The policy allows `'unsafe-inline'` (required by the pre-paint theme script and inline style attributes), so it buys exfiltration resistance and framing protection rather than inline-injection protection; Preact's text escaping remains the primary XSS defense.
 
 ## Static serving and SPA fallback
 
@@ -251,7 +273,7 @@ The server binds `127.0.0.1:<port>` (loopback only, not reachable from other hos
 
 ## CLI
 
-`server/cli.ts` exposes `status`/`refresh`/`ack`/`move`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
+`server/cli.ts` exposes `status`/`refresh`/`ack`/`move`/`transition`/`comment`/`pr-comment`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — that branch is chosen once per command in `server/ops.ts`, which both the CLI and the MCP server consume, and `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
 
 ## Demo mode
 

@@ -8,11 +8,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.18 is the floor package.json's engines field claims (the first
+        # release with unflagged type stripping, which the whole repo runs
+        # on); testing only the newest release let that claim rot.
+        node-version: ['22.18', '26']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: ${{ matrix.node-version }}
       - run: npm ci
       - run: cd web && npm ci
       - run: cd mcp && npm ci

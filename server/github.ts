@@ -177,6 +177,13 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
 export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [owner, repo] = pr.repo.split('/');
   const base = `/repos/${owner}/${repo}`;
+  // A PR restored from state.lastPrs (the outage fallback in refresh.ts) has
+  // no _raw: enrichPr deleted it on the refresh that cached the object, and
+  // state.json round-tripped it. Without a head SHA the check-runs path used
+  // to interpolate the string "undefined" and 404 on every degraded refresh —
+  // turning a partial outage into a louder one. null here means "couldn't
+  // ask", which the assignments below keep distinct from "asked, no runs".
+  const headSha = pr._raw?.head.sha;
   // sort=created&direction=desc so a >100-comment thread keeps the newest
   // comments (the ones that matter for attention) instead of silently
   // truncating to the oldest page. The reviews endpoint is left as-is.
@@ -184,9 +191,9 @@ export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
     gh<RawComment[]>(`${base}/issues/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
     gh<RawComment[]>(`${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
     gh<RawReview[]>(`${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
-    pr.state === 'open'
-      ? gh<{ check_runs: RawCheckRun[] }>(`${base}/commits/${pr._raw?.head.sha}/check-runs?per_page=100`, cfg.token).then(d => d.check_runs)
-      : Promise.resolve([] as RawCheckRun[]),
+    pr.state === 'open' && headSha
+      ? gh<{ check_runs: RawCheckRun[] }>(`${base}/commits/${headSha}/check-runs?per_page=100`, cfg.token).then(d => d.check_runs)
+      : Promise.resolve(null),
   ]);
   const comment = (c: RawComment): PrComment => ({ author: c.user?.login ?? '', body: c.body ?? '', createdAt: c.created_at ?? c.submitted_at });
   pr.comments = [
@@ -194,8 +201,18 @@ export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
     ...reviewComments.map(comment),
     ...reviews.filter(r => r.body).map(r => ({ author: r.user?.login ?? '', body: r.body ?? '', createdAt: r.submitted_at })),
   ].sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
-  pr.ciStatus = pr.state === 'open' ? ciFromCheckRuns(checks) : 'unknown';
-  pr.reviewState = reviewStateFrom(pr._raw, reviews);
+  // checks === null: no head SHA to ask about (see headSha above). Keep the
+  // last-known ciStatus rather than downgrading real data to 'unknown' —
+  // an empty array still means "asked, nothing configured" and maps to
+  // 'unknown' through ciFromCheckRuns as before.
+  if (pr.state !== 'open') pr.ciStatus = 'unknown';
+  else if (checks) pr.ciStatus = ciFromCheckRuns(checks);
+  // Same reasoning for reviews: requested_reviewers/_teams live in _raw, so
+  // without it a 'none' result means "couldn't see requested reviewers", not
+  // "none requested". A definite APPROVED/CHANGES_REQUESTED still comes from
+  // the reviews list itself and is safe to take.
+  const derivedReviewState = reviewStateFrom(pr._raw, reviews);
+  if (pr._raw || derivedReviewState !== 'none') pr.reviewState = derivedReviewState;
   delete pr._raw;
   return pr;
 }

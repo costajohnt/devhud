@@ -218,3 +218,60 @@ test('gh() sends If-None-Match on repeat calls and serves the cached body on 304
   expect(second.prs).toHaveLength(1);
   expect(second.prs[0]!.number).toBe(1);
 });
+
+// --- fallback PRs restored from state.lastPrs (no _raw) ---
+
+// enrichPr deletes _raw, and refresh.ts caches those same objects in
+// state.lastPrs as the outage fallback. When a repo's fetch later fails they
+// are spliced back in and re-enriched, so enrichPr must cope with the _raw it
+// itself removed — it used to request /commits/undefined/check-runs and 404,
+// making every degraded refresh noisier than the outage that caused it.
+const fallbackCfg: GithubConfig = { token: 't', org: 'o', repos: ['r'], username: 'me' };
+
+const fallbackPr = (): Pr => ({
+  repo: 'o/r', number: 7, url: 'u', title: 'T', body: '', branch: 'b',
+  state: 'open', createdAt: 'c', updatedAt: 'u2',
+  mergedAt: null, closedAt: null, ciStatus: 'passing', reviewState: 'approved',
+  isDraft: false, comments: [],
+});
+
+test('enrichPr on a _raw-less fallback PR skips check-runs instead of 404ing on an undefined SHA', async () => {
+  const urls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    urls.push(String(url));
+    if (String(url).includes('/check-runs')) {
+      return Promise.resolve({ ok: false, status: 404, text: () => Promise.resolve('Not Found'), headers: { get: () => null } });
+    }
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
+  }));
+
+  const pr = fallbackPr();
+  await expect(enrichPr(pr, fallbackCfg)).resolves.toBe(pr);
+  expect(urls.some(u => u.includes('/check-runs'))).toBe(false);
+  // No head SHA to ask about, so the last-known CI status is kept rather than
+  // being downgraded to 'unknown' on data we simply couldn't re-check.
+  expect(pr.ciStatus).toBe('passing');
+  // Likewise reviewState: requested reviewers live in _raw, so an empty
+  // reviews list means "can't tell", not "nobody requested".
+  expect(pr.reviewState).toBe('approved');
+});
+
+test('enrichPr still queries check-runs and overwrites CI when _raw carries a head SHA', async () => {
+  const urls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    urls.push(String(url));
+    if (String(url).includes('/check-runs')) {
+      return Promise.resolve({
+        ok: true, status: 200, headers: { get: () => null },
+        json: () => Promise.resolve({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'failure' }] }),
+      });
+    }
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
+  }));
+
+  const pr = { ...fallbackPr(), _raw: { head: { sha: 'deadbeef' } } };
+  await enrichPr(pr, fallbackCfg);
+  expect(urls.some(u => u.includes('/commits/deadbeef/check-runs'))).toBe(true);
+  expect(pr.ciStatus).toBe('failing');
+  expect(pr.reviewState).toBe('none'); // _raw present: an empty reviews list is authoritative
+});
