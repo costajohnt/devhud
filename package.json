@@ -16,7 +16,7 @@
     "simon-dash": "server/cli.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p web --noEmit",
     "lint": "oxlint",
     "test": "npm run lint && npm run typecheck && vitest run",
     "start": "node server/index.ts",
