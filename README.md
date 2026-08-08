@@ -63,7 +63,18 @@ The third install is only needed if you plan to use the MCP server (see Claude i
 
 Starts the server on the configured port (default 3010). The script builds the web bundle if source files are stale; on first run it will take a moment.
 
-### 4. launchd (optional)
+### 4. Development checks
+
+```bash
+npm test          # lint + typecheck + vitest (server, web and MCP in one run)
+npm run lint      # oxlint on its own
+```
+
+Linting is [oxlint](https://oxc.rs), not ESLint: the repo pins TypeScript 7, which no published `typescript-eslint` supports (its peer range stops below 6.1), and downgrading the compiler to satisfy a linter is the wrong trade. oxlint parses TS/TSX natively with no `typescript` dependency, so there's no conflict to manage.
+
+The rule set is deliberately narrow — oxlint's `correctness` category plus `react/jsx-no-target-blank` — because the broader categories produced only false positives against this codebase (Vitest's `expect(value, message)` form read as a Jira-style error, the automatic JSX runtime read as a missing `React` import, and `jira.ts`'s pagination loop, whose awaits must stay sequential since each page's token comes from the previous response). A linter that cries wolf gets ignored; add rules when they'd catch something real.
+
+### 5. launchd (optional)
 
 To run simon-dash at startup on macOS:
 

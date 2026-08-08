@@ -173,8 +173,13 @@ export interface PerformWriteArgs {
 //     went through), refreshError is a warning for the caller to surface,
 //     not a reason to report the whole call as failed
 //   - { error, status } — validation failure, gate refusal, or write failure
+// `config` is deliberately absent from this destructure even though
+// PerformWriteArgs still requires it — see that field's comment: the gate
+// reads a fresh config from disk instead, and destructuring a binding this
+// body never touches only invited the reader (and the linter) to assume
+// otherwise.
 export async function performWrite({
-  config, state, type, key, repo, number, body, status,
+  state, type, key, repo, number, body, status,
   refreshFn = refresh, configPath, loadConfigFn = loadConfig,
 }: PerformWriteArgs): Promise<WriteResult> {
   if (!WRITE_TYPES.includes(type)) {

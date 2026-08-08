@@ -69,7 +69,10 @@ function AppContent() {
         toastTimeout.current = setTimeout(() => setToast(null), 5000);
       }
     };
-  }, []);
+    // onRefreshed is a stable ref from useData, so this still runs once —
+    // listed so the dependency array is honest rather than relying on the
+    // reader knowing that.
+  }, [onRefreshed]);
 
   // Purely cosmetic re-render tick so "Updated Xm ago" stays fresh even if
   // the user leaves the tab open without triggering any other re-render.
