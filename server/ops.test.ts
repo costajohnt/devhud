@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { opWrite } from './ops.ts';
+import { opWrite, opAction } from './ops.ts';
 import { emptyState, saveState } from './state.ts';
 import { writePidFile } from './transport.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -50,4 +50,32 @@ test('opWrite direct mode: successful external write + blocked save returns ok w
   expect(result.error).toBeUndefined();
   expect(result.ok).toBe(true);
   expect(String(result.saveBlockedError)).toContain('appears to be running');
+});
+
+// The via-server branch used to collapse every non-'move' action to
+// { type: 'ack' }, so an unpin issued through a running server silently
+// acknowledged the card instead — advancing the seen horizon and leaving the
+// pin in place, while direct mode did the right thing. The two transports
+// are supposed to be indistinguishable.
+test('opAction via server forwards the action type instead of falling back to ack', async () => {
+  const statePath = join(mkdtempSync(join(tmpdir(), 'jd-ops-type-')), 'state.json');
+  saveState(statePath, emptyState());
+  const config = { port: 1, demo: false, writeEnabled: false,
+    jira: { projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+    github: { org: 'o', repos: [], username: 'u', token: '' },
+  } as Config;
+
+  const bodies: unknown[] = [];
+  vi.stubGlobal('fetch', vi.fn((_url: string, init?: { body?: string }) => {
+    if (init?.body) bodies.push(JSON.parse(init.body));
+    return Promise.resolve({
+      ok: true, status: 200, headers: { get: () => null },
+      json: async () => ({ ok: true, bucket: 'in_progress', wasPinned: true }),
+    });
+  }));
+
+  const result = await opAction({ config, statePath, viaServer: true }, { type: 'unpin', key: 'PROJ-1' });
+
+  expect(bodies).toEqual([{ type: 'unpin', key: 'PROJ-1' }]);
+  expect(result).toMatchObject({ ok: true, bucket: 'in_progress', wasPinned: true });
 });

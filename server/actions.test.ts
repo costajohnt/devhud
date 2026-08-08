@@ -24,6 +24,7 @@ function stateWithItem(overrides: Partial<Snapshot> = {}) {
         key: 'P-1', summary: 'S', jiraStatus: 'In Progress', jiraUrl: 'https://x/browse/P-1', bucket: 'needs_attention',
         attention: ['ci_failing'], newComments: [{ source: 'github', author: 'a', body: 'b', createdAt: null }],
         comments: [], pr: null, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
+        pinned: false, pinnedAt: null,
       }],
       in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
     },
@@ -165,4 +166,87 @@ test('move clears attention and newComments like ack does', () => {
   const item = state.snapshot!.buckets.in_qa[0]!;
   expect(item.attention).toEqual([]);
   expect(item.newComments).toEqual([]);
+});
+
+// --- unpin ---
+
+test('unpin clears the override and re-derives the bucket from the card', () => {
+  const state = stateWithItem();
+  // Pin it somewhere the classifier would not choose on its own.
+  expect(applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' })).toMatchObject({ ok: true, bucket: 'in_qa' });
+  expect(state.cards['P-1']?.override).toBe('in_qa');
+  expect(state.cards['P-1']?.overrideAt).toEqual(expect.any(String));
+
+  const result = applyAction({ state, config, type: 'unpin', key: 'P-1' });
+  // No PR, status 'In Progress', attention cleared by the move → in_progress.
+  expect(result).toMatchObject({ ok: true, bucket: 'in_progress', wasPinned: true });
+  expect(state.cards['P-1']?.override).toBeNull();
+  expect(state.cards['P-1']?.overrideAt).toBeNull();
+  const snap = state.snapshot!;
+  expect(snap.buckets.in_qa).toHaveLength(0);
+  expect(snap.buckets.in_progress.map(i => i.key)).toEqual(['P-1']);
+  expect(snap.buckets.in_progress[0]!.pinned).toBe(false);
+  expect(snap.buckets.in_progress[0]!.pinnedAt).toBeNull();
+});
+
+test('move marks the snapshot item pinned so the broadcast carries it', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'mergeable' });
+  const item = state.snapshot!.buckets.mergeable[0]!;
+  expect(item.pinned).toBe(true);
+  expect(item.pinnedAt).toEqual(expect.any(String));
+});
+
+test('unpin on a card that was never pinned reports wasPinned: false and leaves it put', () => {
+  const state = stateWithItem();
+  const result = applyAction({ state, config, type: 'unpin', key: 'P-1' });
+  expect(result).toMatchObject({ ok: true, wasPinned: false });
+  // Still in needs_attention: its attention flags are untouched, and
+  // classifierDest honors them.
+  expect(state.snapshot!.buckets.needs_attention.map(i => i.key)).toEqual(['P-1']);
+});
+
+test('unpin does not advance the seen horizons the way ack does', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' });
+  // The move already bumped the horizon; reset so this asserts unpin alone.
+  state.cards['P-1']!.lastSeenPr = null;
+  state.cards['P-1']!.lastSeenJira = null;
+
+  applyAction({ state, config, type: 'unpin', key: 'P-1' });
+  expect(state.cards['P-1']?.lastSeenPr).toBeNull();
+  expect(state.cards['P-1']?.lastSeenJira).toBeNull();
+});
+
+test('unpin on a card not on the board still clears the stored override', () => {
+  const state = stateWithItem();
+  applyAction({ state, config, type: 'move', key: 'GONE-9', bucket: 'in_qa' });
+  expect(state.cards['GONE-9']?.override).toBe('in_qa');
+
+  const result = applyAction({ state, config, type: 'unpin', key: 'GONE-9' });
+  expect(result).toMatchObject({ ok: true, bucket: null, wasPinned: true });
+  expect(state.cards['GONE-9']?.override).toBeNull();
+});
+
+test('a pinned card keeping live attention flags unpins back into needs_attention', () => {
+  const state = stateWithItem();
+  state.cards['P-1'] = { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z' };
+  const item = state.snapshot!.buckets.needs_attention[0]!;
+  item.pinned = true;
+  item.pinnedAt = '2026-07-01T00:00:00Z';
+
+  const result = applyAction({ state, config, type: 'unpin', key: 'P-1' });
+  // classifyCard checks attention before override, so a pinned card can sit
+  // in needs_attention; unpinning must not pull it out of triage.
+  expect(result).toMatchObject({ ok: true, bucket: 'needs_attention', wasPinned: true });
+});
+
+test('acking a card on an approved draft PR lands where the classifier would put it', () => {
+  const state = stateWithItem();
+  const item = state.snapshot!.buckets.needs_attention[0]!;
+  item.pr = { repo: 'o/r', number: 1, url: 'u', branch: 'b', state: 'open', ciStatus: 'passing', reviewState: 'approved', isDraft: true };
+
+  // Draft outranks approval in classifyCard, so 'mergeable' would be a
+  // destination the very next refresh undoes.
+  expect(applyAction({ state, config, type: 'ack', key: 'P-1' })).toMatchObject({ ok: true, bucket: 'self_review' });
 });

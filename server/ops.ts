@@ -73,13 +73,17 @@ export async function opRefresh(ctx: OpCtx): Promise<Snapshot | OpError> {
   return payload;
 }
 
-export interface OpActionResult { ok: true; bucket: Bucket | null; }
+export interface OpActionResult { ok: true; bucket: Bucket | null; wasPinned?: boolean; }
 
 export async function opAction(ctx: OpCtx, { type, key, bucket }: {
   type: string; key: string; bucket?: string;
 }): Promise<OpActionResult | OpError> {
   if (await probed(ctx)) {
-    const body = type === 'move' ? { type: 'move', key, bucket } : { type: 'ack', key };
+    // Forward the type rather than collapsing everything-but-move to 'ack':
+    // that shortcut silently turned an unpin into an acknowledgement over
+    // the HTTP transport while direct mode did the right thing. Only 'move'
+    // carries a bucket.
+    const body = type === 'move' ? { type: 'move', key, bucket } : { type, key };
     let res: Response;
     try {
       res = await fetch(`${base(ctx.config)}/api/action`, {
@@ -90,8 +94,8 @@ export async function opAction(ctx: OpCtx, { type, key, bucket }: {
     }
     // /api/action's own response already carries the resulting bucket — no
     // need for a second round-trip to /api/data just to look it up.
-    const j = await res.json().catch(() => ({})) as { bucket?: Bucket | null; error?: string };
-    return res.ok ? { ok: true, bucket: j.bucket ?? null } : { error: j.error ?? `HTTP ${res.status}` };
+    const j = await res.json().catch(() => ({})) as { bucket?: Bucket | null; wasPinned?: boolean; error?: string };
+    return res.ok ? { ok: true, bucket: j.bucket ?? null, wasPinned: j.wasPinned } : { error: j.error ?? `HTTP ${res.status}` };
   }
   const blockingPid = serverAppearsRunning(ctx.statePath);
   if (blockingPid) return { error: splitBrainError(blockingPid) };
@@ -104,7 +108,7 @@ export async function opAction(ctx: OpCtx, { type, key, bucket }: {
   } catch (e) {
     return { error: (e as Error).message };
   }
-  return { ok: true, bucket: r.bucket };
+  return { ok: true, bucket: r.bucket, wasPinned: r.wasPinned };
 }
 
 export type OpWriteResult = Record<string, unknown>;

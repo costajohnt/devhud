@@ -190,6 +190,15 @@ export function Detail({ item, onClose, act, actionInFlight }:
         <HistorySection label="All Jira activity" comments={history.filter(c => c.source === 'jira')} />
         <HistorySection label="All GitHub activity" comments={history.filter(c => c.source === 'github')} />
 
+        {item.pinned && (
+          <div class="pr-detail-field">
+            <span class="pr-detail-field-label">Pinned</span>
+            <span class="pr-detail-field-value">
+              {item.pinnedAt ? `${BUCKET_LABEL[item.bucket]} · ${ago(item.pinnedAt)}` : BUCKET_LABEL[item.bucket]}
+            </span>
+          </div>
+        )}
+
         <div class="pr-detail-field">
           <span class="pr-detail-field-label">Days Since Activity</span>
           <span class="pr-detail-field-value">{item.daysSinceActivity ?? '—'}</span>
@@ -214,6 +223,19 @@ export function Detail({ item, onClose, act, actionInFlight }:
         >
           Acknowledge
         </button>
+        {/* Only offered when there's a pin to release. `pinned` comes from the
+            snapshot rather than local state so it stays right across tabs —
+            another tab's unpin arrives over SSE and this button disappears. */}
+        {item.pinned && (
+          <button
+            class="action-btn action-btn--override"
+            disabled={actionInFlight}
+            title="Return this card to classifier control"
+            onClick={() => act({ type: 'unpin', key: item.key })}
+          >
+            Unpin
+          </button>
+        )}
         <select
           class="filter-select"
           value=""

@@ -17,7 +17,7 @@
 - **transport.ts**: Dual-transport primitives shared by the CLI and MCP server: `probeServer()` (is a real server answering on the configured port), `writePidFile()` (the writer half of the pid-file contract), `serverAppearsRunning()`/`saveStateGuarded()` (the split-brain guard for direct-mode writes — see Concurrency below).
 - **ops.ts**: The dual-transport OPERATIONS built on those primitives — `opSnapshot`/`opRefresh`/`opAction`/`opWrite`, each deciding once between the HTTP proxy path (a live server's in-memory state is the source of truth) and the direct-disk path with the split-brain guards. The CLI and MCP handlers both consume these; callers own presentation only.
 - **writeback.ts**: `performWrite()` — the single entry point for every write-back path (`POST /api/write`, the CLI's `transition`/`comment`/`pr-comment` commands, the MCP write tools). Builds the minimal ADF doc for Jira comments, re-reads `config.json` fresh on every call so `writeEnabled` takes effect without a restart, and refreshes the board after a successful write.
-- **cli.ts**: `simon-dash` CLI (`status`/`refresh`/`ack`/`move`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Argv parsing and output formatting only — the actual operations come from `ops.ts`, so the CLI and MCP server can't drift on transport semantics.
+- **cli.ts**: `simon-dash` CLI (`status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Argv parsing and output formatting only — the actual operations come from `ops.ts`, so the CLI and MCP server can't drift on transport semantics.
 - **types.ts**: Shared types (Card, Pr, Item, Snapshot, State, Config, ActionResult, WriteResult) mirroring `web/src/types.ts`'s payload shapes.
 
 ### MCP (`mcp/`, TypeScript, erasable-syntax only, no build step)
@@ -109,7 +109,7 @@ Evaluated top to bottom; the first matching row wins:
 |---|---|
 | `self_review` | PR is open and a draft — always, even over attention triggers and overrides. |
 | `needs_attention` | Any visible attention trigger fires (see below; acked state-based reasons are muted while continuously true). |
-| *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear once the card reaches In Test or Done. |
+| *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
 | `qa_ready` | Jira status equals the configured "In Test" status. |
 | `mergeable` | PR is open and approved. |
 | `waiting_review` | PR is open, and either the card is in "Code Review"/"In Review" or the PR has any review activity. |

@@ -37,6 +37,7 @@ function needsAttentionItem(overrides: Partial<Item> = {}): Item {
     key: 'P-1', summary: 'S', jiraStatus: 'In Progress', jiraUrl: 'https://x/browse/P-1', bucket: 'needs_attention',
     attention: ['ci_failing'], newComments: [], comments: [], pr: null,
     createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', daysSinceActivity: 0,
+    pinned: false, pinnedAt: null,
     ...overrides,
   };
 }
@@ -355,4 +356,34 @@ test('refresh via the HTTP transport surfaces a non-2xx response as an error ins
   } finally {
     badServer.close();
   }
+});
+
+test('unpin --json in direct mode releases the pin and reports the derived bucket', async () => {
+  const statePath = tempStatePath();
+  const state = emptyState();
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [],
+      in_qa: [needsAttentionItem({ key: 'P-2', bucket: 'in_qa', attention: [], pinned: true, pinnedAt: '2026-07-01T00:00:00Z' })] },
+  });
+  state.cards['P-2'] = { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z' };
+  saveState(statePath, state);
+
+  const { code, out } = await run(['unpin', 'P-2', '--json'], { config, statePath });
+  expect(code).toBe(0);
+  expect(JSON.parse(out)).toEqual({ ok: true, key: 'P-2', bucket: 'in_progress', wasPinned: true });
+  expect(loadState(statePath).cards['P-2']?.override).toBeNull();
+});
+
+test('unpin on an unpinned card says so instead of claiming a move', async () => {
+  const statePath = tempStatePath();
+  const state = emptyState();
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [], in_progress: [needsAttentionItem({ key: 'P-3', bucket: 'in_progress', attention: [] })],
+      self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+  });
+  saveState(statePath, state);
+
+  const { code, out } = await run(['unpin', 'P-3'], { config, statePath });
+  expect(code).toBe(0);
+  expect(out).toBe('P-3: was not pinned (in in_progress)');
 });

@@ -13,7 +13,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from '../server/config.ts';
 import { BUCKETS } from '../server/actions.ts';
-import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.ts';
+import { boardStatus, doRefresh, ackCard, moveCard, unpinCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.ts';
 import type { Ctx } from './handlers.ts';
 import type { Config } from '../server/types.ts';
 
@@ -105,6 +105,24 @@ server.registerTool(
   },
   async ({ key, bucket }) => {
     const result = await moveCard({ ...ctx, key, bucket });
+    return 'error' in result ? errorText(result.error) : text(result);
+  },
+);
+
+server.registerTool(
+  'unpin_card',
+  {
+    title: 'Release a card\'s pin',
+    description:
+      'Releases a manual pin (set by move_card or a drag on the board) and returns the card to ' +
+      'classifier control, re-deriving its bucket from its current Jira status and PR state. Use ' +
+      'this to undo a move_card that no longer reflects reality. Unlike ack_card this does not ' +
+      'touch the unread-comment horizon, so it never marks new activity as seen. Reports ' +
+      'wasPinned: false when the card had no pin to release.',
+    inputSchema: { key: z.string().describe('Jira issue key, e.g. "PROJ-123"') },
+  },
+  async ({ key }) => {
+    const result = await unpinCard({ ...ctx, key });
     return 'error' in result ? errorText(result.error) : text(result);
   },
 );

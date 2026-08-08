@@ -16,7 +16,10 @@ export interface Item { key: string; summary: string; jiraStatus: string; jiraUr
   bucket: Bucket; attention: string[]; newComments: NewComment[]; comments: NewComment[]; pr: PrRef | null;
   // Nullable to match the server (jira.ts's iso() yields null for a missing
   // field); typing these as plain string hid an "Invalid Date" render.
-  createdAt: string | null; updatedAt: string | null; daysSinceActivity: number | null; }
+  createdAt: string | null; updatedAt: string | null; daysSinceActivity: number | null;
+  // A manual pin holds this card in its bucket until unpinned (or until it
+  // reaches In Test/Done, which auto-clears). pinnedAt is when it was set.
+  pinned: boolean; pinnedAt: string | null; }
 
 export interface PrLogEntry { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null; }
 

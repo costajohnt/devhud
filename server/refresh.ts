@@ -115,6 +115,10 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
       fixVersions: card.fixVersions ?? [],
       bucket, attention, newComments, comments: itemComments(card, pr), pr: prView(pr),
+      // Read after classifyCard, which auto-clears a stale override once the
+      // card reaches In Test/Done — so this reflects the pin the board is
+      // actually honoring, not one about to be dropped.
+      pinned: cs.override !== null, pinnedAt: cs.overrideAt,
       createdAt: card.createdAt, updatedAt: card.updatedAt,
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
     });
