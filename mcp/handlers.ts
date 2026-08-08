@@ -51,6 +51,7 @@ export async function doRefresh(ctx: Ctx): Promise<RefreshSummary | ErrorShape> 
 export interface ActionShape {
   ok: true;
   bucket: Bucket | null;
+  wasPinned?: boolean;
 }
 
 export async function ackCard(ctx: Ctx & { key: string }): Promise<ActionShape | ErrorShape> {
@@ -59,6 +60,10 @@ export async function ackCard(ctx: Ctx & { key: string }): Promise<ActionShape |
 
 export async function moveCard(ctx: Ctx & { key: string; bucket: string }): Promise<ActionShape | ErrorShape> {
   return await opAction(ctx, { type: 'move', key: ctx.key, bucket: ctx.bucket });
+}
+
+export async function unpinCard(ctx: Ctx & { key: string }): Promise<ActionShape | ErrorShape> {
+  return await opAction(ctx, { type: 'unpin', key: ctx.key });
 }
 
 export type WriteShape = Record<string, unknown>;

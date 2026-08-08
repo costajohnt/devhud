@@ -14,6 +14,30 @@ const ackReasons = (prior: string[] | null | undefined, attention: string[]): st
   return merged.size ? [...merged] : null;
 };
 
+// Where the classifier would put this item if it had no override — the
+// snapshot is already built by the time an action runs, so a card leaving
+// its current bucket needs its destination recomputed here rather than
+// waiting for the next refresh.
+//
+// Deliberately mirrors classifyCard's order (classify.ts), including the
+// draft-PR rule that outranks everything: ack used to compute this inline
+// without the draft check, so acking a card on an approved draft PR sent it
+// to `mergeable` while the next refresh moved it straight back to
+// `self_review`. Shared between ack and unpin so the two can't drift from
+// each other or from the classifier.
+export function classifierDest(item: Item, config: Config): Bucket {
+  const pr = item.pr;
+  if (pr?.state === 'open' && pr.isDraft) return 'self_review';
+  if (item.attention.length) return 'needs_attention';
+  if (item.jiraStatus === config.jira?.statuses?.inTest) return 'qa_ready';
+  if (pr?.state === 'open') {
+    if (pr.reviewState === 'approved') return 'mergeable';
+    if (item.jiraStatus === 'Code Review' || item.jiraStatus === 'In Review' || pr.reviewState !== 'none') return 'waiting_review';
+    return 'self_review';
+  }
+  return 'in_progress';
+}
+
 // Shared ack/move logic used by both the HTTP handler (server/index.ts
 // POST /api/action) and the CLI (server/cli.ts `ack`/`move` commands) so the
 // two transports can never drift on semantics. Mutates `state` in place
@@ -71,19 +95,9 @@ export function applyAction({ state, config, type, key, bucket }: {
     loc.item.newComments = [];
     if (loc.from === 'needs_attention') {
       snap.buckets.needs_attention.splice(loc.i, 1);
-      let dest: Bucket;
-      if (cs.override) dest = cs.override;
-      else if (loc.item.jiraStatus === config.jira?.statuses?.inTest) dest = 'qa_ready';
-      else if (loc.item.pr?.state === 'open') {
-        if (loc.item.pr.reviewState === 'approved') {
-          dest = 'mergeable';
-        } else if (loc.item.jiraStatus === 'Code Review' || loc.item.jiraStatus === 'In Review' || loc.item.pr.reviewState !== 'none') {
-          dest = 'waiting_review';
-        } else {
-          dest = 'self_review';
-        }
-      }
-      else dest = 'in_progress';
+      // A prior manual move still wins: acking clears attention flags, it
+      // doesn't undo a pin (that's what unpin is for).
+      const dest = cs.override ?? classifierDest(loc.item, config);
       loc.item.bucket = dest;
       snap.buckets[dest].push(loc.item);
       return { ok: true, bucket: dest };
@@ -109,10 +123,42 @@ export function applyAction({ state, config, type, key, bucket }: {
     cs.ackedReasons = ackReasons(cs.ackedReasons, loc.item.attention);
     loc.item.attention = [];
     loc.item.newComments = [];
+    // Mirror the pin onto the snapshot item so the broadcast that follows
+    // this action already shows it (the Unpin affordance appears in every
+    // tab immediately, not on the next refresh).
+    loc.item.pinned = true;
+    loc.item.pinnedAt = cs.overrideAt;
     snap.buckets[loc.from].splice(loc.i, 1);
     loc.item.bucket = target;
     snap.buckets[target].push(loc.item);
     return { ok: true, bucket: target };
+  }
+
+  // Releases a manual pin and hands the card back to the classifier. Without
+  // this, `override` was write-only: drag-to-pin set it, and the only exits
+  // were the card reaching In Test/Done (classifyCard's auto-clear) or the
+  // user hand-editing data/state.json.
+  //
+  // Unlike ack this does NOT touch the seen horizons — unpinning says
+  // "stop forcing this bucket", not "I've read the new comments", and
+  // conflating them would silently mark unread activity as seen.
+  if (type === 'unpin') {
+    const wasPinned = cs.override !== null;
+    cs.override = null;
+    cs.overrideAt = null;
+    const loc = findItem();
+    if (!loc || !snap) return { ok: true, bucket: null, wasPinned };
+    // Recompute from the item as it stands, including any attention flags
+    // still on it: a pinned card CAN sit in needs_attention (classifyCard
+    // checks attention before override), and unpinning must not quietly
+    // pull it out of the triage queue.
+    const dest = classifierDest(loc.item, config);
+    loc.item.pinned = false;
+    loc.item.pinnedAt = null;
+    snap.buckets[loc.from].splice(loc.i, 1);
+    loc.item.bucket = dest;
+    snap.buckets[dest].push(loc.item);
+    return { ok: true, bucket: dest, wasPinned };
   }
 
   return { error: 'unknown action type', status: 400 };

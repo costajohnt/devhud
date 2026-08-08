@@ -21,7 +21,7 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 - **Live updates**: the server refreshes Jira/GitHub on its own schedule (`refreshIntervalSeconds` in `config.json`, default 120) and pushes every new snapshot to open tabs over Server-Sent Events (`GET /api/events`) — leave it on a screen and it stays current, no clicking refresh, and N open tabs still cost one API sweep. Moves and acks in one tab appear in every other tab immediately.
 - **Buckets**: cards land in Needs Attention, In Progress, Self Review Needed, Waiting in Review, Mergeable, QA Ready, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
 - **Attention triggers**: a card surfaces in Needs Attention on CI failing, new PR comments, new Jira comments, or a merged PR whose card isn't yet In Test/Done — except while its PR is a draft, which always routes to Self Review Needed instead (the triggers still show as pills on the row, they just don't move the card).
-- **Drag-and-drop**: drag a card between any bucket except Needs Attention (In Progress, Self Review Needed, Waiting in Review, Mergeable, QA Ready, In QA) to pin it there (an override), independent of what the classifier would otherwise pick.
+- **Drag-and-drop**: drag a card between any bucket except Needs Attention (In Progress, Self Review Needed, Waiting in Review, Mergeable, QA Ready, In QA) to pin it there (an override), independent of what the classifier would otherwise pick. Pinned cards show a **Pinned** line in the detail panel and an **Unpin** button that hands them back to the classifier.
 - **Charts**: a Monthly Activity line chart (Opened/Merged/Closed) and a Top Repos stacked bar chart (Active/Merged/Closed), built from the full PR lifecycle log.
 - **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
 - **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
@@ -104,6 +104,7 @@ node server/cli.ts status --json         # full snapshot
 node server/cli.ts refresh               # fetch fresh data, then show status
 node server/cli.ts ack PROJ-123          # clear attention flags on a card
 node server/cli.ts move PROJ-123 in_qa   # pin a card to a bucket
+node server/cli.ts unpin PROJ-123        # release the pin, back to classifier control
 node server/cli.ts serve                 # run the server in the foreground
 node server/cli.ts open                  # open the dashboard in your browser
 
@@ -151,6 +152,7 @@ Tools exposed:
 - `refresh`: fetch fresh Jira/GitHub data and return a summary (bucket counts, errors, newly Done cards).
 - `ack_card`: acknowledge a card's attention flags.
 - `move_card`: pin a card to a bucket.
+- `unpin_card`: release a pin and return the card to classifier control.
 - `card_comments`: one card's comment history and unseen comments.
 - `transition_card`, `comment_card`, `comment_pr`: write-back tools — see the Write-back section below. Their descriptions instruct Claude to draft the content, show it to you, and only call the tool after you approve it in conversation.
 
@@ -177,7 +179,7 @@ Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the
 - **qa_ready**: Jira card status is "In Test".
 - **in_qa**: Manual-move destination for cards actively being tested (a pinned override; the classifier itself routes In Test cards to QA Ready).
 - **in_progress**: Everything else (default).
-- A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear once the card reaches In Test or Done.
+- A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
 
 ## Local State
 

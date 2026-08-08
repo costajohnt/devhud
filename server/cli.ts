@@ -30,6 +30,7 @@ Usage:
   simon-dash refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
   simon-dash ack <KEY> [--json]            Acknowledge a card's attention flags
   simon-dash move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
+  simon-dash unpin <KEY> [--json]          Release a pin, returning the card to the classifier
   simon-dash transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status
   simon-dash comment <KEY> <text...> [--json]       Comment on a Jira card
   simon-dash pr-comment <repo#num> <text...> [--json]  Comment on a GitHub PR
@@ -119,7 +120,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
     return { code: 0, out, err };
   }
 
-  if (cmd === 'ack' || cmd === 'move') {
+  if (cmd === 'ack' || cmd === 'move' || cmd === 'unpin') {
     const key = rest[0];
     const bucket = cmd === 'move' ? rest[1] : undefined;
     if (!key || (cmd === 'move' && !bucket)) {
@@ -133,11 +134,17 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       const out = JSON.stringify(
         'error' in result
           ? { ok: false, key, error: result.error }
-          : { ok: true, key, bucket: result.bucket },
+          : { ok: true, key, bucket: result.bucket, ...(cmd === 'unpin' ? { wasPinned: result.wasPinned ?? false } : {}) },
       );
       return { code: 'error' in result ? 1 : 0, out, err };
     }
     if ('error' in result) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
+    // Unpinning a card that wasn't pinned is a no-op worth naming, rather
+    // than reporting a move that didn't really happen.
+    if (cmd === 'unpin' && result.wasPinned === false) {
+      const out = result.bucket ? `${key}: was not pinned (in ${result.bucket})` : `${key}: was not pinned`;
+      return { code: 0, out, err };
+    }
     const out = result.bucket ? `${key} -> ${result.bucket}` : `${key}: not currently on the board`;
     return { code: 0, out, err };
   }

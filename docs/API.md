@@ -51,14 +51,20 @@ or
 { "type": "move", "key": "PROJ-123", "bucket": "in_qa" }
 ```
 
+or
+
+```json
+{ "type": "unpin", "key": "PROJ-123" }
+```
+
 ### `type: "ack"`
 
 Acknowledges a card's attention flags:
 
 - Clears `item.attention` and `item.newComments` on the in-memory snapshot.
 - Resets the "seen" horizon (`cardState.lastSeenPr` and `lastSeenJira`) to the *data horizon*, not wall-clock time: the last snapshot's `updatedAt`. This matters because a comment that arrived between the last refresh and this ack must still be treated as new on the *next* refresh, not silently swallowed.
-- If the card was in `needs_attention`, moves it out: to its existing override bucket if one is set (`cardState.override`); otherwise to `qa_ready` if the Jira status equals the configured "In Test" status; otherwise, with an open PR, to `mergeable` (approved), `waiting_review` (review activity or a Code Review/In Review card), or `self_review`; otherwise `in_progress`.
-- Does **not** clear a prior override. Acking only dismisses the attention flags; it doesn't undo a previous manual move.
+- If the card was in `needs_attention`, moves it out: to its existing override bucket if one is set (`cardState.override`), otherwise to wherever the classifier would put it — the same order `classifyCard` uses, including the draft-PR rule that outranks everything else. (Both this and `unpin` call one shared `classifierDest` helper, so an acked card can't land somewhere the next refresh immediately undoes.)
+- Does **not** clear a prior override. Acking only dismisses the attention flags; it doesn't undo a previous manual move — that's what `unpin` is for.
 
 ### `type: "move"`
 
@@ -71,19 +77,31 @@ Pins a card to a specific bucket:
 
 The override persists across refreshes: on every `/api/refresh`, `classifyCard` checks `cs.override` and honors it unless a "live" attention trigger fires again (CI failing, a merged-not-in-test card, or a new unseen comment); see Buckets below.
 
+### `type: "unpin"`
+
+Releases a manual pin and hands the card back to classifier control:
+
+- Clears `cardState.override` and `overrideAt`.
+- Re-derives the card's bucket from its current state via the same `classifierDest` helper `ack` uses, and splices it there in the live snapshot. A card whose attention triggers are still live unpins back into `needs_attention` rather than being pulled out of triage — `classifyCard` checks attention before override, so a pinned card can legitimately sit there.
+- Does **not** touch the seen horizons. Unpinning says "stop forcing this bucket", not "I've read the new comments"; conflating the two would silently mark unread activity as seen.
+- Responds with `wasPinned`, distinguishing a released pin from a card that had none: `{ "ok": true, "bucket": "in_progress", "wasPinned": false }`. Unpinning an unpinned card is a successful no-op, not an error.
+- A card not on the current board still gets its stored override cleared, and responds `bucket: null`.
+
+Before this existed, `override` was effectively write-only: drag-to-pin and `move` set it, and the only exits were the card reaching In Test/Done (`classifyCard`'s auto-clear) or hand-editing `data/state.json`.
+
 ### Required fields
 
-`key` is required for both action types (a Jira issue key). `type` must be `"ack"` or `"move"`.
+`key` is required for every action type (a Jira issue key). `type` must be `"ack"`, `"move"`, or `"unpin"`.
 
 ### 400 cases
 
 - Body is not valid JSON: `{ "error": "invalid JSON body" }`.
 - `type: "move"` with `bucket` not in the six movable buckets (including `needs_attention`): `{ "error": "bucket must be one of in_progress, self_review, waiting_review, mergeable, qa_ready, in_qa" }`.
-- `type` is anything other than `"ack"` or `"move"`: `{ "error": "unknown action type" }`.
+- `type` is anything other than `"ack"`, `"move"`, or `"unpin"`: `{ "error": "unknown action type" }`.
 
 An action against an unknown `key` (a card not present in any bucket, or never seen before) does not 400. `cardState` is created lazily and the horizon fields are still written to `data/state.json`, but there's no matching snapshot item to move, so the action is a no-op on the visible board. This is intentional: it makes acking a card that just left the board (e.g. Jira marked it Done and it moved to `doneCards` between page load and the click) harmless instead of an error.
 
-On success, both action types respond `{ "ok": true, "bucket": string | null }` — `bucket` is the card's resulting bucket, or `null` if it isn't on the current board (see the unknown-`key` case above) — and persist `data/state.json` before returning.
+On success, every action type responds `{ "ok": true, "bucket": string | null }` — `bucket` is the card's resulting bucket, or `null` if it isn't on the current board (see the unknown-`key` case above) — and persists `data/state.json` before returning. `unpin` adds a `wasPinned` boolean.
 
 ## POST /api/write
 

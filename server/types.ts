@@ -157,6 +157,12 @@ export interface Item {
   createdAt: string | null;
   updatedAt: string | null;
   daysSinceActivity: number | null;
+  // Whether a manual pin (CardState.override) is currently holding this card
+  // in its bucket, and when it was set. The client needs `pinned` to know
+  // whether to offer Unpin at all; `pinnedAt` is the first reader `overrideAt`
+  // has ever had — it was stamped on every move and read by nothing.
+  pinned: boolean;
+  pinnedAt: string | null;
 }
 
 export interface TodoItem {
@@ -255,7 +261,10 @@ export interface State {
 // --- Action / write-back results ---
 
 export type ActionResult =
-  | { ok: true; bucket: Bucket | null }
+  // wasPinned is unpin-only: it distinguishes "released a pin" from "there
+  // was nothing pinned", so callers can report the no-op honestly instead of
+  // claiming an unpin that didn't change anything.
+  | { ok: true; bucket: Bucket | null; wasPinned?: boolean }
   | { error: string; status?: number };
 
 export interface WriteGateResult {

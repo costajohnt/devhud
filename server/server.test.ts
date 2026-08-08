@@ -22,7 +22,7 @@ function needsAttentionItem(overrides: Partial<Item> = {}): Item {
   return {
     key: 'P-1', summary: '', jiraStatus: 'open', jiraUrl: '', bucket: 'needs_attention',
     attention: ['ci_failing'], newComments: [], comments: [], pr: null,
-    createdAt: null, updatedAt: null, daysSinceActivity: null,
+    createdAt: null, updatedAt: null, daysSinceActivity: null, pinned: false, pinnedAt: null,
     ...overrides,
   };
 }
