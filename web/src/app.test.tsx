@@ -42,6 +42,30 @@ const snap = (overrides: Partial<DashboardData> = {}): DashboardData => ({
 let host: HTMLElement;
 const es = () => StubEventSource.instances[0]!;
 
+// App reads localStorage on its very first render (getInitialTheme), and
+// whether the DOM environment supplies one turns out to be Node-version
+// dependent: under Node 26 the global came back undefined and every test in
+// this file died before rendering, while 22.18 was fine. Supplying our own
+// removes the dependency entirely and makes theme state deterministic
+// per-test. defineProperty is the fallback for environments where the global
+// is already installed and not merely absent.
+function installLocalStorage() {
+  const store = new Map<string, string>();
+  const impl = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => { store.set(k, String(v)); },
+    removeItem: (k: string) => { store.delete(k); },
+    clear: () => store.clear(),
+    key: (i: number) => [...store.keys()][i] ?? null,
+    get length() { return store.size; },
+  };
+  try {
+    vi.stubGlobal('localStorage', impl);
+  } catch {
+    Object.defineProperty(globalThis, 'localStorage', { value: impl, configurable: true, writable: true });
+  }
+}
+
 beforeEach(() => {
   StubEventSource.instances.length = 0;
   vi.stubGlobal('EventSource', StubEventSource);
@@ -51,7 +75,7 @@ beforeEach(() => {
     matches: q.includes('reduce'), addEventListener() {}, removeEventListener() {},
   }));
   vi.stubGlobal('scrollTo', vi.fn());
-  localStorage.clear();
+  installLocalStorage();
   document.title = '';
   host = document.createElement('div');
   document.body.append(host);
@@ -59,8 +83,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => { render(null, host); });
-  host.remove();
+  // Guarded: if beforeEach ever fails before assigning `host`, teardown
+  // shouldn't bury the real error under a second one from rendering into
+  // undefined — which is exactly how the localStorage failure above
+  // presented in CI.
+  if (host) {
+    act(() => { render(null, host); });
+    host.remove();
+  }
   vi.unstubAllGlobals();
 });
 
