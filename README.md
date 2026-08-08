@@ -68,7 +68,10 @@ Starts the server on the configured port (default 3010). The script builds the w
 ```bash
 npm test          # lint + typecheck + vitest (server, web and MCP in one run)
 npm run lint      # oxlint on its own
+npm run typecheck # tsc over server/ + mcp/, then over web/ under its own tsconfig
 ```
+
+`typecheck` runs `tsc` twice because the web client needs different compiler options (JSX, DOM libs, bundler resolution) than the Node side. It used to cover only `server/`+`mcp/`, which meant web type drift surfaced solely in `cd web && npm run build` — and one such drift (a payload field typed non-nullable that the server sends as null) sat unnoticed until a test constructed the type directly.
 
 Linting is [oxlint](https://oxc.rs), not ESLint: the repo pins TypeScript 7, which no published `typescript-eslint` supports (its peer range stops below 6.1), and downgrading the compiler to satisfy a linter is the wrong trade. oxlint parses TS/TSX natively with no `typescript` dependency, so there's no conflict to manage.
 
