@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc", "react", "promise"],
+  "categories": {
+    "correctness": "error"
+  },
+  "env": { "browser": true, "es2024": true, "node": true },
+  "rules": {
+    "react/jsx-no-target-blank": ["error", { "allowReferrer": false }],
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "react/react-in-jsx-scope": "off",
+    "react/no-unknown-property": "off"
+  },
+  "ignorePatterns": ["node_modules/**", "web/dist/**", "data/**"]
+}
