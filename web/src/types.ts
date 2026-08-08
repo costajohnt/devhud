@@ -10,7 +10,12 @@ export interface PrRef { repo: string; number: number; url: string; branch: stri
   state: 'open' | 'merged' | 'closed'; ciStatus: 'passing' | 'failing' | 'pending' | 'unknown';
   reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none'; isDraft?: boolean; }
 
-export interface NewComment { source: 'github' | 'jira'; author: string; body: string; createdAt: string; }
+// createdAt is nullable to match the server: classify.ts's githubNewComment
+// falls back to null when GitHub omits the timestamp, and jira.ts's iso()
+// yields null for an unparseable one. Typing it as plain string here was a
+// drift that hid the null case from every consumer (`ago()` already handles
+// it; the render keys quietly stringified it).
+export interface NewComment { source: 'github' | 'jira'; author: string; body: string; createdAt: string | null; }
 
 export interface Item { key: string; summary: string; jiraStatus: string; jiraUrl: string; fixVersions?: string[];
   bucket: Bucket; attention: string[]; newComments: NewComment[]; comments: NewComment[]; pr: PrRef | null;

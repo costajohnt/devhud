@@ -1,0 +1,208 @@
+// @vitest-environment happy-dom
+//
+// Shell-level tests for App: the three top-level render branches (skeleton,
+// server-unreachable, board), the tab-title and celebration side effects, and
+// the detail panel's action wiring — including Unpin, which reaches
+// /api/action through the real useData().act().
+import { test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { h, render } from 'preact';
+import { act } from 'preact/test-utils';
+import { App } from './app.js';
+import type { DashboardData, Item, Bucket } from './types.js';
+
+class StubEventSource {
+  static instances: StubEventSource[] = [];
+  onmessage: ((ev: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  listeners: Record<string, ((ev: { data: string }) => void) | undefined> = {};
+  closed = false;
+  constructor(public url: string) { StubEventSource.instances.push(this); }
+  addEventListener(name: string, fn: (ev: { data: string }) => void) { this.listeners[name] = fn; }
+  close() { this.closed = true; }
+  emit(d: unknown) { this.onmessage?.({ data: JSON.stringify(d) }); }
+}
+
+const emptyBuckets = (): Record<Bucket, Item[]> => ({
+  needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
+});
+
+const item = (overrides: Partial<Item> = {}): Item => ({
+  key: 'P-1', summary: 'Fix the thing', jiraStatus: 'In Progress', jiraUrl: 'https://j/browse/P-1',
+  bucket: 'in_progress', attention: [], newComments: [], comments: [], pr: null,
+  createdAt: null, updatedAt: null, daysSinceActivity: null, pinned: false, pinnedAt: null,
+  ...overrides,
+});
+
+const snap = (overrides: Partial<DashboardData> = {}): DashboardData => ({
+  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null },
+  buckets: emptyBuckets(), todo: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
+  newlyDone: [], recentActivity: [], prLog: [], ...overrides,
+});
+
+let host: HTMLElement;
+const es = () => StubEventSource.instances[0]!;
+
+beforeEach(() => {
+  StubEventSource.instances.length = 0;
+  vi.stubGlobal('EventSource', StubEventSource);
+  // Reduced motion short-circuits both fireConfetti (no canvas-confetti
+  // import) and AnimatedValue's rAF loop, so counts render synchronously.
+  vi.stubGlobal('matchMedia', (q: string) => ({
+    matches: q.includes('reduce'), addEventListener() {}, removeEventListener() {},
+  }));
+  vi.stubGlobal('scrollTo', vi.fn());
+  localStorage.clear();
+  document.title = '';
+  host = document.createElement('div');
+  document.body.append(host);
+  act(() => { render(h(App, null), host); });
+});
+
+afterEach(() => {
+  act(() => { render(null, host); });
+  host.remove();
+  vi.unstubAllGlobals();
+});
+
+test('renders the loading skeleton before any snapshot arrives', () => {
+  expect(host.querySelector('.skeleton-wrapper')).not.toBeNull();
+  expect(host.textContent).toContain('Loading…');
+});
+
+test('a connection error with no data yet shows the unreachable state, not a stuck skeleton', () => {
+  act(() => { es().onerror?.(); });
+  // The skeleton would otherwise sit on top of an error banner nobody can see.
+  expect(host.querySelector('.skeleton-wrapper')).toBeNull();
+  expect(host.textContent).toContain('Server unreachable.');
+  expect(host.querySelector('.shell-retry')).not.toBeNull();
+});
+
+test('the connect event renders the board and the in-flight/done counters', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] }, doneTotal: 4 })); });
+
+  expect(host.querySelector('.dashboard')).not.toBeNull();
+  expect(host.textContent).toContain('Fix the thing');
+  const stats = host.querySelector('.header-stats')!.textContent!;
+  expect(stats).toContain('1');
+  expect(stats).toContain('in flight');
+  expect(stats).toContain('4');
+});
+
+test('the tab title carries the needs-attention count and clears when it empties', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), needs_attention: [item({ bucket: 'needs_attention' }), item({ key: 'P-2', bucket: 'needs_attention' })] } })); });
+  expect(document.title).toBe('(2) simon');
+
+  act(() => { es().emit(snap({ updatedAt: '2026-08-01T00:05:00Z' })); });
+  expect(document.title).toBe('simon');
+});
+
+test('a fresh snapshot with newlyDone raises the celebration toast, which is dismissable', () => {
+  act(() => { es().emit(snap()); });                                    // connect replay: no toast
+  expect(host.querySelector('.celebration-toast')).toBeNull();
+
+  act(() => { es().emit(snap({ updatedAt: '2026-08-01T00:05:00Z', newlyDone: ['P-9'] })); });
+  const toast = host.querySelector('.celebration-toast')!;
+  expect(toast.textContent).toContain('P-9 done');
+
+  act(() => { host.querySelector('.celebration-toast-dismiss')!.dispatchEvent(new Event('click', { bubbles: true })); });
+  expect(host.querySelector('.celebration-toast')).toBeNull();
+});
+
+test('the connect replay does not celebrate a persisted newlyDone', () => {
+  // newlyDone survives in the persisted snapshot until the next refresh, so
+  // the very first event of a page load must not fire the toast.
+  act(() => { es().emit(snap({ newlyDone: ['P-9'] })); });
+  expect(host.querySelector('.celebration-toast')).toBeNull();
+});
+
+test('partial-source failures surface as banners without hiding the board', () => {
+  act(() => { es().emit(snap({ errors: { jira: 'Jira 500', github: null }, buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+
+  expect(host.textContent).toContain('Jira fetch failed: Jira 500');
+  expect(host.querySelector('.dashboard')).not.toBeNull();
+  expect(host.textContent).toContain('Fix the thing');
+});
+
+// --- detail panel + actions ---
+
+function selectFirstRow() {
+  act(() => { host.querySelector('.pr-row')!.dispatchEvent(new Event('click', { bubbles: true })); });
+}
+
+test('selecting a row opens the detail panel', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  expect(host.querySelector('.pr-detail-fields')).toBeNull();
+
+  selectFirstRow();
+  expect(host.querySelector('.pr-detail-fields')).not.toBeNull();
+});
+
+test('Unpin is offered only for a pinned card, and posts type: unpin', async () => {
+  // Typed params so mock.calls carries the (url, init) tuple rather than [].
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve({ ok: true, json: () => Promise.resolve(snap()) }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  selectFirstRow();
+  const unpinnedButtons = [...host.querySelectorAll('button')].map(b => b.textContent);
+  expect(unpinnedButtons).not.toContain('Unpin');
+
+  // Same card, now pinned — the affordance appears without any local state.
+  act(() => {
+    es().emit(snap({
+      updatedAt: '2026-08-01T00:05:00Z',
+      buckets: { ...emptyBuckets(), in_qa: [item({ bucket: 'in_qa', pinned: true, pinnedAt: '2026-07-30T00:00:00Z' })] },
+    }));
+  });
+  const unpin = [...host.querySelectorAll('button')].find(b => b.textContent === 'Unpin');
+  expect(unpin).toBeDefined();
+
+  await act(async () => { unpin!.dispatchEvent(new Event('click', { bubbles: true })); });
+
+  const actionCall = fetchMock.mock.calls.find(([url]) => String(url) === '/api/action');
+  expect(actionCall).toBeDefined();
+  const init = actionCall![1] as { method: string; headers: Record<string, string>; body: string };
+  expect(init.method).toBe('POST');
+  expect(init.headers['content-type']).toBe('application/json');
+  expect(JSON.parse(init.body)).toEqual({ type: 'unpin', key: 'P-1' });
+});
+
+test('a pinned card shows when it was pinned', () => {
+  act(() => {
+    es().emit(snap({
+      buckets: { ...emptyBuckets(), in_qa: [item({ bucket: 'in_qa', pinned: true, pinnedAt: new Date(Date.now() - 2 * 86400000).toISOString() })] },
+    }));
+  });
+  selectFirstRow();
+
+  const labels = [...host.querySelectorAll('.pr-detail-field-label')].map(l => l.textContent);
+  expect(labels).toContain('Pinned');
+  const pinnedRow = [...host.querySelectorAll('.pr-detail-field')].find(f => f.textContent?.startsWith('Pinned'))!;
+  expect(pinnedRow.textContent).toContain('In QA');
+  expect(pinnedRow.textContent).toContain('2d ago');
+});
+
+test('a failed action surfaces a dismissable error banner', async () => {
+  const fetchSpy = vi.fn(() => Promise.resolve({
+    ok: false, status: 400, json: () => Promise.resolve({ error: 'bucket must be one of …' }),
+  }));
+  vi.stubGlobal('fetch', fetchSpy);
+
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  selectFirstRow();
+  const ackBtn = [...host.querySelectorAll('button')].find(b => b.textContent === 'Acknowledge')!;
+  await act(async () => { ackBtn.dispatchEvent(new Event('click', { bubbles: true })); });
+  // act() flushes the click, but the error is set two microtasks deep (the
+  // fetch promise, then res.json()); a second empty flush lets that settle.
+  await act(async () => {});
+
+  expect(fetchSpy).toHaveBeenCalled();
+  expect(host.textContent).toContain('Action failed: bucket must be one of');
+  act(() => { host.querySelector('.error-banner-dismiss')!.dispatchEvent(new Event('click', { bubbles: true })); });
+  expect(host.textContent).not.toContain('Action failed');
+});
+
+test('unmounting closes the event stream', () => {
+  act(() => { render(null, host); });
+  expect(es().closed).toBe(true);
+});
