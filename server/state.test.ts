@@ -1,7 +1,7 @@
 import { test, expect, vi } from 'vitest';
 import { loadState, saveState, cardState, emptyState, emptySnapshot } from './state.ts';
 import { buildSnapshot } from './refresh.ts';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Config } from './types.ts';
@@ -151,4 +151,58 @@ test('loadState drops a null card entry without discarding the rest of the file'
   expect(s.cards['P-1']).toBeUndefined();
   expect(s.cards['P-2']!.override).toBe('in_qa');
   expect(s.lastRefreshAt).toBe('2026-07-08T00:00:00Z');
+});
+
+// --- crash durability: state.json must never be absent mid-save ---
+
+// Contract check, not a regression guard: copy-vs-rename differs only in
+// what a crash mid-save leaves behind, which isn't observable from outside.
+// The recovery test below is what actually holds that fix in place.
+test('saveState leaves both a live state.json and a prior-generation .bak', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-durable-'));
+  const path = join(dir, 'state.json');
+  const s = emptyState();
+  cardState(s, 'PROJ-1').override = 'in_qa';
+  saveState(path, s);
+  expect(existsSync(path)).toBe(true);
+
+  cardState(s, 'PROJ-2').override = 'mergeable';
+  saveState(path, s);
+
+  expect(existsSync(path)).toBe(true);
+  expect(existsSync(path + '.bak')).toBe(true);
+  const bak = JSON.parse(readFileSync(path + '.bak', 'utf8')) as { cards: Record<string, { override?: string }> };
+  expect(bak.cards['PROJ-1']?.override).toBe('in_qa'); // .bak holds the prior generation
+  expect(bak.cards['PROJ-2']).toBeUndefined();
+  expect(loadState(path).cards['PROJ-2']?.override).toBe('mergeable');
+});
+
+test('loadState recovers from .bak when state.json is missing entirely', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-recover-'));
+  const path = join(dir, 'state.json');
+  const s = emptyState();
+  cardState(s, 'PROJ-9').override = 'qa_ready';
+  saveState(path, s);
+  saveState(path, s); // second save populates .bak
+
+  // Simulate a crash that left only the backup behind.
+  rmSync(path);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(loadState(path).cards['PROJ-9']?.override).toBe('qa_ready');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recovered from'));
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test('a genuinely first-run load stays silent and empty', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'jd-firstrun-')), 'state.json');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(loadState(path).cards).toEqual({});
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
 });

@@ -94,7 +94,14 @@ export async function run(argv: string[], { config, statePath, configPath }: {
   }
   if (cmd === 'open') {
     const url = `http://localhost:${config.port}`;
-    spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+    // Platform-appropriate opener: the macOS-only `open` binary printed
+    // "Opening …" and exited 0 on Linux/Windows while opening nothing, and
+    // its missing 'error' listener turned the ENOENT into an unhandled
+    // 'error' event (a raw stack trace) whenever anything delayed the exit.
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    const child = spawn(opener, [url], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' });
+    child.on('error', (e) => console.error(`could not launch ${opener}: ${e.message} — open ${url} yourself`));
+    child.unref();
     return { code: 0, out: `Opening ${url}`, err: '' };
   }
 

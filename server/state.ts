@@ -70,20 +70,35 @@ function migratePrLog(state: State): State {
 // unparseable file is a corruption signal: warn and fall back to the
 // rotating .bak written by saveState, rather than silently losing overrides.
 export function loadState(path: string): State {
+  const hydrate = (json: string): State =>
+    withNullProtoCards(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(json) })));
+  const fromBak = (): State | null => {
+    try { return hydrate(readFileSync(path + '.bak', 'utf8')); }
+    catch { return null; }
+  };
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
-  catch { return emptyState(); }
-  try { return withNullProtoCards(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(raw) }))); }
+  catch {
+    // A missing state file is the normal first-run case, so no warning when
+    // there's no .bak either. But it's ALSO what an interrupted save used to
+    // leave behind, and treating that as first-run silently discarded every
+    // override, ack horizon and the whole prLog with a good backup sitting
+    // right next to it — so check for one before concluding there's nothing.
+    const recovered = fromBak();
+    if (!recovered) return emptyState();
+    console.warn(`simon-dash: state file at ${path} is missing; recovered from ${path}.bak`);
+    return recovered;
+  }
+  try { return hydrate(raw); }
   catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.warn(`simon-dash: state file at ${path} is unparseable (${message}); falling back to ${path}.bak`);
-    try { return withNullProtoCards(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(readFileSync(path + '.bak', 'utf8')) }))); }
-    catch { return emptyState(); }
+    return fromBak() ?? emptyState();
   }
 }
 
-// Only rotate the current file into .bak when it actually parses as JSON.
-// Rotating a corrupt current file would overwrite a still-good .bak with
+// Only copy the current file into .bak when it actually parses as JSON.
+// Backing up a corrupt current file would overwrite a still-good .bak with
 // garbage, destroying the one fallback loadState relies on.
 export function saveState(path: string, state: State): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -93,7 +108,13 @@ export function saveState(path: string, state: State): void {
   if (current !== null) {
     let valid = true;
     try { JSON.parse(current); } catch { valid = false; }
-    if (valid) renameSync(path, path + '.bak');
+    // Copy, not rename. Renaming the live file out of the way left NO
+    // state.json at all until the tmp rename below landed; a crash in that
+    // window was unrecoverable data loss. Writing a copy keeps a valid
+    // state.json present at every instant: during the .bak write and the tmp
+    // write the original is untouched, and the swap itself is one atomic
+    // rename. A torn .bak costs nothing — state.json is still good.
+    if (valid) writeFileSync(path + '.bak', current);
   }
   const tmp = path + '.tmp';
   writeFileSync(tmp, JSON.stringify(state, null, 2));

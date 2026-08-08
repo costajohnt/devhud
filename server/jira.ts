@@ -20,7 +20,14 @@ export function adfToText(node: AdfNode | string | null | undefined): string {
   return node.type === 'paragraph' ? inner + '\n' : inner;
 }
 
-const iso = (t: string | undefined | null): string | null => t ? new Date(t).toISOString() : null;
+// null (not a throw) for an unparseable timestamp: `new Date(junk).toISOString()`
+// raises RangeError, and one malformed field on one comment would otherwise
+// fail the entire Jira fetch and drop the board back to state.lastCards.
+const iso = (t: string | undefined | null): string | null => {
+  if (!t) return null;
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
 
 // Recently-updated Done-category cards (within 14 days) are still fetched so a
 // card that just reached Done flows into doneCards / celebration once before
@@ -83,7 +90,10 @@ export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
 // embedded comment list), refetch the newest 50 from the dedicated comment
 // endpoint so attention-worthy recent comments aren't silently dropped.
 async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): Promise<JiraComment[]> {
-  const url = new URL(`/rest/api/3/issue/${key}/comment`, cfg.baseUrl);
+  // encodeURIComponent to match writeback.ts's handling of the same kind of
+  // key. The key comes from Jira's own search response rather than a caller,
+  // so this is consistency rather than a live exposure.
+  const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, cfg.baseUrl);
   url.searchParams.set('orderBy', '-created');
   url.searchParams.set('maxResults', '50');
   const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
@@ -97,7 +107,7 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
   }));
 }
 
-export async function fetchJiraCards(cfg: JiraConfig, extraKeys: string[] = []): Promise<Card[]> {
+export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
   const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
   const fields = 'summary,status,fixVersions,description,created,updated,comment';
   const cards: Card[] = [];
@@ -131,19 +141,6 @@ export async function fetchJiraCards(cfg: JiraConfig, extraKeys: string[] = []):
     await processIssues(data.issues ?? []);
     nextPageToken = data.nextPageToken;
   } while (nextPageToken);
-
-  const missingKeys = Array.from(new Set(extraKeys)).filter(k => !seenKeys.has(k));
-  if (missingKeys.length) {
-    const url = new URL('/rest/api/3/search/jql', cfg.baseUrl);
-    url.searchParams.set('jql', `key in (${missingKeys.map(k => `"${k}"`).join(',')})`);
-    url.searchParams.set('fields', fields);
-    url.searchParams.set('maxResults', '50');
-    const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-    if (res.ok) {
-      const data = await res.json() as { issues?: RawJiraIssue[] };
-      await processIssues(data.issues ?? []);
-    }
-  }
 
   return cards;
 }

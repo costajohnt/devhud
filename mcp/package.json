@@ -2,6 +2,7 @@
   "name": "simon-dash-mcp",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=22.18" },
   "bin": { "simon-dash-mcp": "./index.ts" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
