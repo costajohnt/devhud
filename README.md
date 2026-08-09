@@ -26,6 +26,7 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 - **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
 - **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
 - **Celebration**: confetti and a toast the first time a PR is observed merged.
+- **Attention notifications** (opt-in): toggle the 🔕 bell in the header to get a desktop notification when a card newly enters Needs Attention. Only fires while the tab is hidden — a board you're looking at already shows the card — and never replays what was already there when the page loaded. Off until you turn it on, and the browser's permission prompt appears on that click rather than at page load.
 - **Write-back** (opt-in, off by default): transition a Jira card, comment on a card, or comment on a PR via the CLI or MCP tools. See the Write-back section below.
 
 ## Demo mode
