@@ -236,3 +236,126 @@ test('unmounting closes the event stream', () => {
   act(() => { render(null, host); });
   expect(es().closed).toBe(true);
 });
+
+// --- attention notifications ---
+
+// Minimal Notification stand-in: happy-dom has none, and the app must also
+// behave when a browser doesn't either (the bell hides entirely).
+class StubNotification {
+  static permission = 'default';
+  static requested = 0;
+  static grantOnRequest = 'granted';
+  static fired: { title: string; body?: string; tag?: string }[] = [];
+  onclick: (() => void) | null = null;
+  constructor(public title: string, public options?: { body?: string; tag?: string }) {
+    StubNotification.fired.push({ title, ...options });
+  }
+  close() {}
+  static requestPermission() {
+    StubNotification.requested++;
+    StubNotification.permission = StubNotification.grantOnRequest;
+    return Promise.resolve(StubNotification.permission);
+  }
+}
+
+function installNotification(permission = 'default', grantOnRequest = 'granted') {
+  StubNotification.permission = permission;
+  StubNotification.grantOnRequest = grantOnRequest;
+  StubNotification.requested = 0;
+  StubNotification.fired = [];
+  vi.stubGlobal('Notification', StubNotification);
+}
+
+// document.hidden is a getter in happy-dom; redefine it per-test.
+function setHidden(hidden: boolean) {
+  Object.defineProperty(document, 'hidden', { value: hidden, configurable: true });
+}
+
+function remount() {
+  act(() => { render(null, host); });
+  StubEventSource.instances.length = 0;
+  act(() => { render(h(App, null), host); });
+}
+
+const attentionSnap = (keys: string[], updatedAt = '2026-08-01T00:05:00Z') => snap({
+  updatedAt,
+  buckets: { ...emptyBuckets(), needs_attention: keys.map(k => item({ key: k, bucket: 'needs_attention' })) },
+});
+
+test('the bell is hidden entirely when the browser has no Notification API', () => {
+  act(() => { es().emit(snap()); });
+  const labels = [...host.querySelectorAll('button')].map(b => b.getAttribute('aria-label'));
+  expect(labels.some(l => l?.includes('notifications'))).toBe(false);
+});
+
+test('turning the bell on requests permission once and remembers the choice', async () => {
+  installNotification('default');
+  remount();
+  act(() => { es().emit(snap()); });
+
+  const bell = () => [...host.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.includes('notifications'))!;
+  expect(bell().getAttribute('aria-pressed')).toBe('false');
+
+  await act(async () => { bell().dispatchEvent(new Event('click', { bubbles: true })); });
+  await act(async () => {}); // requestPermission resolves a tick after the click
+  expect(StubNotification.requested).toBe(1);
+  expect(bell().getAttribute('aria-pressed')).toBe('true');
+  expect(localStorage.getItem('simon-dash-notify')).toBe('1');
+
+  // Off again, without re-prompting.
+  await act(async () => { bell().dispatchEvent(new Event('click', { bubbles: true })); });
+  await act(async () => {});
+  expect(bell().getAttribute('aria-pressed')).toBe('false');
+  expect(localStorage.getItem('simon-dash-notify')).toBe('0');
+  expect(StubNotification.requested).toBe(1);
+});
+
+test('a blocked permission explains itself instead of silently doing nothing', async () => {
+  installNotification('default', 'denied');
+  remount();
+  act(() => { es().emit(snap()); });
+
+  const bell = [...host.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.includes('notifications'))!;
+  await act(async () => { bell.dispatchEvent(new Event('click', { bubbles: true })); });
+  await act(async () => {});
+
+  expect(host.textContent).toContain('Notifications are blocked for this site');
+  expect(localStorage.getItem('simon-dash-notify')).not.toBe('1');
+});
+
+test('a card entering needs_attention on a hidden tab fires one notification', () => {
+  installNotification('granted');
+  localStorage.setItem('simon-dash-notify', '1');
+  remount();
+  setHidden(true);
+
+  act(() => { es().emit(attentionSnap(['P-1'], '2026-08-01T00:00:00Z')); }); // connect replay: baseline
+  expect(StubNotification.fired).toEqual([]);
+
+  act(() => { es().emit(attentionSnap(['P-1', 'P-2'])); });
+  expect(StubNotification.fired).toHaveLength(1);
+  expect(StubNotification.fired[0]!.title).toBe('P-2 needs attention');
+  expect(StubNotification.fired[0]!.tag).toBe('simon-dash-attention');
+});
+
+test('nothing fires while the tab is visible', () => {
+  installNotification('granted');
+  localStorage.setItem('simon-dash-notify', '1');
+  remount();
+  setHidden(false);
+
+  act(() => { es().emit(attentionSnap([], '2026-08-01T00:00:00Z')); });
+  act(() => { es().emit(attentionSnap(['P-1'])); });
+  expect(StubNotification.fired).toEqual([]);
+});
+
+test('a granted permission revoked in site settings leaves the bell off', () => {
+  // localStorage still says on, but the browser no longer agrees.
+  installNotification('denied');
+  localStorage.setItem('simon-dash-notify', '1');
+  remount();
+  act(() => { es().emit(snap()); });
+
+  const bell = [...host.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.includes('notifications'))!;
+  expect(bell.getAttribute('aria-pressed')).toBe('false');
+});

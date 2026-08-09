@@ -8,6 +8,10 @@ import { DonePage } from './done.js';
 import { fireConfetti } from './celebrate.js';
 import { SkeletonLoader } from './skeleton-loader.js';
 import { LazyChartPanel } from './chart-panel-lazy.js';
+import {
+  decideNotification, showAttentionNotification, notificationsSupported,
+  notificationPermission, requestNotificationPermission,
+} from './notify.js';
 
 // How often the header re-renders so the relative "Updated Xm ago" label
 // ticks — purely cosmetic, no network calls ride this interval.
@@ -15,6 +19,7 @@ const RELATIVE_TIME_TICK_MS = 30_000;
 
 const THEME_KEY = 'simon-dash-theme';
 const LEGACY_THEME_KEY = 'jira-dash-theme';
+const NOTIFY_KEY = 'simon-dash-notify';
 
 // No explicit user preference stored yet: fall back to the OS setting. Mirrors
 // the pre-paint script in index.html so the very first render already agrees
@@ -57,6 +62,12 @@ function AppContent() {
   const [theme, setTheme] = useState(getInitialTheme);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Off unless explicitly turned on, and only meaningful while the browser
+  // still says granted — a permission revoked in site settings must not leave
+  // the bell showing "on" for a channel that can no longer deliver.
+  const [notifyOn, setNotifyOn] = useState(() =>
+    localStorage.getItem(NOTIFY_KEY) === '1' && notificationPermission() === 'granted');
+  const [notifyError, setNotifyError] = useState<string | null>(null);
 
   useEffect(() => {
     onRefreshed.current = (d) => {
@@ -89,6 +100,24 @@ function AppContent() {
     document.title = n > 0 ? `(${n}) simon` : 'simon';
   }, [data]);
 
+  // Desktop notification when a card newly enters Needs Attention. The title
+  // badge above only helps if the tab is on screen; this is what makes
+  // leave-it-running mode work when it isn't. All the rules (skip the connect
+  // replay, key-based rather than count-based, only while hidden) live in
+  // decideNotification — see notify.ts.
+  const seenAttention = useRef<string[] | undefined>(undefined);
+  useEffect(() => {
+    if (!data) return;
+    const cards = data.buckets.needs_attention.map(i => ({ key: i.key, summary: i.summary }));
+    const { fire, next } = decideNotification(seenAttention.current, cards, {
+      enabled: notifyOn,
+      permission: notificationPermission(),
+      hidden: document.hidden,
+    });
+    seenAttention.current = next;
+    showAttentionNotification(fire);
+  }, [data, notifyOn]);
+
   // Scroll to top on every route change (e.g. Board <-> Done).
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -110,6 +139,26 @@ function AppContent() {
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
+
+  // Opt-in and remembered. Turning it on requests permission first: a browser
+  // prompt fired on page load (rather than on a click) is the pattern users
+  // reflexively block, and a denial is permanent for the origin.
+  const flipNotify = async () => {
+    if (notifyOn) {
+      localStorage.setItem(NOTIFY_KEY, '0');
+      setNotifyOn(false);
+      return;
+    }
+    const permission = await requestNotificationPermission();
+    if (permission !== 'granted') {
+      setNotifyError(permission === 'denied'
+        ? 'Notifications are blocked for this site — re-allow them in your browser settings.'
+        : 'Notification permission was not granted.');
+      return;
+    }
+    localStorage.setItem(NOTIFY_KEY, '1');
+    setNotifyOn(true);
+  };
 
   const flipTheme = () => {
     const t = theme === 'dark' ? 'light' : 'dark';
@@ -184,6 +233,20 @@ function AppContent() {
             <button class="celebrate-btn" onClick={() => { fireConfetti(); }} type="button" aria-label="Celebrate" title="Celebrate">
               🎉
             </button>
+            {notificationsSupported() && (
+              <button
+                class="theme-toggle"
+                onClick={() => { void flipNotify(); }}
+                type="button"
+                aria-pressed={notifyOn}
+                aria-label={notifyOn ? 'Turn off attention notifications' : 'Turn on attention notifications'}
+                title={notifyOn
+                  ? 'Notifying when a card needs attention'
+                  : 'Notify me when a card needs attention'}
+              >
+                {notifyOn ? '🔔' : '🔕'}
+              </button>
+            )}
             <button class="theme-toggle" onClick={flipTheme} type="button" aria-label="Toggle theme">
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
@@ -194,6 +257,14 @@ function AppContent() {
         </div>
       </header>
       {connError && <div class="error-banner" role="alert"><span>Refresh failed ({connError}) — showing last data.</span></div>}
+      {notifyError && (
+        <div class="error-banner" role="alert">
+          <span>{notifyError}</span>
+          <button class="error-banner-dismiss" type="button" onClick={() => setNotifyError(null)} aria-label="Dismiss">
+            &times;
+          </button>
+        </div>
+      )}
       {actionError && (
         <div class="error-banner" role="alert">
           <span>{actionError}</span>
