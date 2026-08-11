@@ -2114,3 +2114,34 @@ a:hover {
   white-space: nowrap;
   border: 0;
 }
+
+/* === Simon runs page === */
+
+.header-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.header-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.pill--green {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.simon-run-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.simon-section-title {
+  font-size: 0.9375rem;
+  margin: var(--sp-4) 0 var(--sp-2);
+  color: var(--text-primary);
+}

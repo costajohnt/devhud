@@ -24,6 +24,10 @@
     "John",
     "Rovo"
   ],
+  "simon": {
+    "root": "/absolute/path/to/simon/scaffold",
+    "bin": "simon"
+  },
   "port": 3010,
   "refreshIntervalSeconds": 120,
   "demo": false,

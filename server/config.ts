@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Config, JiraStatuses } from './types.ts';
 
@@ -27,6 +28,7 @@ interface RawConfig {
   writeEnabled?: boolean;
   refreshIntervalSeconds?: number;
   ignoreAuthors?: string[];
+  simon?: { root?: string; bin?: string };
 }
 
 export function loadConfig(path: string = fileURLToPath(new URL('../config.json', import.meta.url))): Config {
@@ -110,6 +112,14 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       (!Number.isInteger(c.refreshIntervalSeconds) || c.refreshIntervalSeconds < 1)) {
     throw new Error(`config at ${path} has an invalid "refreshIntervalSeconds" (${JSON.stringify(c.refreshIntervalSeconds)}); must be a positive integer`);
   }
+  // Optional Simon executor block: when present, root is required and must be
+  // absolute — it flows into readdir/resolve calls (server/simon.ts) where a
+  // relative path would silently depend on the server's cwd.
+  if (c.simon !== undefined) {
+    if (!c.simon.root || !isAbsolute(c.simon.root)) {
+      throw new Error(`config at ${path} has an invalid "simon.root" (${JSON.stringify(c.simon.root)}); must be an absolute path`);
+    }
+  }
   // Off by default: write-back (Jira transitions/comments, PR comments) must
   // be explicitly opted into. See server/writeback.ts's checkWriteGate.
   return {
@@ -127,5 +137,6 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     writeEnabled: Boolean(c.writeEnabled),
     refreshIntervalSeconds: c.refreshIntervalSeconds,
     ignoreAuthors: Array.isArray(c.ignoreAuthors) ? c.ignoreAuthors : DEFAULT_IGNORE_AUTHORS,
+    simon: c.simon ? { root: c.simon.root!, bin: c.simon.bin || 'simon' } : undefined,
   };
 }

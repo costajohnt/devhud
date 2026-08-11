@@ -5,6 +5,7 @@ import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.j
 import { Detail } from './detail.js';
 import { Extras } from './extras.js';
 import { DonePage } from './done.js';
+import { SimonRunsPage, SimonRunPage } from './simon.js';
 import { fireConfetti } from './celebrate.js';
 import { SkeletonLoader } from './skeleton-loader.js';
 import { LazyChartPanel } from './chart-panel-lazy.js';
@@ -227,6 +228,8 @@ function AppContent() {
             <span><span class="val" style={{ color: 'var(--green)' }}>{inFlight}</span> in flight</span>
             <span class="header-sep" />
             <span><span class="val" style={{ color: 'var(--purple)' }}>{data.doneTotal}</span> done</span>
+            <span class="header-sep" />
+            <a class="header-link" href="/simon">runs</a>
           </div>
           <div class="header-right">
             <span class="last-updated">{formatUpdated(data.updatedAt)}</span>
@@ -278,6 +281,10 @@ function AppContent() {
       <main id="main-content" class="dashboard-main">
         {path === '/done' ? (
           <DonePage data={data} />
+        ) : path === '/simon' ? (
+          <SimonRunsPage />
+        ) : path.startsWith('/simon/') ? (
+          <SimonRunPage id={decodeURIComponent(path.slice('/simon/'.length))} />
         ) : path === '/' ? (
           <>
             <BoardStats data={data} />

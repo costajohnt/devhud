@@ -664,3 +664,14 @@ test('server.close() ends open event streams instead of hanging on them', async 
   // server alive this await would never resolve.
   await new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
 });
+
+test('GET /api/simon/runs without simon config reports unconfigured', async () => {
+  const r = await fetch(`${base}/api/simon/runs`);
+  expect(r.status).toBe(200);
+  expect(await r.json()).toEqual({ configured: false, runs: [] });
+});
+
+test('GET /api/simon/runs/:id 404s for unknown or unconfigured runs', async () => {
+  const r = await fetch(`${base}/api/simon/runs/2026-01-01T000000Z-P-1`);
+  expect(r.status).toBe(404);
+});

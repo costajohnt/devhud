@@ -39,9 +39,19 @@ export interface GithubConfig {
   username: string;
 }
 
+// Optional pointer at a local Simon executor scaffold (the Go orchestrator's
+// SIMON_ROOT). When absent, the /simon page renders an "unconfigured" card and
+// the /api/simon/* routes return { configured: false }.
+export interface SimonConfig {
+  root: string;
+  // Binary invoked for `status --json` classification; defaults to "simon".
+  bin: string;
+}
+
 export interface Config {
   jira: JiraConfig;
   github: GithubConfig;
+  simon?: SimonConfig;
   port: number;
   demo: boolean;
   writeEnabled: boolean;
@@ -221,6 +231,39 @@ export interface Snapshot {
   newlyDone: string[];
   recentActivity: ActivityEntry[];
   prLog: PrLogEntry[];
+}
+
+// --- Simon executor runs (/api/simon/*) ---
+
+// One line of a run ledger (state/runs/<id>.jsonl). Only ts/event are
+// guaranteed; everything else is event-specific and passed through verbatim.
+export type SimonEvent = { ts: string; event: string } & Record<string, unknown>;
+
+export interface SimonRunSummary {
+  id: string;              // ledger basename minus .jsonl: <UTC-ts>-<KEY>
+  key: string;             // work-item key from run_start (fallback: parsed from id)
+  startedAt: string | null;
+  endedAt: string | null;  // run_end ts, null while in flight
+  outcome: string | null;  // run_end outcome
+  haltedAt: string | null; // run_end halted_at
+  phase: string | null;    // last phase_start's phase
+  class: string | null;    // attention class from `simon status --json`, or fallback label
+  durationS: number | null;
+  lastEventAt: string | null;
+}
+
+export interface SimonRunsPayload {
+  configured: boolean;
+  runs: SimonRunSummary[];
+  // Present when `simon status --json` failed (binary missing etc.); classes
+  // in `runs` then come from the ledger fallback.
+  statusError?: string;
+}
+
+export interface SimonRunDetail {
+  id: string;
+  key: string;
+  events: SimonEvent[];
 }
 
 // --- Local state (data/state.json) ---

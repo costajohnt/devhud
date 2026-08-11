@@ -217,3 +217,30 @@ test('throws a readable error for a non-positive or non-integer refreshIntervalS
     expect(() => loadConfig(p)).toThrow(/invalid "refreshIntervalSeconds"/);
   }
 });
+
+test('simon block: defaults bin, requires absolute root', () => {
+  const p = join(dir, 'simon-ok.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+    simon: { root: '/tmp/simon-scaffold' },
+  }));
+  expect(loadConfig(p).simon).toEqual({ root: '/tmp/simon-scaffold', bin: 'simon' });
+
+  const bad = join(dir, 'simon-bad.json');
+  writeFileSync(bad, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+    simon: { root: 'relative/path' },
+  }));
+  expect(() => loadConfig(bad)).toThrow(/simon\.root/);
+});
+
+test('config without a simon block leaves it undefined', () => {
+  const p = join(dir, 'simon-absent.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  expect(loadConfig(p).simon).toBeUndefined();
+});
