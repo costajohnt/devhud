@@ -675,3 +675,9 @@ test('GET /api/simon/runs/:id 404s for unknown or unconfigured runs', async () =
   const r = await fetch(`${base}/api/simon/runs/2026-01-01T000000Z-P-1`);
   expect(r.status).toBe(404);
 });
+
+test('GET /api/simon/runs/:id with malformed percent-encoding returns 404, not 500', async () => {
+  const r = await fetch(`${base}/api/simon/runs/%zz`);
+  expect(r.status).toBe(404);
+  expect(await r.json()).toEqual({ error: 'run not found' });
+});

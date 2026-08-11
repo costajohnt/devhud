@@ -6,7 +6,7 @@
 // interpretation happens client-side (web/src/simon-run-fold.ts).
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import type { Config, SimonEvent, SimonRunDetail, SimonRunsPayload, SimonRunSummary } from './types.ts';
 
@@ -21,15 +21,25 @@ const STALE_AFTER_MS = 10 * 60 * 1000;
 // either not a run id or a path-traversal attempt.
 const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
 
+// Run ids are <UTC-ts>-<KEY> with a fixed-width timestamp prefix in Go's
+// 2006-01-02T150405Z reference form (e.g. 2026-08-01T100000Z-PROJ-1).
+const RUN_ID_TS_PREFIX_RE = /^\d{4}-\d{2}-\d{2}T\d{6}Z-/;
+
 function runsDir(root: string): string {
   return join(root, 'state', 'runs');
 }
 
+// Fallback when a ledger has no run_start line (truncated first line, run
+// crashed before flush): recover the work-item key from the id itself.
+function keyFromId(id: string): string {
+  return id.replace(RUN_ID_TS_PREFIX_RE, '');
+}
+
 // Malformed/blank lines are skipped, not fatal: the ledger is telemetry and
 // the Go side treats read tolerance as caller policy.
-function parseLedger(path: string): SimonEvent[] {
+async function parseLedger(path: string): Promise<SimonEvent[]> {
   const events: SimonEvent[] = [];
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
+  for (const line of (await readFile(path, 'utf8')).split('\n')) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as SimonEvent;
@@ -53,9 +63,7 @@ function summarize(id: string, events: SimonEvent[]): SimonRunSummary {
     : null;
   return {
     id,
-    // run_start carries the key; fall back to parsing the id, whose ts prefix
-    // is fixed-width (2006-01-02T150405Z form, 17 chars + hyphen).
-    key: typeof start?.key === 'string' ? start.key : id.replace(/^[^-]*Z-/, ''),
+    key: typeof start?.key === 'string' ? start.key : keyFromId(id),
     startedAt,
     endedAt,
     outcome: typeof end?.outcome === 'string' ? end.outcome : null,
@@ -68,10 +76,13 @@ function summarize(id: string, events: SimonEvent[]): SimonRunSummary {
 }
 
 // Fallback class when `simon status --json` is unavailable: terminal runs get
-// their outcome verbatim; live ones split on ledger staleness.
+// their outcome verbatim; live ones split on ledger staleness. An unparsable
+// or missing last timestamp counts as stale — unknown recency must not read
+// as alive, or a corrupt ledger shows in_flight forever.
 function fallbackClass(run: SimonRunSummary, now: number): string {
   if (run.endedAt) return run.outcome ?? 'ended';
-  if (run.lastEventAt && now - Date.parse(run.lastEventAt) > STALE_AFTER_MS) return 'stale';
+  const last = run.lastEventAt ? Date.parse(run.lastEventAt) : NaN;
+  if (Number.isNaN(last) || now - last > STALE_AFTER_MS) return 'stale';
   return 'in_flight';
 }
 
@@ -90,10 +101,16 @@ async function statusClasses(cfg: NonNullable<Config['simon']>, execFn: ExecFn):
 
 export async function listRuns(config: Config, execFn: ExecFn = execFile): Promise<SimonRunsPayload> {
   if (!config.simon) return { configured: false, runs: [] };
+  // Kick off the subprocess before the ledger scan: the two are independent,
+  // so the exec round trip (up to its 5s timeout) overlaps the file reads.
+  const classesPromise = statusClasses(config.simon, execFn);
+  // A rejection that lands while we're still scanning must not become an
+  // unhandled rejection; the real error is picked up at the await below.
+  classesPromise.catch(() => {});
   const dir = runsDir(config.simon.root);
   let names: string[];
   try {
-    names = readdirSync(dir).filter(n => n.endsWith('.jsonl'));
+    names = (await readdir(dir)).filter(n => n.endsWith('.jsonl'));
   } catch {
     // Runs dir missing is the day-one state (no runs yet), not an error.
     return { configured: true, runs: [] };
@@ -101,7 +118,7 @@ export async function listRuns(config: Config, execFn: ExecFn = execFile): Promi
   const runs: SimonRunSummary[] = [];
   for (const name of names) {
     try {
-      runs.push(summarize(name.slice(0, -6), parseLedger(join(dir, name))));
+      runs.push(summarize(name.slice(0, -6), await parseLedger(join(dir, name))));
     } catch { /* unreadable ledger: skip rather than fail the whole list */ }
   }
   // Timestamp-prefixed ids sort lexicographically; newest first.
@@ -110,7 +127,7 @@ export async function listRuns(config: Config, execFn: ExecFn = execFile): Promi
   let statusError: string | undefined;
   let classes = new Map<string, string>();
   try {
-    classes = await statusClasses(config.simon, execFn);
+    classes = await classesPromise;
   } catch (e) {
     statusError = (e as Error).message;
   }
@@ -128,7 +145,7 @@ export async function listRuns(config: Config, execFn: ExecFn = execFile): Promi
   return payload;
 }
 
-export function readRun(config: Config, id: string): SimonRunDetail | null {
+export async function readRun(config: Config, id: string): Promise<SimonRunDetail | null> {
   if (!config.simon || !RUN_ID_RE.test(id)) return null;
   const dir = resolve(runsDir(config.simon.root));
   // Same containment guard as the static-file branch in index.ts: the regex
@@ -137,14 +154,14 @@ export function readRun(config: Config, id: string): SimonRunDetail | null {
   if (!p.startsWith(dir + sep)) return null;
   let events: SimonEvent[];
   try {
-    events = parseLedger(p);
+    events = await parseLedger(p);
   } catch {
     return null;
   }
   const start = events.find(e => e.event === 'run_start');
   return {
     id,
-    key: typeof start?.key === 'string' ? start.key : id.replace(/^[^-]*Z-/, ''),
+    key: typeof start?.key === 'string' ? start.key : keyFromId(id),
     events,
   };
 }

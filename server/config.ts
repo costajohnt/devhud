@@ -28,7 +28,9 @@ interface RawConfig {
   writeEnabled?: boolean;
   refreshIntervalSeconds?: number;
   ignoreAuthors?: string[];
-  simon?: { root?: string; bin?: string };
+  // null allowed at parse time: "simon": null is how a hand-edited config
+  // disables the block, normalized to undefined below.
+  simon?: { root?: string; bin?: string } | null;
 }
 
 export function loadConfig(path: string = fileURLToPath(new URL('../config.json', import.meta.url))): Config {
@@ -114,10 +116,21 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   }
   // Optional Simon executor block: when present, root is required and must be
   // absolute — it flows into readdir/resolve calls (server/simon.ts) where a
-  // relative path would silently depend on the server's cwd.
-  if (c.simon !== undefined) {
-    if (!c.simon.root || !isAbsolute(c.simon.root)) {
-      throw new Error(`config at ${path} has an invalid "simon.root" (${JSON.stringify(c.simon.root)}); must be an absolute path`);
+  // relative path would silently depend on the server's cwd. "simon": null is
+  // treated as absent (the natural way to null the block out to disable it);
+  // any other non-object gets the readable error, not a TypeError.
+  const simon = c.simon ?? undefined;
+  if (simon !== undefined) {
+    if (typeof simon !== 'object' || Array.isArray(simon)) {
+      throw new Error(`config at ${path} has an invalid "simon" (${JSON.stringify(simon)}); must be an object like { "root": "/abs/path" }`);
+    }
+    if (!simon.root || typeof simon.root !== 'string' || !isAbsolute(simon.root)) {
+      throw new Error(`config at ${path} has an invalid "simon.root" (${JSON.stringify(simon.root)}); must be an absolute path`);
+    }
+    // bin flows into execFile's argv[0]; a non-string there only fails at
+    // request time with a confusing per-request statusError.
+    if (simon.bin !== undefined && (typeof simon.bin !== 'string' || !simon.bin)) {
+      throw new Error(`config at ${path} has an invalid "simon.bin" (${JSON.stringify(simon.bin)}); must be a non-empty string`);
     }
   }
   // Off by default: write-back (Jira transitions/comments, PR comments) must
@@ -137,6 +150,6 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     writeEnabled: Boolean(c.writeEnabled),
     refreshIntervalSeconds: c.refreshIntervalSeconds,
     ignoreAuthors: Array.isArray(c.ignoreAuthors) ? c.ignoreAuthors : DEFAULT_IGNORE_AUTHORS,
-    simon: c.simon ? { root: c.simon.root!, bin: c.simon.bin || 'simon' } : undefined,
+    simon: simon ? { root: simon.root!, bin: simon.bin ?? 'simon' } : undefined,
   };
 }

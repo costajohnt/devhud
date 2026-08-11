@@ -88,13 +88,34 @@ test('CLI failure sets statusError and falls back to ledger classes', async () =
   expect(payload.runs[0]!.class).toBe('stale');
 });
 
-test('readRun returns raw events; rejects traversal and unknown ids', () => {
+test('readRun returns raw events; rejects traversal and unknown ids', async () => {
   const root = makeRoot();
   writeFileSync(join(root, 'state', 'runs', '2026-08-01T100000Z-PROJ-1.jsonl'), FINISHED);
-  const run = readRun(baseConfig(root), '2026-08-01T100000Z-PROJ-1');
+  const run = await readRun(baseConfig(root), '2026-08-01T100000Z-PROJ-1');
   expect(run?.key).toBe('PROJ-1');
   expect(run?.events).toHaveLength(5);
-  expect(readRun(baseConfig(root), '../../etc/passwd')).toBeNull();
-  expect(readRun(baseConfig(root), 'nope')).toBeNull();
-  expect(readRun(baseConfig(), '2026-08-01T100000Z-PROJ-1')).toBeNull();
+  expect(await readRun(baseConfig(root), '../../etc/passwd')).toBeNull();
+  expect(await readRun(baseConfig(root), 'nope')).toBeNull();
+  expect(await readRun(baseConfig(), '2026-08-01T100000Z-PROJ-1')).toBeNull();
+});
+
+test('missing run_start falls back to the key parsed from the id', async () => {
+  const root = makeRoot();
+  // Ledger whose first line (run_start) was lost: only a phase event remains.
+  writeFileSync(join(root, 'state', 'runs', '2026-08-03T120000Z-PROJ-9.jsonl'),
+    JSON.stringify({ ts: '2026-08-03T12:00:05Z', event: 'phase_start', phase: 'plan' }) + '\n');
+  const payload = await listRuns(baseConfig(root), execReturning([{ key: 'PROJ-9', class: 'in_flight' }]));
+  expect(payload.runs[0]!.key).toBe('PROJ-9');
+  // The recovered key must still join against the attention report.
+  expect(payload.runs[0]!.class).toBe('in_flight');
+  const run = await readRun(baseConfig(root), '2026-08-03T120000Z-PROJ-9');
+  expect(run?.key).toBe('PROJ-9');
+});
+
+test('unparsable last-event timestamp classifies as stale, not in_flight', async () => {
+  const root = makeRoot();
+  writeFileSync(join(root, 'state', 'runs', '2026-08-03T120000Z-PROJ-8.jsonl'),
+    JSON.stringify({ event: 'phase_start', phase: 'plan' }) + '\n'); // no ts at all
+  const payload = await listRuns(baseConfig(root), execFails);
+  expect(payload.runs[0]!.class).toBe('stale');
 });

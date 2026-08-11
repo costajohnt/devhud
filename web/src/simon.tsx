@@ -107,12 +107,14 @@ export function SimonRunPage({ id }: { id: string }) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
+    let haveDetail = false;
     const load = async () => {
       try {
         const r = await fetch(`/api/simon/runs/${encodeURIComponent(id)}`);
         if (!r.ok) throw new Error(r.status === 404 ? 'run not found' : `HTTP ${r.status}`);
         const d = (await r.json()) as SimonRunDetail;
         if (cancelled) return;
+        haveDetail = true;
         setDetail(d);
         setError(null);
         // Keep polling while the ledger has no run_end.
@@ -120,7 +122,12 @@ export function SimonRunPage({ id }: { id: string }) {
           timer = setTimeout(load, LIVE_POLL_MS);
         }
       } catch (e) {
-        if (!cancelled) setError((e as Error).message);
+        if (cancelled) return;
+        setError((e as Error).message);
+        // A transient failure mid-tail (server restart, wifi blip) must not
+        // kill the poll loop for a run that's still writing events: keep the
+        // rendered timeline and retry. Only the very first load gives up.
+        if (haveDetail) timer = setTimeout(load, LIVE_POLL_MS);
       }
     };
     load();
@@ -138,12 +145,17 @@ export function SimonRunPage({ id }: { id: string }) {
           <span class="merged-view-subtitle">{id}</span>
         </div>
       </div>
-      {error ? (
+      {error && !detail ? (
         <div class="merged-view-empty" role="alert">Failed to load run: {error}</div>
       ) : !detail || !fold ? (
         <div class="merged-view-empty">Loading…</div>
       ) : (
         <>
+          {error && (
+            <div class="partial-banner" role="status">
+              <span>Refresh failed ({error}) — showing last data, retrying…</span>
+            </div>
+          )}
           <div class="simon-run-chips">
             <span class={`pill ${fold.live ? 'pill--blue' : pillClass(fold.outcome)}`}>
               {fold.live ? 'live' : fold.outcome ?? 'ended'}

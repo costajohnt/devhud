@@ -55,6 +55,14 @@ function formatUpdated(iso: string | null): string {
 // nothing after mount. Reading `path` from useLocation() and branching in
 // plain JS (as the reference dashboard this app follows does) sidesteps
 // that memoization entirely.
+
+// decodeURIComponent throws URIError on malformed percent-encoding (/simon/%zz
+// from a mangled link); during render that would white-screen the whole app,
+// so a bad segment falls through to the not-found branch instead.
+function safeDecode(segment: string): string | null {
+  try { return decodeURIComponent(segment); } catch { return null; }
+}
+
 function AppContent() {
   const { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed, clearActionError } = useData();
   const [selected, setSelected] = useState<string | null>(null);
@@ -283,8 +291,8 @@ function AppContent() {
           <DonePage data={data} />
         ) : path === '/simon' ? (
           <SimonRunsPage />
-        ) : path.startsWith('/simon/') ? (
-          <SimonRunPage id={decodeURIComponent(path.slice('/simon/'.length))} />
+        ) : path.startsWith('/simon/') && safeDecode(path.slice('/simon/'.length)) !== null ? (
+          <SimonRunPage id={safeDecode(path.slice('/simon/'.length))!} />
         ) : path === '/' ? (
           <>
             <BoardStats data={data} />

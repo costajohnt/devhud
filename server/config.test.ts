@@ -244,3 +244,21 @@ test('config without a simon block leaves it undefined', () => {
   }));
   expect(loadConfig(p).simon).toBeUndefined();
 });
+
+test('"simon": null is treated as absent; bad simon shapes get readable errors', () => {
+  const base = {
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  };
+  const nullP = join(dir, 'simon-null.json');
+  writeFileSync(nullP, JSON.stringify({ ...base, simon: null }));
+  expect(loadConfig(nullP).simon).toBeUndefined();
+
+  const strP = join(dir, 'simon-string.json');
+  writeFileSync(strP, JSON.stringify({ ...base, simon: '/tmp/x' }));
+  expect(() => loadConfig(strP)).toThrow(/"simon"/);
+
+  const binP = join(dir, 'simon-bad-bin.json');
+  writeFileSync(binP, JSON.stringify({ ...base, simon: { root: '/tmp/x', bin: 5 } }));
+  expect(() => loadConfig(binP)).toThrow(/simon\.bin/);
+});

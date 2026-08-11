@@ -230,7 +230,12 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       }
       const runMatch = url.pathname.match(/^\/api\/simon\/runs\/([^/]+)$/);
       if (runMatch && req.method === 'GET') {
-        const run = readRun(config, decodeURIComponent(runMatch[1]!));
+        // Malformed percent-encoding (e.g. %zz) makes decodeURIComponent throw
+        // URIError — that's client garbage, so it gets the same 404 as any
+        // other invalid id, not the generic 500.
+        let id: string;
+        try { id = decodeURIComponent(runMatch[1]!); } catch { return send(404, { error: 'run not found' }); }
+        const run = await readRun(config, id);
         return run ? send(200, run) : send(404, { error: 'run not found' });
       }
       if (url.pathname.startsWith('/api/')) {
