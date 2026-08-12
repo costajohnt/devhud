@@ -35,7 +35,10 @@ export function demoCards(cfg: JiraConfig): Card[] {
     card('DEMO-104', 'Add rate limiting to public API', 'In Progress', 0),
     card('DEMO-108', 'Refactor notification queue consumer', 'In Progress', 1),
     card('DEMO-99', 'Support CSV export on reports page', 'In Review', 4),
-    card('DEMO-95', 'New onboarding checklist flow', 'In Test', 6, { fixVersions: ['2026.8'] }),
+    card('DEMO-95', 'New onboarding checklist flow', 'In Test', 6, {
+      fixVersions: ['2026.8'],
+      description: 'Adds the new checklist.\n----\nQA test instructions: create a fresh account and step through onboarding.',
+    }),
     card('DEMO-92', 'Dark mode for customer portal', 'Done', 2, { fixVersions: ['2026.8'] }),
     card('DEMO-112', 'Spike: evaluate feature flag providers', 'To Do', 1),
     card('DEMO-113', 'Clean up deprecated user settings endpoints', 'To Do', 3),

@@ -41,6 +41,7 @@ function nextAction(item: Item): string {
   if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') return 'CI is failing — fix the build';
   if (n > 0) return `Respond to ${n} new comment${n > 1 ? 's' : ''}`;
   if (a.includes('merged_not_in_test')) return 'PR merged — move the card to QA / In Test';
+  if (a.includes('missing_qa_instructions')) return 'In Test without QA instructions — add them to the Jira description';
   switch (item.bucket) {
     case 'self_review': return 'Self review needed — inspect PR before requesting peer review';
     case 'waiting_review': return 'Waiting on reviewers';

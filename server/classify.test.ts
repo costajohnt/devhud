@@ -24,7 +24,7 @@ test('new PR comment by someone else -> needs_attention, own comment ignored', (
 test('merged but not In Test -> needs_attention; merged and In Test -> qa_ready', () => {
   const m = pr({ state: 'merged' });
   expect(classifyCard({ ...base, card: card(), pr: m, cs: cs() }).attention).toContain('merged_not_in_test');
-  expect(classifyCard({ ...base, card: card({ status: 'In Test' }), pr: m, cs: cs() }).bucket).toBe('qa_ready');
+  expect(classifyCard({ ...base, card: card({ status: 'In Test', description: 'QA instructions: click it' }), pr: m, cs: cs() }).bucket).toBe('qa_ready');
 });
 
 test('override wins when no attention; attention beats override', () => {
@@ -130,7 +130,7 @@ test('degraded PR data mutes acked reasons without pruning them', () => {
 test('override auto-cleared when card reaches In Test or Done', () => {
   const s = cs({ override: 'waiting_review', overrideAt: '2026-07-01T00:00:00Z' });
   // In Test: override cleared, routes to qa_ready
-  const r = classifyCard({ ...base, card: card({ status: 'In Test' }), pr: pr({ state: 'merged' }), cs: s });
+  const r = classifyCard({ ...base, card: card({ status: 'In Test', description: 'QA instructions: click it' }), pr: pr({ state: 'merged' }), cs: s });
   expect(r.bucket).toBe('qa_ready');
   expect(s.override).toBeNull();
   expect(s.overrideAt).toBeNull();
@@ -151,4 +151,27 @@ test('junk (comment-reason) entries in ackedReasons are dropped, never muting co
   const r = classifyCard({ ...base, card: card(), pr: p, cs: c });
   expect(r.bucket).toBe('needs_attention');
   expect(c.ackedReasons).toBeNull();
+});
+
+test('In Test card without QA instructions -> missing_qa_instructions attention', () => {
+  const r = classifyCard({ ...base, card: card({ status: 'In Test', description: 'just a fix' }), pr: null, cs: cs() });
+  expect(r.bucket).toBe('needs_attention');
+  expect(r.attention).toContain('missing_qa_instructions');
+});
+
+test('In Test card with QA instructions routes to qa_ready; reason is ackable', () => {
+  const desc = 'Fix the thing.\n----\n**QA test instructions**\n1. open the page';
+  const ok = classifyCard({ ...base, card: card({ status: 'In Test', description: desc }), pr: null, cs: cs() });
+  expect(ok.bucket).toBe('qa_ready');
+  expect(ok.attention).toEqual([]);
+  // Acked: stays out of Needs Attention while the reason persists.
+  const s = cs({ ackedReasons: ['missing_qa_instructions'] });
+  const acked = classifyCard({ ...base, card: card({ status: 'In Test', description: '' }), pr: null, cs: s });
+  expect(acked.bucket).toBe('qa_ready');
+  expect(s.ackedReasons).toEqual(['missing_qa_instructions']);
+});
+
+test('missing_qa_instructions only fires for In Test cards', () => {
+  const r = classifyCard({ ...base, card: card({ status: 'In Progress', description: '' }), pr: null, cs: cs() });
+  expect(r.attention).not.toContain('missing_qa_instructions');
 });

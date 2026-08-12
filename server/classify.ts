@@ -23,7 +23,14 @@ const isIgnoredAuthor = (name: string | null | undefined, ignore: string[]): boo
 // reasons, which the lastSeen* watermarks govern). Only these may live in
 // CardState.ackedReasons — ack recording (actions.ts) and the pruning below
 // both filter against this list so the two files can't drift.
-export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test'];
+export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test', 'missing_qa_instructions'];
+
+// QA-instructions heuristic for In Test cards: a line mentioning "QA
+// instructions" / "QA test instructions" / "test instructions" anywhere in
+// the (ADF-flattened) description counts. ponytail: naive substring check,
+// tighten to divider+heading parsing if it false-positives in practice.
+export const hasQaInstructions = (description: string): boolean =>
+  /(qa|test)\s+instructions/i.test(description);
 
 export interface ClassifyResult {
   bucket: Bucket;
@@ -60,6 +67,13 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
 
   if (pr?.state === 'merged' && card.status !== statuses.inTest && card.status !== statuses.done) {
     attention.push('merged_not_in_test');
+  }
+
+  // An In Test card without QA instructions is invisible to QA: nudge the
+  // developer to add them before a tester picks the card up. Jira-derived,
+  // so it stays valid even when PR data is degraded.
+  if (card.status === statuses.inTest && !hasQaInstructions(card.description ?? '')) {
+    attention.push('missing_qa_instructions');
   }
 
   // Ack suppression: an acknowledged state-based reason stays muted for as
