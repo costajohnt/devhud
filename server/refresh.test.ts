@@ -1,5 +1,5 @@
 import { test, expect, vi } from 'vitest';
-import { buildSnapshot, refresh } from './refresh.ts';
+import { buildSnapshot, refresh, CELEBRATION_RETENTION_DAYS } from './refresh.ts';
 import { emptyState } from './state.ts';
 import type { Config, Card, Pr } from './types.ts';
 
@@ -86,6 +86,36 @@ test('doneTotal tracks the Done list, not the lifetime ledger', () => {
   expect(p.doneCards).toHaveLength(0);
   expect(p.doneTotal).toBe(0);
   expect(state.doneCelebrated.map(e => e.id)).toEqual(['PROJ-OLD']);
+});
+
+// The ledger's self-heal: a row nothing can use any more expires instead of
+// needing a hand-run migration. This is what makes the append-only structure
+// tolerable -- the pre-fix assignee bug's foreign rows age out on their own.
+test('a ledger entry absent from the fetch and past retention is pruned', () => {
+  const state = emptyState();
+  const old = new Date(Date.now() - (CELEBRATION_RETENTION_DAYS + 1) * 86400000).toISOString();
+  const recent = new Date(Date.now() - 5 * 86400000).toISOString();
+  state.doneCelebrated = [
+    { id: 'PROJ-ANCIENT', at: old },
+    { id: 'PROJ-RECENT', at: recent },
+    { id: 'PROJ-NOSTAMP', at: null },
+  ];
+  buildSnapshot({ cards: [], prs: [], state, config, errors: {} });
+  // Unparseable/missing timestamps are kept: never re-celebrating is the safer
+  // failure, and the writer always stamps one.
+  expect(state.doneCelebrated.map(e => e.id)).toEqual(['PROJ-RECENT', 'PROJ-NOSTAMP']);
+});
+
+// Pruning an entry whose card is still fetched would re-celebrate it on the
+// next pass, and the one after that -- confetti in a loop.
+test('a ledger entry is never pruned while its card is still in the fetch', () => {
+  const state = emptyState();
+  const old = new Date(Date.now() - (CELEBRATION_RETENTION_DAYS + 1) * 86400000).toISOString();
+  state.doneCelebrated = [{ id: 'PROJ-D', at: old }];
+  const cards = [card({ key: 'PROJ-D', status: 'Closed', statusCategory: 'done' })];
+  const p = buildSnapshot({ cards, prs: [], state, config, errors: {} });
+  expect(state.doneCelebrated.map(e => e.id)).toEqual(['PROJ-D']);
+  expect(p.newlyDone).toEqual([]);
 });
 
 test('a Done card assigned to someone else never enters the celebration ledger', () => {

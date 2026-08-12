@@ -7,6 +7,12 @@ import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEn
 
 const DAY = 86400000;
 
+// How long a doneCelebrated entry is kept after its card stops appearing in
+// fetches. Deliberately far wider than buildJql's 14-day Done bound: the gap
+// is the safety margin against a double celebration. See the prune in
+// buildSnapshot.
+export const CELEBRATION_RETENTION_DAYS = 90;
+
 const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
   state: p.state, ciStatus: p.ciStatus, reviewState: p.reviewState, isDraft: p.isDraft,
@@ -130,6 +136,33 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
     });
   }
+
+  // Ledger retention. The ledger's only job is celebrating a card once, and an
+  // entry can only do that job while its card can still turn up in a fetch —
+  // buildJql bounds Done cards at updated >= -14d. An entry that is both absent
+  // from this refresh and older than the retention window is dead weight, so it
+  // is dropped and the ledger stops growing without bound.
+  //
+  // This is also what gives an append-only structure a way to heal: a bad row
+  // (the 25 cards a fetch-layer assignee bug wrote here) expires on its own
+  // instead of needing a hand-run migration forever.
+  //
+  // Two properties this ordering depends on:
+  //   - Entries for cards in *this* refresh are never dropped, whatever their
+  //     age. Dropping one would re-celebrate the same card on the very next
+  //     pass, every pass — confetti in a loop.
+  //   - The window is far wider than the 14-day fetch bound, so an ordinary
+  //     card is long gone from every fetch before its entry expires. Only a
+  //     card resurrected after 90 silent days can celebrate twice, once.
+  // An entry with a missing or unparseable timestamp is kept: never
+  // re-celebrating is the safer failure, and the writer always stamps one.
+  const fetchedDone = new Set(doneCards.map(d => d.key));
+  const ledgerCutoff = Date.now() - CELEBRATION_RETENTION_DAYS * DAY;
+  state.doneCelebrated = state.doneCelebrated.filter(e => {
+    if (fetchedDone.has(e.id)) return true;
+    const at = e.at ? Date.parse(e.at) : NaN;
+    return Number.isNaN(at) || at > ledgerCutoff;
+  });
 
   const weekAgo = Date.now() - 7 * DAY;
 
