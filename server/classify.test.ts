@@ -179,7 +179,8 @@ test('only blocked/broken reasons route to needs_attention', () => {
 
 test('In Test card with QA instructions routes to qa_ready; reason is ackable', () => {
   const desc = 'Fix the thing.\n----\n**QA test instructions**\n1. open the page';
-  const ok = classifyCard({ ...base, card: card({ status: 'In Test', description: desc }), pr: null, cs: cs() });
+  // fixVersions set so this stays a test of the QA rule alone.
+  const ok = classifyCard({ ...base, card: card({ status: 'In Test', description: desc, fixVersions: ['1.0'] }), pr: null, cs: cs() });
   expect(ok.bucket).toBe('qa_ready');
   expect(ok.attention).toEqual([]);
   // Acked: stays out of Needs Attention while the reason persists.
@@ -192,4 +193,45 @@ test('In Test card with QA instructions routes to qa_ready; reason is ackable', 
 test('missing_qa_instructions only fires for In Test cards', () => {
   const r = classifyCard({ ...base, card: card({ status: 'In Progress', description: '' }), pr: null, cs: cs() });
   expect(r.attention).not.toContain('missing_qa_instructions');
+});
+
+// The other half of the hand-off gap. Same shape as the QA rule: a badge that
+// leaves the card in QA Ready, and it is ackable.
+test('In Test card without a fix version -> reason, but stays in qa_ready', () => {
+  const desc = '**QA test instructions**\n1. open the page';
+  const r = classifyCard({ ...base, card: card({ status: 'In Test', description: desc }), pr: null, cs: cs() });
+  expect(r.bucket).toBe('qa_ready');
+  expect(r.attention).toEqual(['missing_fix_version']);
+});
+
+test('In Test card with a fix version does not fire missing_fix_version', () => {
+  const desc = '**QA test instructions**\n1. open the page';
+  const c = card({ status: 'In Test', description: desc, fixVersions: ['1.2.3'] });
+  expect(classifyCard({ ...base, card: c, pr: null, cs: cs() }).attention).toEqual([]);
+});
+
+// An empty array is the shape Jira returns for an unset field, so it must read
+// as missing rather than as "present but empty".
+test('missing_fix_version treats an empty fixVersions array as unset', () => {
+  const c = card({ status: 'In Test', description: 'QA instructions: click it', fixVersions: [] });
+  expect(classifyCard({ ...base, card: c, pr: null, cs: cs() }).attention).toContain('missing_fix_version');
+});
+
+test('missing_fix_version only fires for In Test cards', () => {
+  const r = classifyCard({ ...base, card: card({ status: 'In Progress' }), pr: null, cs: cs() });
+  expect(r.attention).not.toContain('missing_fix_version');
+});
+
+test('missing_fix_version is ackable and survives as a state reason', () => {
+  const s = cs({ ackedReasons: ['missing_fix_version'] });
+  const r = classifyCard({ ...base, card: card({ status: 'In Test', description: 'QA instructions: go' }), pr: null, cs: s });
+  expect(r.attention).toEqual([]);
+  expect(s.ackedReasons).toEqual(['missing_fix_version']);
+});
+
+// Both gaps are typical on the same card; neither may mask the other.
+test('both hand-off reasons fire together without routing the card away', () => {
+  const r = classifyCard({ ...base, card: card({ status: 'In Test', description: 'just a fix' }), pr: null, cs: cs() });
+  expect(r.bucket).toBe('qa_ready');
+  expect(r.attention).toEqual(['missing_qa_instructions', 'missing_fix_version']);
 });

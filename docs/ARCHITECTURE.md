@@ -135,6 +135,7 @@ where it already is.
 | `new_pr_comments` | badge | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. Renders as the "N new comments" pill. |
 | `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill. |
 | `missing_qa_instructions` | badge | Card is in the configured "In Test" status and its description has no QA/test instructions. Renders as the "No QA Instructions" pill. |
+| `missing_fix_version` | badge | Card is in the configured "In Test" status and has no fix version set. Renders as the "No Fix Version" pill, or "No Fix Version or QA" when both hand-off reasons fire. |
 
 The routing set is `ROUTING_REASONS` in `classify.ts`. It exists because the
 `Bucket` enum conflates both axes, so before the split any pending event had to

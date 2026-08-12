@@ -23,7 +23,7 @@ const isIgnoredAuthor = (name: string | null | undefined, ignore: string[]): boo
 // reasons, which the lastSeen* watermarks govern). Only these may live in
 // CardState.ackedReasons — ack recording (actions.ts) and the pruning below
 // both filter against this list so the two files can't drift.
-export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test', 'missing_qa_instructions'];
+export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test', 'missing_qa_instructions', 'missing_fix_version'];
 
 // A card has a lifecycle state (its Jira status / PR state) and it has pending
 // events. Needs Attention is an overlay on the second axis, so only reasons
@@ -84,6 +84,14 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   // so it stays valid even when PR data is degraded.
   if (card.status === statuses.inTest && !hasQaInstructions(card.description ?? '')) {
     attention.push('missing_qa_instructions');
+  }
+
+  // Same hand-off gap, other half: a card that reaches QA with no fix version
+  // is missing from the release notes and gives the tester nothing to target.
+  // Badge, not routing, for the same reason as the QA rule — it is retroactive
+  // and would otherwise empty QA Ready on the day it ships.
+  if (card.status === statuses.inTest && !(card.fixVersions ?? []).length) {
+    attention.push('missing_fix_version');
   }
 
   // Ack suppression: an acknowledged state-based reason stays muted for as
