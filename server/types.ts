@@ -89,6 +89,9 @@ export interface Card {
   createdAt: string | null;
   updatedAt: string | null;
   myAccountId: string;
+  // Jira accountId of the card's assignee. Optional: fixtures and demo cards
+  // omit it, and callers treat undefined as "unknown", not "not mine".
+  assigneeId?: string;
   comments: JiraComment[];
 }
 

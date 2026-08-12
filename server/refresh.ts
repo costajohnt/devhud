@@ -97,7 +97,14 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // Jira Done category below — a done card is celebrated once and drops off
     // the active board.
     if (isDone(card, statuses)) {
-      if (!state.doneCelebrated.some(e => e.id === card.key)) {
+      // Only our own cards enter the permanent ledger. The JQL already filters
+      // by assignee, but it didn't always: a fetch-layer bug wrote 25 other
+      // people's cards here in a single refresh, and an append-only ledger has
+      // no way to unlearn them. A fetch bug must not be able to write state
+      // that outlives it. assigneeId is undefined for fixtures/demo cards,
+      // which pass through as before.
+      const mine = card.assigneeId === undefined || card.assigneeId === card.myAccountId;
+      if (mine && !state.doneCelebrated.some(e => e.id === card.key)) {
         state.doneCelebrated.push({ id: card.key, at: card.updatedAt ?? new Date().toISOString() });
         newlyDone.push(card.key);
       }
@@ -166,13 +173,15 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     // The Done counter is the size of the Done list it sits above: both are
-    // this refresh's Done-category cards. A running all-time counter drifted
-    // from the list it labelled (celebrated cards that later aged out of the
-    // JQL window, or stopped matching it, stayed in the count forever).
-        // Lifetime tally from the append-only celebration ledger, not this
-    // fetch's doneCards — the JQL window (updated >= -14d) ages cards out,
-    // which made the counter shrink over time.
-    doneCards, doneTotal: state.doneCelebrated.length, newlyDone, recentActivity,
+    // this refresh's Done-category cards. The lifetime doneCelebrated ledger
+    // fed it once and drifted badly — it is append-only with no pruning, so
+    // cards that aged out of the JQL window (updated >= -14d) stayed counted
+    // forever, and a header reading 32 sat above a 4-row table. The ledger
+    // remains, scoped to the one job it is good for: celebrate-once dedup via
+    // newlyDone. The tradeoff is that this counter shrinks as cards age out;
+    // a true lifetime number means widening the JQL bound for Done cards so
+    // the list itself is complete, not letting the count drift from the rows.
+    doneCards, doneTotal: doneCards.length, newlyDone, recentActivity,
     prLog: Object.values(state.prLog) as PrLogEntry[],
   };
 }

@@ -17,6 +17,9 @@ function pill(item: Item): { text: string; cls: string } | null {
   if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') return { text: 'CI Failing', cls: 'pill pill--red' };
   const n = item.newComments.length;
   if (n) return { text: `${n} new comment${n > 1 ? 's' : ''}`, cls: 'pill pill--red' };
+  // The server no longer moves these cards to Needs Attention (they stay in QA
+  // Ready), so the pill is the only place the gap shows on the board.
+  if (item.attention.includes('missing_qa_instructions')) return { text: 'No QA Instructions', cls: 'pill pill--amber' };
   if (item.pr?.state === 'merged') return { text: 'Merged', cls: 'pill pill--muted' };
   if (item.pr?.reviewState === 'changes_requested') return { text: 'Changes Requested', cls: 'pill pill--amber' };
   if (item.bucket === 'self_review') return { text: 'Self Review Needed', cls: 'pill pill--purple' };

@@ -43,6 +43,7 @@ interface RawJiraIssue {
   fields: {
     summary?: string;
     status?: { name?: string; statusCategory?: { key?: string } };
+    assignee?: { accountId?: string };
     fixVersions?: { name?: string }[];
     description?: AdfNode;
     created?: string;
@@ -77,6 +78,7 @@ export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
     createdAt: iso(f.created),
     updatedAt: iso(f.updated),
     myAccountId: cfg.accountId,
+    assigneeId: f.assignee?.accountId,
     comments: (f.comment?.comments ?? []).map((c): JiraComment => ({
       author: c.author?.displayName ?? '',
       authorId: c.author?.accountId ?? '',
@@ -109,7 +111,7 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
 
 export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
   const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
-  const fields = 'summary,status,fixVersions,description,created,updated,comment';
+  const fields = 'summary,status,fixVersions,description,created,updated,comment,assignee';
   const cards: Card[] = [];
   const seenKeys = new Set<string>();
 

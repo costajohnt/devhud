@@ -75,15 +75,27 @@ test('a Jira-done card lands in doneCards with a matching doneTotal, celebrated 
   expect(p2.doneTotal).toBe(1);
 });
 
-test('doneTotal is a lifetime tally that survives a celebrated card aging out of the fetch', () => {
+test('doneTotal tracks the Done list, not the lifetime ledger', () => {
   const state = emptyState();
   const done = card({ key: 'PROJ-OLD', status: 'Closed', statusCategory: 'done' });
   expect(buildSnapshot({ cards: [done], prs: [], state, config, errors: {} }).doneTotal).toBe(1);
-  // PROJ-OLD ages out of the JQL window (updated >= -14d): it leaves doneCards
-  // but stays in state.doneCelebrated, so the lifetime counter never shrinks.
+  // PROJ-OLD ages out of the JQL window (updated >= -14d). It stays in
+  // state.doneCelebrated for celebrate-once dedup, but the counter labels the
+  // rows below it, so it drops with them rather than reading 32 above 4 rows.
   const p = buildSnapshot({ cards: [], prs: [], state, config, errors: {} });
   expect(p.doneCards).toHaveLength(0);
-  expect(p.doneTotal).toBe(1);
+  expect(p.doneTotal).toBe(0);
+  expect(state.doneCelebrated.map(e => e.id)).toEqual(['PROJ-OLD']);
+});
+
+test('a Done card assigned to someone else never enters the celebration ledger', () => {
+  const state = emptyState();
+  const foreign = card({ key: 'PROJ-THEIRS', status: 'Closed', statusCategory: 'done', assigneeId: 'someone-else' });
+  const p = buildSnapshot({ cards: [foreign], prs: [], state, config, errors: {} });
+  expect(state.doneCelebrated).toEqual([]);
+  expect(p.newlyDone).toEqual([]);
+  // still listed for this refresh -- the guard protects permanent state only
+  expect(p.doneCards.map(d => d.key)).toEqual(['PROJ-THEIRS']);
 });
 
 test('board items carry the card fix versions', () => {
@@ -224,8 +236,9 @@ test('item comments merge both sources, newest first, capped at 10', () => {
     ],
   });
   const snap = buildSnapshot({ cards: [c], prs: [p1], state: emptyState(), config, errors: {} });
-  // Unseen comments push this card into needs_attention.
-  const item = snap.buckets.needs_attention[0]!;
+  // Unread comments are a badge, not a route: the card sits in its status
+  // bucket (self_review here) and carries the comments.
+  const item = Object.values(snap.buckets).flat()[0]!;
   expect(item.comments.map(x => x.source)).toEqual(['jira', 'github', 'jira']);
   expect(item.comments[0]!.body).toBe('new jira');
   expect(item.comments).toHaveLength(3);
@@ -343,7 +356,7 @@ test('item comment history is capped per source so a chatty PR cannot evict Jira
     prs: [pr({ comments: prComments })],
     state: emptyState(), config, errors: {},
   });
-  const comments = p.buckets.needs_attention[0]!.comments;
+  const comments = Object.values(p.buckets).flat()[0]!.comments;
   expect(comments.filter(c => c.source === 'jira')).toHaveLength(10);
   expect(comments.filter(c => c.source === 'github')).toHaveLength(10);
   // merged list is fully newest-first across sources

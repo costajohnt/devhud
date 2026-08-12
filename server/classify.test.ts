@@ -14,9 +14,14 @@ test('ci failing -> needs_attention', () => {
   expect(r.attention).toContain('ci_failing');
 });
 
-test('new PR comment by someone else -> needs_attention, own comment ignored', () => {
+// Comment reasons are badges, not routing: the card keeps the bucket its
+// status/PR state earns and the UI renders a "N new comments" pill.
+test('new PR comment by someone else -> attention reason without leaving its bucket', () => {
   const others = pr({ comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
-  expect(classifyCard({ ...base, card: card(), pr: others, cs: cs() }).bucket).toBe('needs_attention');
+  const r = classifyCard({ ...base, card: card(), pr: others, cs: cs() });
+  expect(r.bucket).toBe('self_review');
+  expect(r.attention).toContain('new_pr_comments');
+  expect(r.newComments).toHaveLength(1);
   const mine = pr({ comments: [{ author: 'john', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
   expect(classifyCard({ ...base, card: card(), pr: mine, cs: cs() }).bucket).toBe('self_review');
 });
@@ -107,10 +112,12 @@ test('acked state-based reason stays muted while true, re-triggers after clearin
   expect(classifyCard({ ...base, card: card(), pr: m, cs: c }).bucket).toBe('needs_attention');
 });
 
-test('new comment still triggers attention while a state-based reason is acked', () => {
+test('new comment still surfaces while a state-based reason is acked', () => {
   const m = pr({ state: 'merged', comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
   const r = classifyCard({ ...base, card: card(), pr: m, cs: cs({ ackedReasons: ['merged_not_in_test'] }) });
-  expect(r.bucket).toBe('needs_attention');
+  // Acking merged_not_in_test drops the only routing reason, so the card falls
+  // back to its status bucket; the unread comment still rides along as a badge.
+  expect(r.bucket).toBe('in_progress');
   expect(r.attention).toEqual(['new_pr_comments']);
 });
 
@@ -149,14 +156,25 @@ test('junk (comment-reason) entries in ackedReasons are dropped, never muting co
   const c = cs({ ackedReasons: ['new_pr_comments'] });
   const p = pr({ comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });
   const r = classifyCard({ ...base, card: card(), pr: p, cs: c });
-  expect(r.bucket).toBe('needs_attention');
+  expect(r.attention).toContain('new_pr_comments');
   expect(c.ackedReasons).toBeNull();
 });
 
-test('In Test card without QA instructions -> missing_qa_instructions attention', () => {
+// The card stays in QA Ready and wears the badge. Routing it to Needs
+// Attention emptied the QA column the day the rule shipped, because the rule
+// is retroactive: every In Test card ever, not just the fresh ones.
+test('In Test card without QA instructions -> reason, but stays in qa_ready', () => {
   const r = classifyCard({ ...base, card: card({ status: 'In Test', description: 'just a fix' }), pr: null, cs: cs() });
-  expect(r.bucket).toBe('needs_attention');
+  expect(r.bucket).toBe('qa_ready');
   expect(r.attention).toContain('missing_qa_instructions');
+});
+
+// The whole point of the split: a blocked/broken reason still evicts.
+test('only blocked/broken reasons route to needs_attention', () => {
+  const comments = [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }];
+  const r = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing', comments }), cs: cs() });
+  expect(r.bucket).toBe('needs_attention');
+  expect(r.attention).toEqual(['ci_failing', 'new_pr_comments']);
 });
 
 test('In Test card with QA instructions routes to qa_ready; reason is ackable', () => {

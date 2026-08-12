@@ -25,6 +25,16 @@ const isIgnoredAuthor = (name: string | null | undefined, ignore: string[]): boo
 // both filter against this list so the two files can't drift.
 export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test', 'missing_qa_instructions'];
 
+// A card has a lifecycle state (its Jira status / PR state) and it has pending
+// events. Needs Attention is an overlay on the second axis, so only reasons
+// that mean *blocked or broken* may evict a card from the column its status
+// puts it in. Everything else stays where it belongs and wears a badge: new
+// comments render as the "N new comments" pill, missing QA instructions as a
+// pill on the QA Ready card. Before this split, one unread comment moved an In
+// Progress card out of In Progress, and the missing-QA rule emptied QA Ready
+// into Needs Attention on the day it shipped.
+export const ROUTING_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test'];
+
 // QA-instructions heuristic for In Test cards: a line mentioning "QA
 // instructions" / "QA test instructions" / "test instructions" anywhere in
 // the (ADF-flattened) description counts. ponytail: naive substring check,
@@ -98,7 +108,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   let bucket: Bucket;
   if (pr?.state === 'open' && pr.isDraft) {
     bucket = 'self_review';
-  } else if (visible.length) bucket = 'needs_attention';
+  } else if (visible.some(r => ROUTING_REASONS.includes(r))) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
   else if (card.status === statuses.inTest) bucket = 'qa_ready';
   else if (pr?.state === 'open') {

@@ -233,6 +233,16 @@ test('CI failing outranks a merged pill, and unread comments outrank both', () =
   expect(pills).toEqual(['CI Failing', 'Merged', '1 new comment']);
 });
 
+// The server keeps these cards in QA Ready rather than evicting them to Needs
+// Attention, so the pill is the only board-level trace of the missing QA
+// instructions.
+test('a QA Ready card missing QA instructions wears a pill instead of moving column', () => {
+  mountList(data({
+    qa_ready: [item({ key: 'P-1', bucket: 'qa_ready', attention: ['missing_qa_instructions'] })],
+  }));
+  expect([...host.querySelectorAll('.pill')].map(p => p.textContent)).toEqual(['No QA Instructions']);
+});
+
 test('an empty board renders the empty state instead of empty sections', () => {
   mountList(data());
   expect(host.querySelector('.pr-list-empty')?.textContent).toBe('No cards to display');
