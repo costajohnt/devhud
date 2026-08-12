@@ -29,11 +29,32 @@ const iso = (t: string | undefined | null): string | null => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
-// Recently-updated Done-category cards (within 14 days) are still fetched so a
-// card that just reached Done flows into doneCards / celebration once before
-// aging out; older Done cards are dropped to keep the fetch bounded.
-export function buildJql(cfg: JiraConfig): string {
-  return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
+// Done cards are fetched incrementally against a watermark: the board keeps a
+// lifetime ledger of them (state.doneLedger), so each refresh only needs the
+// ones that changed since the newest entry. `doneSince` absent means first-ever
+// fetch — no lower bound, so the ledger seeds with every Done card there is.
+//
+// The bound is date-only and deliberately lagged a day by doneWatermark(): Jira
+// evaluates a bare date in the *user's* timezone, and a boundary card must be
+// re-fetched (it dedups by key) rather than missed, since nothing goes back for
+// it later.
+export function buildJql(cfg: JiraConfig, doneSince?: string): string {
+  // No watermark: drop the status clause entirely rather than keeping
+  // `statusCategory != Done`, which would exclude the very cards the seeding
+  // fetch exists to collect.
+  const clause = doneSince ? ` AND (statusCategory != Done OR updated >= "${doneSince}")` : '';
+  return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}"${clause} ORDER BY updated DESC`;
+}
+
+// yyyy-MM-dd, one day before the newest Done card already stored. undefined
+// (fetch everything) when the ledger is empty or its timestamps are unusable.
+export function doneWatermark(ledger: { doneAt: string | null }[]): string | undefined {
+  const newest = ledger
+    .map(e => (e.doneAt ? Date.parse(e.doneAt) : NaN))
+    .filter(t => !Number.isNaN(t))
+    .sort((a, b) => b - a)[0];
+  if (newest === undefined) return undefined;
+  return new Date(newest - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 // Minimal shape for the slice of the raw Jira REST API issue response this
@@ -109,7 +130,7 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
   }));
 }
 
-export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
+export async function fetchJiraCards(cfg: JiraConfig, doneSince?: string): Promise<Card[]> {
   const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
   const fields = 'summary,status,fixVersions,description,created,updated,comment,assignee';
   const cards: Card[] = [];
@@ -133,7 +154,7 @@ export async function fetchJiraCards(cfg: JiraConfig): Promise<Card[]> {
   let nextPageToken: string | undefined;
   do {
     const url = new URL('/rest/api/3/search/jql', cfg.baseUrl);
-    url.searchParams.set('jql', buildJql(cfg));
+    url.searchParams.set('jql', buildJql(cfg, doneSince));
     url.searchParams.set('fields', fields);
     url.searchParams.set('maxResults', '50');
     if (nextPageToken) url.searchParams.set('nextPageToken', nextPageToken);

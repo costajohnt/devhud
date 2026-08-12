@@ -1,14 +1,14 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { classifyCard, isTodo, isDone, isCanceled, githubNewComment, jiraNewComment } from './classify.ts';
-import { fetchJiraCards } from './jira.ts';
+import { fetchJiraCards, doneWatermark } from './jira.ts';
 import { fetchPrs, enrichPr } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
 
 const DAY = 86400000;
 
 // How long a doneCelebrated entry is kept after its card stops appearing in
-// fetches. Deliberately far wider than buildJql's 14-day Done bound: the gap
+// fetches. Deliberately far wider than the Done watermark lag: the gap
 // is the safety margin against a double celebration. See the prune in
 // buildSnapshot.
 export const CELEBRATION_RETENTION_DAYS = 90;
@@ -74,6 +74,10 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] };
   const todo: Snapshot['todo'] = [];
   const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
+  // Cards seen this refresh that are NOT done (reopened, or canceled after
+  // reaching Done). They must leave the lifetime ledger, or a card QA kicks
+  // back stays counted as complete forever.
+  const notDone = new Set<string>();
 
   // Both state-based attention reasons derive from PR data; when a card's PR
   // data is degraded this refresh, classify's ack-pruning must not treat
@@ -92,6 +96,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       const cs = state.cards[card.key];
       if (cs?.ackedReasons) cs.ackedReasons = null;
     }
+    if (!isDone(card, statuses)) notDone.add(card.key);
     if (isCanceled(card, statuses)) continue;
     const pr = linked.get(card.key) ?? null;
     if (isTodo(card, statuses) && !pr) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
@@ -139,8 +144,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
 
   // Ledger retention. The ledger's only job is celebrating a card once, and an
   // entry can only do that job while its card can still turn up in a fetch —
-  // buildJql bounds Done cards at updated >= -14d. An entry that is both absent
-  // from this refresh and older than the retention window is dead weight, so it
+  // Done cards are fetched only from the watermark forward. An entry that is
+  // both absent from this refresh and older than the window is dead weight, so it
   // is dropped and the ledger stops growing without bound.
   //
   // This is also what gives an append-only structure a way to heal: a bad row
@@ -151,11 +156,23 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   //   - Entries for cards in *this* refresh are never dropped, whatever their
   //     age. Dropping one would re-celebrate the same card on the very next
   //     pass, every pass — confetti in a loop.
-  //   - The window is far wider than the 14-day fetch bound, so an ordinary
+  //   - The window is far wider than the watermark lag, so an ordinary
   //     card is long gone from every fetch before its entry expires. Only a
   //     card resurrected after 90 silent days can celebrate twice, once.
   // An entry with a missing or unparseable timestamp is kept: never
   // re-celebrating is the safer failure, and the writer always stamps one.
+  // Lifetime Done ledger, oss-autopilot's mergedPRs pattern: store every Done
+  // card locally, fetch only what changed since the watermark, and merge by
+  // key. This refresh's rows win (status/summary/PR can change after Done);
+  // anything now non-Done is evicted. Result is an all-time list, so the
+  // counter is the length of a complete list rather than of one fetch page.
+  const ledgerByKey = new Map((state.doneLedger ?? []).map(d => [d.key, d]));
+  for (const key of notDone) ledgerByKey.delete(key);
+  for (const d of doneCards) ledgerByKey.set(d.key, d);
+  const doneLedger = [...ledgerByKey.values()]
+    .sort((a, b) => (b.doneAt ?? '').localeCompare(a.doneAt ?? ''));
+  state.doneLedger = doneLedger;
+
   const fetchedDone = new Set(doneCards.map(d => d.key));
   const ledgerCutoff = Date.now() - CELEBRATION_RETENTION_DAYS * DAY;
   state.doneCelebrated = state.doneCelebrated.filter(e => {
@@ -205,16 +222,13 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     buckets, todo,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
-    // The Done counter is the size of the Done list it sits above: both are
-    // this refresh's Done-category cards. The lifetime doneCelebrated ledger
-    // fed it once and drifted badly — it is append-only with no pruning, so
-    // cards that aged out of the JQL window (updated >= -14d) stayed counted
-    // forever, and a header reading 32 sat above a 4-row table. The ledger
-    // remains, scoped to the one job it is good for: celebrate-once dedup via
-    // newlyDone. The tradeoff is that this counter shrinks as cards age out;
-    // a true lifetime number means widening the JQL bound for Done cards so
-    // the list itself is complete, not letting the count drift from the rows.
-    doneCards, doneTotal: doneCards.length, newlyDone, recentActivity,
+    // Done page and counter both come from the lifetime ledger, so they agree
+    // by construction. Deriving the count from a single refresh made it shrink
+    // as cards aged out of the fetch window; deriving it from the old
+    // append-only doneCelebrated ledger let it drift above the rows (a header
+    // reading 32 over a 4-row table). doneCelebrated stays scoped to the one
+    // job it is good for: celebrate-once dedup via newlyDone.
+    doneCards: doneLedger, doneTotal: doneLedger.length, newlyDone, recentActivity,
     prLog: Object.values(state.prLog) as PrLogEntry[],
   };
 }
@@ -276,7 +290,7 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
   }
   let jiraOk = false, githubOk = false;
   try {
-    cards = await fetchJiraCards(config.jira);
+    cards = await fetchJiraCards(config.jira, doneWatermark(state.doneLedger ?? []));
     jiraOk = true;
   } catch (e) {
     errors.jira = (e as Error).message;

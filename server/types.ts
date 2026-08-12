@@ -297,6 +297,13 @@ export interface State {
   // confetti fires once per card. The Done counter is not derived from this —
   // it's the length of the current Done list (see buildSnapshot).
   doneCelebrated: CelebratedEntry[];
+  // Lifetime ledger of completed cards, newest first, deduped by key. This is
+  // the Done page and the Done counter: Done cards are fetched incrementally
+  // against a watermark (jira.ts doneWatermark) rather than re-listed every
+  // refresh, so the count is all-time and does not shrink as cards age out of
+  // a fetch window. Optional: absent in pre-existing state files, which seed
+  // it on the next refresh.
+  doneLedger?: DoneCard[];
   lastRefreshAt: string | null;
   snapshot: Snapshot | null;
   lastCards: Card[] | null;

@@ -3,7 +3,10 @@ import { buildSnapshot, refresh, CELEBRATION_RETENTION_DAYS } from './refresh.ts
 import { emptyState } from './state.ts';
 import type { Config, Card, Pr } from './types.ts';
 
-vi.mock('./jira.ts', () => ({ fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))) }));
+vi.mock('./jira.ts', () => ({
+  fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))),
+  doneWatermark: vi.fn(() => undefined),
+}));
 vi.mock('./github.ts', () => ({
   fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
   enrichPr: vi.fn((p: Pr) => Promise.resolve(p)),
@@ -75,17 +78,58 @@ test('a Jira-done card lands in doneCards with a matching doneTotal, celebrated 
   expect(p2.doneTotal).toBe(1);
 });
 
-test('doneTotal tracks the Done list, not the lifetime ledger', () => {
+test('a Done card stays counted after it stops coming back in a fetch', () => {
   const state = emptyState();
   const done = card({ key: 'PROJ-OLD', status: 'Closed', statusCategory: 'done' });
   expect(buildSnapshot({ cards: [done], prs: [], state, config, errors: {} }).doneTotal).toBe(1);
-  // PROJ-OLD ages out of the JQL window (updated >= -14d). It stays in
-  // state.doneCelebrated for celebrate-once dedup, but the counter labels the
-  // rows below it, so it drops with them rather than reading 32 above 4 rows.
+  // Done cards are fetched incrementally from the watermark, so PROJ-OLD is
+  // simply absent from later fetches. It has to survive on the ledger: this is
+  // the whole point of a lifetime count.
   const p = buildSnapshot({ cards: [], prs: [], state, config, errors: {} });
+  expect(p.doneCards.map(d => d.key)).toEqual(['PROJ-OLD']);
+  expect(p.doneTotal).toBe(1);
+});
+
+test('the Done counter always equals the rows below it', () => {
+  const state = emptyState();
+  const cards = [card({ key: 'PROJ-A', status: 'Done' }), card({ key: 'PROJ-B', status: 'Done' })];
+  const p = buildSnapshot({ cards, prs: [], state, config, errors: {} });
+  expect(p.doneTotal).toBe(p.doneCards.length);
+  expect(p.doneTotal).toBe(2);
+});
+
+test('a re-seen Done card updates in place instead of duplicating', () => {
+  const state = emptyState();
+  buildSnapshot({ cards: [card({ key: 'PROJ-D', status: 'Done', summary: 'old' })], prs: [], state, config, errors: {} });
+  const p = buildSnapshot({ cards: [card({ key: 'PROJ-D', status: 'Done', summary: 'new' })], prs: [], state, config, errors: {} });
+  expect(p.doneCards).toHaveLength(1);
+  expect(p.doneCards[0]!.summary).toBe('new');
+  expect(p.doneTotal).toBe(1);
+});
+
+test('a card QA kicks back out of Done leaves the lifetime ledger', () => {
+  const state = emptyState();
+  buildSnapshot({ cards: [card({ key: 'PROJ-D', status: 'Done' })], prs: [], state, config, errors: {} });
+  const p = buildSnapshot({ cards: [card({ key: 'PROJ-D', status: 'In Progress' })], prs: [], state, config, errors: {} });
   expect(p.doneCards).toHaveLength(0);
   expect(p.doneTotal).toBe(0);
-  expect(state.doneCelebrated.map(e => e.id)).toEqual(['PROJ-OLD']);
+});
+
+test('a Done card later canceled leaves the lifetime ledger', () => {
+  const state = emptyState();
+  buildSnapshot({ cards: [card({ key: 'PROJ-D', status: 'Done' })], prs: [], state, config, errors: {} });
+  const p = buildSnapshot({ cards: [card({ key: 'PROJ-D', status: 'Canceled' })], prs: [], state, config, errors: {} });
+  expect(p.doneCards).toHaveLength(0);
+});
+
+test('the Done ledger is newest first', () => {
+  const state = emptyState();
+  const cards = [
+    card({ key: 'PROJ-OLD', status: 'Done', updatedAt: '2026-06-01T00:00:00Z' }),
+    card({ key: 'PROJ-NEW', status: 'Done', updatedAt: '2026-08-01T00:00:00Z' }),
+  ];
+  const p = buildSnapshot({ cards, prs: [], state, config, errors: {} });
+  expect(p.doneCards.map(d => d.key)).toEqual(['PROJ-NEW', 'PROJ-OLD']);
 });
 
 // The ledger's self-heal: a row nothing can use any more expires instead of
