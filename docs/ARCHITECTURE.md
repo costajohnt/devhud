@@ -91,7 +91,9 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
 
 - **cards**: per-card local overrides. `override`/`overrideAt` record a manual bucket pin; `lastSeenPr`/`lastSeenJira` are the comment "seen" horizons used by `classifyCard` to decide what counts as new.
 - **celebrated**: legacy PR-merge celebration ids from older state files. No longer written — completion is now tracked by Jira Done, not PR merges — but still read at load time so `migratePrLog` can backfill `prLog` history for pre-`prLog` state files.
-- **doneCelebrated**: every Jira card ever observed in the Done category (keyed by card key), so the completion confetti only fires once per card. The `doneTotal` counter is not derived from it — it's `doneCards.length`, so the number always matches the Done list. Completion — not a PR merge — is what the UI celebrates and counts.
+- **doneCelebrated**: Jira cards observed in the Done category (keyed by card key), so the completion confetti only fires once per card. The `doneTotal` counter is not derived from it — it's `doneCards.length`, so the number always matches the Done list. Completion — not a PR merge — is what the UI celebrates and counts. Two rules keep this ledger honest, both learned the hard way:
+  - **Only your own cards are appended.** Before `buildJql`'s assignee filter was fixed, the board fetched other people's cards and the refresh loop celebrated every Done one it saw — 25 foreign rows in permanent state. A fetch-layer bug must not be able to write state that outlives it, so the writer checks `card.assigneeId` against the configured account rather than trusting the fetch.
+  - **Entries expire.** An entry's only job is preventing a second celebration, and it can only do that job while its card can still turn up in a fetch (`buildJql` bounds Done cards at `updated >= -14d`). An entry both absent from the current refresh and older than `CELEBRATION_RETENTION_DAYS` (90) is dropped, so the ledger stays bounded and a bad row ages out instead of needing a hand-run migration. Entries for cards in the *current* fetch are never dropped at any age: dropping one would re-celebrate that card on every subsequent refresh.
 - **lastCards** / **lastPrs**: last-known-good fetch results, used to backfill the board on a partial or total source failure instead of blanking it.
 - **prLog**: full PR lifecycle history (see API.md), upserted from every fetched PR each refresh; never pruned.
 - **snapshot**: the exact payload the API returns; recomputed by `buildSnapshot` on every refresh, read as-is by `GET /api/data`.
@@ -109,7 +111,7 @@ Evaluated top to bottom; the first matching row wins:
 | Bucket | Condition |
 |---|---|
 | `self_review` | PR is open and a draft — always, even over attention triggers and overrides. |
-| `needs_attention` | Any visible attention trigger fires (see below; acked state-based reasons are muted while continuously true). |
+| `needs_attention` | A visible **routing** attention trigger fires (`ci_failing` or `merged_not_in_test`; acked state-based reasons are muted while continuously true). Badge-only triggers never route — see below. |
 | *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
 | `qa_ready` | Jira status equals the configured "In Test" status. |
 | `mergeable` | PR is open and approved. |
@@ -119,24 +121,38 @@ Evaluated top to bottom; the first matching row wins:
 
 `in_qa` is reachable only via a manual move (a pinned override) — the classifier itself never routes there.
 
-Attention triggers (any one of these puts the card in `needs_attention`, appended to `item.attention`):
+Attention triggers are appended to `item.attention`, but only the **routing**
+ones move the card. A card has a lifecycle state (its Jira status, its PR
+state) and it has pending events; those are two independent axes. Only a
+reason meaning *blocked or broken* may evict a card from the column its
+lifecycle state earns it. Everything else rides along as a badge on the card
+where it already is.
 
-| Trigger | Condition |
-|---|---|
-| `ci_failing` | Linked PR is open and its CI status is `failing`. |
-| `new_pr_comments` | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. |
-| `new_jira_comments` | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. |
-| `merged_not_in_test` | Linked PR is merged but the Jira card's status is neither "In Test" nor "Done" yet. |
+| Trigger | Routes? | Condition |
+|---|---|---|
+| `ci_failing` | yes | Linked PR is open and its CI status is `failing`. |
+| `merged_not_in_test` | yes | Linked PR is merged but the Jira card's status is neither "In Test" nor "Done" yet. |
+| `new_pr_comments` | badge | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. Renders as the "N new comments" pill. |
+| `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill. |
+| `missing_qa_instructions` | badge | Card is in the configured "In Test" status and its description has no QA/test instructions. Renders as the "No QA Instructions" pill. |
+
+The routing set is `ROUTING_REASONS` in `classify.ts`. It exists because the
+`Bucket` enum conflates both axes, so before the split any pending event had to
+evict a card's state to be visible at all: one unread comment pulled a card out
+of In Progress, and `missing_qa_instructions` — which is retroactive, since it
+matches every In Test card that ever lacked instructions — emptied QA Ready into
+Needs Attention the day it shipped. Acking still works on badge reasons: it
+drops them from `item.attention`, which clears the pill.
 
 Comments authored by anyone in `config.ignoreAuthors` (default `["John", "Rovo"]`, case-insensitive substring match) never fire `new_pr_comments`/`new_jira_comments` and never enter the actionable New Comments queue; they still appear in the full activity history.
 
-A manual override (`type: 'move'`) is honored only when no attention trigger fires. The "live" triggers (CI failing, merged-not-in-test) always re-flag the card into `needs_attention` on the next refresh even if it was previously pinned elsewhere. Only the comment-based triggers are silenced by acking or moving, because those actions reset the seen horizon; CI status and merge state aren't horizon-gated, they're re-evaluated fresh every refresh.
+A manual override (`type: 'move'`) is honored only when no *routing* attention trigger fires. The "live" triggers (CI failing, merged-not-in-test) always re-flag the card into `needs_attention` on the next refresh even if it was previously pinned elsewhere. Only the comment-based triggers are silenced by acking or moving, because those actions reset the seen horizon; CI status and merge state aren't horizon-gated, they're re-evaluated fresh every refresh.
 
 Routing keys off the Jira **status category** (`new`/`indeterminate`/`done`), not exact status names, so `Assigned` counts as To Do and `Closed` as Done. In order, before bucket classification:
 
 1. **Canceled** cards (status matching `statuses.canceled`, default "Canceled") are dropped entirely — no bucket, no todo, no done, no counts.
 2. **To Do category** cards are split into `todo` and skip classification.
-3. **Done category** cards (excluding Canceled) are added to `doneCelebrated`/`doneTotal` and `doneCards` once, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge.
+3. **Done category** cards (excluding Canceled) are added to `doneCards`, and to `doneCelebrated` once if assigned to the configured account, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge. `doneTotal` is `doneCards.length`, not the ledger size.
 4. Everything else is classified into a bucket. A merged-but-not-Done card stays on the board (QA can still reject it) with the merged PR carried on the item's `pr` as context — there's no separate merged list.
 
 ## Concurrency

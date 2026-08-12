@@ -176,7 +176,7 @@ Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the
 
 ## Buckets
 
-- **needs_attention**: Triggered by new PR comments from others since last-seen, new Jira card comments from others since last-seen, CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done" status. An open **draft** PR outranks all of these and routes to self_review regardless (see below). Comment triggers are silenced by acking/moving (those reset the seen horizon); the state-based triggers (CI failing, merged-not-in-test) stay muted after an ack only while they remain continuously true, and re-fire as new events once they clear and recur.
+- **needs_attention**: Blocked-or-broken only — CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done". An open **draft** PR outranks both and routes to self_review regardless (see below). These stay muted after an ack only while they remain continuously true, and re-fire as new events once they clear and recur. Other signals (new comments, missing QA instructions) do **not** move a card: they stay in the column their status earns and show a pill instead, because a pending event shouldn't evict a card from its lifecycle state. Comment signals are cleared by acking/moving, which reset the seen horizon.
 - **self_review**: Open draft PR (always), or an open PR with no review activity and a card not yet in a review status.
 - **waiting_review**: Open PR with review activity (or the card is in "Code Review"/"In Review") that isn't approved yet.
 - **mergeable**: Open PR approved.
@@ -184,6 +184,27 @@ Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the
 - **in_qa**: Manual-move destination for cards actively being tested (a pinned override; the classifier itself routes In Test cards to QA Ready).
 - **in_progress**: Everything else (default).
 - A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
+
+## Upgrading an existing checkout
+
+```bash
+git pull
+npm ci && (cd web && npm ci) && (cd mcp && npm ci)   # only if a lockfile changed
+./bin/start.sh                                        # or reload the launchd agent
+```
+
+`data/state.json` is gitignored, so it is per-machine and a pull never touches
+it. Most changes need nothing more than the above. When one *does* need a
+one-off pass over existing state, it ships as a script in `scripts/` and is
+listed here. **Stop the server before running any of them** — a refresh tick
+rewrites `state.json` and would clobber the edit.
+
+| Script | Run it if | What it does |
+|---|---|---|
+| `scripts/purge-done-ledger.py` | Your `data/state.json` predates 2026-08-12 and the Done counter has ever looked too high | Drops the 25 `doneCelebrated` entries that a pre-2026-08-05 assignee bug wrote for other people's cards. Backs up to `state.json.pre-purge.bak` first, prints `32 -> 7`, and is a no-op on a second run. Delete the script once it has been run everywhere it needed running. |
+
+Each is idempotent and takes its own backup, so running one you didn't need is
+harmless.
 
 ## Local State
 
