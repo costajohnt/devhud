@@ -75,15 +75,15 @@ test('a Jira-done card lands in doneCards with a matching doneTotal, celebrated 
   expect(p2.doneTotal).toBe(1);
 });
 
-test('doneTotal tracks the Done list when a celebrated card stops being fetched', () => {
+test('doneTotal is a lifetime tally that survives a celebrated card aging out of the fetch', () => {
   const state = emptyState();
   const done = card({ key: 'PROJ-OLD', status: 'Closed', statusCategory: 'done' });
   expect(buildSnapshot({ cards: [done], prs: [], state, config, errors: {} }).doneTotal).toBe(1);
-  // PROJ-OLD ages out of the JQL window (or stops matching it): it's still in
-  // state.doneCelebrated, but the counter follows the list the user sees.
+  // PROJ-OLD ages out of the JQL window (updated >= -14d): it leaves doneCards
+  // but stays in state.doneCelebrated, so the lifetime counter never shrinks.
   const p = buildSnapshot({ cards: [], prs: [], state, config, errors: {} });
   expect(p.doneCards).toHaveLength(0);
-  expect(p.doneTotal).toBe(0);
+  expect(p.doneTotal).toBe(1);
 });
 
 test('board items carry the card fix versions', () => {

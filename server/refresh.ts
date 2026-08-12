@@ -169,7 +169,10 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // this refresh's Done-category cards. A running all-time counter drifted
     // from the list it labelled (celebrated cards that later aged out of the
     // JQL window, or stopped matching it, stayed in the count forever).
-    doneCards, doneTotal: doneCards.length, newlyDone, recentActivity,
+        // Lifetime tally from the append-only celebration ledger, not this
+    // fetch's doneCards — the JQL window (updated >= -14d) ages cards out,
+    // which made the counter shrink over time.
+    doneCards, doneTotal: state.doneCelebrated.length, newlyDone, recentActivity,
     prLog: Object.values(state.prLog) as PrLogEntry[],
   };
 }
