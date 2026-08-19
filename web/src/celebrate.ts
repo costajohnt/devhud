@@ -4,8 +4,18 @@ async function loadConfetti() {
 
 let confettiFn: Awaited<ReturnType<typeof loadConfetti>> | null = null;
 
-export async function fireConfetti() {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+/**
+ * Why the burst did or did not happen. The auto-fire path pairs confetti with
+ * a "done" toast, so a silent no-op there still leaves a visible signal — but
+ * the manual header button has no such partner, and used to swallow both the
+ * reduced-motion return and a failed chunk load with no feedback at all (#54).
+ * Reporting the outcome lets each caller decide whether it needs to say
+ * something.
+ */
+export type ConfettiOutcome = 'fired' | 'reduced-motion' | 'failed';
+
+export async function fireConfetti(): Promise<ConfettiOutcome> {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return 'reduced-motion';
   try {
     confettiFn ??= await loadConfetti();
     const confetti = confettiFn;
@@ -19,5 +29,14 @@ export async function fireConfetti() {
       }
       if (Date.now() < end) requestAnimationFrame(frame);
     })();
-  } catch { /* toast is the canonical signal */ }
+    return 'fired';
+  } catch (err) {
+    // canvas-confetti is a dynamic import, so it lands in its own
+    // content-hashed chunk. A 404 on that chunk (stale cached index.html,
+    // partial deploy, rebuild under a live page) rejects here. Never swallow
+    // it silently: the console line is what turns "the button is broken" into
+    // a diagnosable report.
+    console.warn('[simon-dash] confetti failed to load', err);
+    return 'failed';
+  }
 }

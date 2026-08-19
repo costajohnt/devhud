@@ -1,6 +1,6 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, statSync, unlinkSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
@@ -326,12 +326,64 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   return server;
 }
 
+/**
+ * `npm start` serves whatever is sitting in web/dist; it never builds. web/dist
+ * is gitignored and no service keeps it fresh, so the bundle silently drifts
+ * from source across every pull and branch switch. A 9-day-old bundle served
+ * against a newer API shape is what took the whole dashboard down with an
+ * unexplained "Cannot read properties of undefined" (#54).
+ *
+ * Returns null when the bundle is usable and current, otherwise the message to
+ * print. `fatal` marks the case where there is nothing to serve at all.
+ */
+export function bundleStatus(webSrc: string, webDist: string): { fatal: boolean; message: string } | null {
+  let builtAt: number;
+  try {
+    builtAt = statSync(join(webDist, 'index.html')).mtimeMs;
+  } catch {
+    return { fatal: true, message: `no built bundle at ${webDist} — run \`npm run build\` first` };
+  }
+
+  let newestSrc = 0;
+  let newestName = '';
+  try {
+    for (const entry of readdirSync(webSrc, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const full = join(entry.parentPath ?? webSrc, entry.name);
+      const { mtimeMs } = statSync(full);
+      if (mtimeMs > newestSrc) { newestSrc = mtimeMs; newestName = full; }
+    }
+  } catch {
+    // No readable source tree (an installed copy, say). Nothing to compare
+    // against, so the bundle is all we have and we serve it without comment.
+    return null;
+  }
+
+  if (newestSrc <= builtAt) return null;
+  const age = Math.round((newestSrc - builtAt) / 60000);
+  return {
+    fatal: false,
+    message: `web/dist is STALE — ${newestName} is ${age} minute(s) newer than the bundle. `
+      + 'The dashboard you are about to load is not built from this source; run `npm run build`.',
+  };
+}
+
 // main
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
   const config = loadConfig(configPath);
   const root = fileURLToPath(new URL('..', import.meta.url));
   const pidPath = join(root, 'data', 'server.pid');
+  // ponytail: a stale bundle only warns rather than refusing to start —
+  // serving an old UI knowingly is a legitimate thing to want, and a hard
+  // block would be worse than the noise. Escalate to an exit if the warning
+  // proves easy to scroll past.
+  const bundle = bundleStatus(join(root, 'web', 'src'), join(root, 'web', 'dist'));
+  if (bundle?.fatal) {
+    console.error(bundle.message);
+    process.exit(1);
+  }
+  if (bundle) console.warn(`\n!! ${bundle.message}\n`);
   const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist'), configPath });
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { LocationProvider, useLocation } from 'preact-iso';
 import { useData } from './use-data.js';
 import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.js';
@@ -78,21 +78,34 @@ function AppContent() {
     localStorage.getItem(NOTIFY_KEY) === '1' && notificationPermission() === 'granted');
   const [notifyError, setNotifyError] = useState<string | null>(null);
 
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    toastTimeout.current = setTimeout(() => setToast(null), 5000);
+  }, []);
+
+  // The header button is the only confetti caller with no toast of its own, so
+  // a reduced-motion return or a failed chunk load left the click with zero
+  // feedback (#54). Say why nothing happened instead.
+  const celebrate = useCallback(async () => {
+    const outcome = await fireConfetti();
+    if (outcome === 'reduced-motion') showToast('Confetti is off while your system asks for reduced motion.');
+    else if (outcome === 'failed') showToast('Confetti failed to load — see the console.');
+  }, [showToast]);
+
   useEffect(() => {
     onRefreshed.current = (d) => {
       // Completion — a Jira card reaching Done — is what we celebrate now, not
       // a PR merge (a merge only means the code is ready for QA).
       if (d.newlyDone.length) {
-        fireConfetti();
-        setToast(`${d.newlyDone.join(', ')} done 🎉`);
-        if (toastTimeout.current) clearTimeout(toastTimeout.current);
-        toastTimeout.current = setTimeout(() => setToast(null), 5000);
+        void fireConfetti();
+        showToast(`${d.newlyDone.join(', ')} done 🎉`);
       }
     };
     // onRefreshed is a stable ref from useData, so this still runs once —
     // listed so the dependency array is honest rather than relying on the
     // reader knowing that.
-  }, [onRefreshed]);
+  }, [onRefreshed, showToast]);
 
   // Purely cosmetic re-render tick so "Updated Xm ago" stays fresh even if
   // the user leaves the tab open without triggering any other re-render.
@@ -240,7 +253,7 @@ function AppContent() {
           <div class="header-right">
             <a class="header-link" href="/simon">runs</a>
             <span class="last-updated">{formatUpdated(data.updatedAt)}</span>
-            <button class="celebrate-btn" onClick={() => { fireConfetti(); }} type="button" aria-label="Celebrate" title="Celebrate">
+            <button class="celebrate-btn" onClick={() => { void celebrate(); }} type="button" aria-label="Celebrate" title="Celebrate">
               🎉
             </button>
             {notificationsSupported() && (

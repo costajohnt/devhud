@@ -1,7 +1,7 @@
 import { test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createServer } from './index.ts';
+import { createServer, bundleStatus } from './index.ts';
 import { saveState, emptyState } from './state.ts';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
@@ -680,4 +680,63 @@ test('GET /api/simon/runs/:id with malformed percent-encoding returns 404, not 5
   const r = await fetch(`${base}/api/simon/runs/%zz`);
   expect(r.status).toBe(404);
   expect(await r.json()).toEqual({ error: 'run not found' });
+});
+
+// --- bundle freshness (#54) ---------------------------------------------
+
+test('bundleStatus is fatal when there is no built bundle at all', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jd-bundle-'));
+  mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, 'dist'), { recursive: true });
+
+  const status = bundleStatus(join(root, 'src'), join(root, 'dist'))!;
+  expect(status).not.toBeNull();
+  expect(status.fatal).toBe(true);
+  expect(status.message).toContain('npm run build');
+});
+
+test('bundleStatus flags a bundle older than the source it was built from', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jd-bundle-'));
+  mkdirSync(join(root, 'src', 'nested'), { recursive: true });
+  mkdirSync(join(root, 'dist'), { recursive: true });
+
+  writeFileSync(join(root, 'dist', 'index.html'), '<!doctype html>');
+  const built = new Date('2026-08-02T00:00:00Z');
+  utimesSync(join(root, 'dist', 'index.html'), built, built);
+
+  // A source file nested below the top level, so the walk has to recurse to
+  // find it — the real web/src keeps everything a directory or two deep.
+  writeFileSync(join(root, 'src', 'nested', 'app.tsx'), 'export {};');
+  const edited = new Date('2026-08-11T00:00:00Z');
+  utimesSync(join(root, 'src', 'nested', 'app.tsx'), edited, edited);
+
+  const status = bundleStatus(join(root, 'src'), join(root, 'dist'))!;
+  expect(status).not.toBeNull();
+  expect(status.fatal).toBe(false);
+  expect(status.message).toContain('STALE');
+  expect(status.message).toContain('app.tsx');
+});
+
+test('bundleStatus stays quiet when the bundle is newer than the source', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jd-bundle-'));
+  mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, 'dist'), { recursive: true });
+
+  writeFileSync(join(root, 'src', 'app.tsx'), 'export {};');
+  const edited = new Date('2026-08-02T00:00:00Z');
+  utimesSync(join(root, 'src', 'app.tsx'), edited, edited);
+
+  writeFileSync(join(root, 'dist', 'index.html'), '<!doctype html>');
+  const built = new Date('2026-08-11T00:00:00Z');
+  utimesSync(join(root, 'dist', 'index.html'), built, built);
+
+  expect(bundleStatus(join(root, 'src'), join(root, 'dist'))).toBeNull();
+});
+
+test('bundleStatus stays quiet when there is no source tree to compare against', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jd-bundle-'));
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  writeFileSync(join(root, 'dist', 'index.html'), '<!doctype html>');
+
+  expect(bundleStatus(join(root, 'does-not-exist'), join(root, 'dist'))).toBeNull();
 });

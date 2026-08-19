@@ -130,6 +130,23 @@ test('the runs link sits with the header controls, not among the stats (#52)', (
   expect(host.querySelector('.header-stats')!.contains(link)).toBe(false);
 });
 
+test('the celebrate button explains itself instead of doing nothing (#54)', async () => {
+  act(() => { es().emit(snap()); });
+
+  // beforeEach stubs matchMedia to match 'reduce', so fireConfetti returns
+  // 'reduced-motion' and never touches canvas-confetti. Before #54 that was a
+  // completely silent click; now it has to say why.
+  const btn = host.querySelector('.celebrate-btn') as HTMLButtonElement;
+  expect(btn).not.toBeNull();
+  expect(host.querySelector('.celebration-toast')).toBeNull();
+
+  await act(async () => { btn.click(); await Promise.resolve(); });
+
+  const toast = host.querySelector('.celebration-toast')!;
+  expect(toast).not.toBeNull();
+  expect(toast.textContent).toContain('reduced motion');
+});
+
 test('the tab title carries the needs-attention count and clears when it empties', () => {
   act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), needs_attention: [item({ bucket: 'needs_attention' }), item({ key: 'P-2', bucket: 'needs_attention' })] } })); });
   expect(document.title).toBe('(2) simon');
