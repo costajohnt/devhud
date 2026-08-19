@@ -235,3 +235,56 @@ test('both hand-off reasons fire together without routing the card away', () => 
   expect(r.bucket).toBe('qa_ready');
   expect(r.attention).toEqual(['missing_qa_instructions', 'missing_fix_version']);
 });
+
+// --- issue #57: a QA comment on an In Test card is routing -----------------
+
+test('In Test card with a new jira comment -> needs_attention', () => {
+  const c = card({
+    status: 'In Test',
+    description: 'QA instructions: click it',
+    comments: [{ authorId: 'other', author: 'qa', body: 'this still repros', createdAt: '2026-07-02T00:00:00Z' }],
+  });
+  const r = classifyCard({ ...base, card: c, pr: null, cs: cs() });
+  expect(r.bucket).toBe('needs_attention');
+  expect(r.attention).toContain('new_jira_comments');
+});
+
+// The watermark is what makes this safe to route on: once the developer reads
+// the comment the reason clears by itself and the card returns to QA Ready. The
+// missing-QA rule that once emptied QA Ready was persistently true, which is
+// the difference.
+test('In Test card whose jira comment has been seen -> back to qa_ready', () => {
+  const c = card({
+    status: 'In Test',
+    description: 'QA instructions: click it',
+    comments: [{ authorId: 'other', author: 'qa', body: 'this still repros', createdAt: '2026-07-02T00:00:00Z' }],
+  });
+  const seen = cs({ lastSeenJira: '2026-07-03T00:00:00Z' });
+  const r = classifyCard({ ...base, card: c, pr: null, cs: seen });
+  expect(r.attention).not.toContain('new_jira_comments');
+  expect(r.bucket).toBe('qa_ready');
+});
+
+// Scoped to In Test on purpose: ROUTING_REASONS is unchanged, so a comment on
+// an In Progress card is still a badge and does not evict it from its column.
+test('a new jira comment on a non-In-Test card still does not route', () => {
+  const c = card({
+    status: 'In Progress',
+    comments: [{ authorId: 'other', author: 'someone', body: 'a thought', createdAt: '2026-07-02T00:00:00Z' }],
+  });
+  const r = classifyCard({ ...base, card: c, pr: null, cs: cs() });
+  expect(r.attention).toContain('new_jira_comments');
+  expect(r.bucket).toBe('in_progress');
+});
+
+// An ignored author (John's own reply, Rovo automation) is not QA waiting.
+test('In Test card whose only comment is from an ignored author stays in qa_ready', () => {
+  const c = card({
+    status: 'In Test',
+    description: 'QA instructions: click it',
+    comments: [{ authorId: 'rovo', author: 'Rovo', body: 'auto', createdAt: '2026-07-02T00:00:00Z' }],
+  });
+  const r = classifyCard({ ...base, card: c, pr: null, cs: cs(), ignoreAuthors: ['John', 'Rovo'] });
+  expect(r.attention).not.toContain('new_jira_comments');
+  expect(r.bucket).toBe('qa_ready');
+});

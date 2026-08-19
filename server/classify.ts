@@ -118,7 +118,22 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
     bucket = 'self_review';
   } else if (visible.some(r => ROUTING_REASONS.includes(r))) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
-  else if (card.status === statuses.inTest) bucket = 'qa_ready';
+  // The one comment that IS routing. ROUTING_REASONS stays global and unchanged
+  // (adding new_jira_comments to it would bounce In Progress cards on every
+  // comment, which is exactly what that list exists to prevent). This is scoped
+  // to In Test, where a Jira comment is QA saying they are waiting on the
+  // developer — the card's own lifecycle state is what makes the comment
+  // actionable rather than informational.
+  //
+  // Safe against the failure the ROUTING_REASONS comment records, where the
+  // missing-QA rule emptied QA Ready on the day it shipped: that reason was
+  // persistently true, so the column stayed empty. new_jira_comments is not a
+  // STATE_REASON and so is not ack-governed — the lastSeen watermark clears it
+  // as soon as the developer reads the comment, and the card falls straight
+  // back to QA Ready.
+  else if (card.status === statuses.inTest) {
+    bucket = visible.includes('new_jira_comments') ? 'needs_attention' : 'qa_ready';
+  }
   else if (pr?.state === 'open') {
     if (pr.reviewState === 'approved') {
       bucket = 'mergeable';
