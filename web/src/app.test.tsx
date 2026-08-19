@@ -118,6 +118,18 @@ test('the connect event renders the board and the in-flight/done counters', () =
   expect(stats).toContain('4');
 });
 
+test('the runs link sits with the header controls, not among the stats (#52)', () => {
+  act(() => { es().emit(snap()); });
+
+  const link = host.querySelector('a.header-link')!;
+  expect(link).not.toBeNull();
+  expect(link.getAttribute('href')).toBe('/simon');
+  // Navigation belongs beside the theme/notify controls. Inside .header-stats
+  // it read as a third stat label, which is what #52 reported.
+  expect(host.querySelector('.header-right')!.contains(link)).toBe(true);
+  expect(host.querySelector('.header-stats')!.contains(link)).toBe(false);
+});
+
 test('the tab title carries the needs-attention count and clears when it empties', () => {
   act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), needs_attention: [item({ bucket: 'needs_attention' }), item({ key: 'P-2', bucket: 'needs_attention' })] } })); });
   expect(document.title).toBe('(2) simon');

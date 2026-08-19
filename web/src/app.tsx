@@ -236,10 +236,9 @@ function AppContent() {
             <span><span class="val" style={{ color: 'var(--green)' }}>{inFlight}</span> in flight</span>
             <span class="header-sep" />
             <span><span class="val" style={{ color: 'var(--purple)' }}>{data.doneTotal}</span> done</span>
-            <span class="header-sep" />
-            <a class="header-link" href="/simon">runs</a>
           </div>
           <div class="header-right">
+            <a class="header-link" href="/simon">runs</a>
             <span class="last-updated">{formatUpdated(data.updatedAt)}</span>
             <button class="celebrate-btn" onClick={() => { fireConfetti(); }} type="button" aria-label="Celebrate" title="Celebrate">
               🎉

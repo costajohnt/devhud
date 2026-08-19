@@ -2118,14 +2118,23 @@ a:hover {
 /* === Simon runs page === */
 
 .header-link {
-  color: var(--text-secondary);
-  text-decoration: none;
+  /* Link colour + a permanent underline: this is navigation sitting among the
+     header controls, so it must not read as another muted stat label (#52). */
+  color: var(--blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
   font-size: 0.875rem;
+  flex-shrink: 0;
 }
 
 .header-link:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
+.header-link:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .pill--green {
