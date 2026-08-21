@@ -152,6 +152,28 @@ test('override auto-cleared when card reaches In Test or Done', () => {
   expect(s3.override).toBe('waiting_review');
 });
 
+test('pin released on Jira status transition; card falls to classifier bucket (#53)', () => {
+  // Pinned to In Progress while addressing review feedback; card then
+  // transitions In Progress -> Code Review in Jira.
+  const s = cs({ override: 'in_progress', overrideAt: '2026-07-01T00:00:00Z', lastStatus: 'In Progress' });
+  const r = classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr(), cs: s });
+  expect(s.override).toBeNull();
+  expect(s.overrideAt).toBeNull();
+  expect(r.bucket).toBe('waiting_review');
+  expect(s.lastStatus).toBe('Code Review');
+
+  // Same status as last refresh: pin holds.
+  const s2 = cs({ override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z', lastStatus: 'In Progress' });
+  expect(classifyCard({ ...base, card: card(), pr: pr(), cs: s2 }).bucket).toBe('in_qa');
+  expect(s2.override).toBe('in_qa');
+
+  // Pre-existing state file (no lastStatus yet): first refresh only records it.
+  const s3 = cs({ override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z' });
+  expect(classifyCard({ ...base, card: card(), pr: pr(), cs: s3 }).bucket).toBe('in_qa');
+  expect(s3.override).toBe('in_qa');
+  expect(s3.lastStatus).toBe('In Progress');
+});
+
 test('junk (comment-reason) entries in ackedReasons are dropped, never muting comment attention', () => {
   const c = cs({ ackedReasons: ['new_pr_comments'] });
   const p = pr({ comments: [{ author: 'reviewer', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] });

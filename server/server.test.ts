@@ -733,6 +733,31 @@ test('bundleStatus stays quiet when the bundle is newer than the source', () => 
   expect(bundleStatus(join(root, 'src'), join(root, 'dist'))).toBeNull();
 });
 
+test('bundleStatus flags an extra file (web/index.html) newer than the bundle', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jd-bundle-'));
+  mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, 'dist'), { recursive: true });
+
+  writeFileSync(join(root, 'src', 'app.tsx'), 'export {};');
+  const old = new Date('2026-08-01T00:00:00Z');
+  utimesSync(join(root, 'src', 'app.tsx'), old, old);
+
+  writeFileSync(join(root, 'dist', 'index.html'), '<!doctype html>');
+  const built = new Date('2026-08-02T00:00:00Z');
+  utimesSync(join(root, 'dist', 'index.html'), built, built);
+
+  // index.html lives OUTSIDE src — the #60 gap: edited after the build.
+  writeFileSync(join(root, 'index.html'), '<!doctype html>');
+  const edited = new Date('2026-08-11T00:00:00Z');
+  utimesSync(join(root, 'index.html'), edited, edited);
+
+  const status = bundleStatus(join(root, 'src'), join(root, 'dist'), [join(root, 'index.html'), join(root, 'vite.config.ts')])!;
+  expect(status).not.toBeNull();
+  expect(status.fatal).toBe(false);
+  expect(status.message).toContain('STALE');
+  expect(status.message).toContain('index.html');
+});
+
 test('bundleStatus stays quiet when there is no source tree to compare against', () => {
   const root = mkdtempSync(join(tmpdir(), 'jd-bundle-'));
   mkdirSync(join(root, 'dist'), { recursive: true });

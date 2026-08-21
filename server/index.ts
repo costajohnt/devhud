@@ -336,7 +336,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
  * Returns null when the bundle is usable and current, otherwise the message to
  * print. `fatal` marks the case where there is nothing to serve at all.
  */
-export function bundleStatus(webSrc: string, webDist: string): { fatal: boolean; message: string } | null {
+export function bundleStatus(webSrc: string, webDist: string, extraFiles: string[] = []): { fatal: boolean; message: string } | null {
   let builtAt: number;
   try {
     builtAt = statSync(join(webDist, 'index.html')).mtimeMs;
@@ -358,6 +358,17 @@ export function bundleStatus(webSrc: string, webDist: string): { fatal: boolean;
     // against, so the bundle is all we have and we serve it without comment.
     return null;
   }
+  // Vite inputs that live outside web/src — bin/start.sh's equivalent check
+  // already covers web/index.html, and missing it here meant an index.html-only
+  // edit rebuilt under start.sh but never warned under `npm start` (#60).
+  for (const file of extraFiles) {
+    try {
+      const { mtimeMs } = statSync(file);
+      if (mtimeMs > newestSrc) { newestSrc = mtimeMs; newestName = file; }
+    } catch {
+      // absent extra file (say vite.config renamed) is fine — skip it
+    }
+  }
 
   if (newestSrc <= builtAt) return null;
   const age = Math.round((newestSrc - builtAt) / 60000);
@@ -378,7 +389,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // serving an old UI knowingly is a legitimate thing to want, and a hard
   // block would be worse than the noise. Escalate to an exit if the warning
   // proves easy to scroll past.
-  const bundle = bundleStatus(join(root, 'web', 'src'), join(root, 'web', 'dist'));
+  const bundle = bundleStatus(join(root, 'web', 'src'), join(root, 'web', 'dist'),
+    [join(root, 'web', 'index.html'), join(root, 'web', 'vite.config.ts')]);
   if (bundle?.fatal) {
     console.error(bundle.message);
     process.exit(1);

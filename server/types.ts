@@ -280,6 +280,10 @@ export interface CardState {
   // acknowledged; classifyCard mutes and prunes these — see the comment
   // there. Optional: absent in pre-existing state files.
   ackedReasons?: string[] | null;
+  // Jira status as of the last refresh. classifyCard compares against it to
+  // spot a status transition and release a stale pin (#53). Optional: absent
+  // in pre-existing state files.
+  lastStatus?: string | null;
 }
 
 export interface CelebratedEntry {

@@ -113,6 +113,18 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
     cs.overrideAt = null;
   }
 
+  // A pin is a statement about the card as it stood when it was dragged; a
+  // Jira status transition supersedes it. Without this, a card pinned to In
+  // Progress while addressing review feedback stayed pinned after the
+  // In Progress → Code Review transition instead of falling back to the
+  // classifier's Waiting in Review (#53). lastStatus is absent in
+  // pre-existing state files, so the first refresh only records it.
+  if (cs.override && cs.lastStatus != null && cs.lastStatus !== card.status) {
+    cs.override = null;
+    cs.overrideAt = null;
+  }
+  cs.lastStatus = card.status;
+
   let bucket: Bucket;
   if (pr?.state === 'open' && pr.isDraft) {
     bucket = 'self_review';
