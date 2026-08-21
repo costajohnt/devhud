@@ -111,9 +111,9 @@ Evaluated top to bottom; the first matching row wins:
 | Bucket | Condition |
 |---|---|
 | `self_review` | PR is open and a draft — always, even over attention triggers and overrides. |
-| `needs_attention` | A visible **routing** attention trigger fires (`ci_failing` or `merged_not_in_test`; acked state-based reasons are muted while continuously true). Badge-only triggers never route — see below. |
+| `needs_attention` | A visible **routing** attention trigger fires (`ci_failing` or `merged_not_in_test`; acked state-based reasons are muted while continuously true). Badge-only triggers never route (one exception: `new_jira_comments` on an In Test card — see the `qa_ready` row). |
 | *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
-| `qa_ready` | Jira status equals the configured "In Test" status. |
+| `qa_ready` | Jira status equals the configured "In Test" status — unless `new_jira_comments` is visible, which routes the card to `needs_attention` instead: a Jira comment on a card in test is QA waiting on the developer, and the `lastSeenJira` watermark clears it (and returns the card here) as soon as the comment is read. |
 | `mergeable` | PR is open and approved. |
 | `waiting_review` | PR is open, and either the card is in "Code Review"/"In Review" or the PR has any review activity. |
 | `self_review` | PR is open with no review activity and the card isn't in a review status. |
@@ -133,7 +133,7 @@ where it already is.
 | `ci_failing` | yes | Linked PR is open and its CI status is `failing`. |
 | `merged_not_in_test` | yes | Linked PR is merged but the Jira card's status is neither "In Test" nor "Done" yet. |
 | `new_pr_comments` | badge | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. Renders as the "N new comments" pill. |
-| `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill. |
+| `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill — except on an In Test card, where it routes to `needs_attention` (see the bucket table above). |
 | `missing_qa_instructions` | badge | Card is in the configured "In Test" status and its description has no QA/test instructions. Renders as the "No QA Instructions" pill. |
 | `missing_fix_version` | badge | Card is in the configured "In Test" status and has no fix version set. Renders as the "No Fix Version" pill, or "No Fix Version or QA" when both hand-off reasons fire. |
 
