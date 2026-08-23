@@ -183,7 +183,7 @@ Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the
 - **qa_ready**: Jira card status is "In Test" and no unread Jira comment is pending (an unread one routes to needs_attention until read).
 - **in_qa**: Manual-move destination for cards actively being tested (a pinned override; the classifier itself routes In Test cards to QA Ready).
 - **in_progress**: Everything else (default).
-- A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
+- A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear when the card's Jira status changes (a transition supersedes the pin) or once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
 
 ## Upgrading an existing checkout
 

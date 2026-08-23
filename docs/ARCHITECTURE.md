@@ -78,7 +78,7 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
 
 ```
 {
-  cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt } },
+  cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt, ackedReasons, lastStatus } },
   celebrated: [{ id: "org/repo#num", at: isoString | null }],  // legacy, load-only (see below)
   doneCelebrated: [{ id: "jiraKey", at: isoString | null }],
   lastRefreshAt: isoString | null,
@@ -89,7 +89,7 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
 }
 ```
 
-- **cards**: per-card local overrides. `override`/`overrideAt` record a manual bucket pin; `lastSeenPr`/`lastSeenJira` are the comment "seen" horizons used by `classifyCard` to decide what counts as new.
+- **cards**: per-card local overrides. `override`/`overrideAt` record a manual bucket pin; `lastSeenPr`/`lastSeenJira` are the comment "seen" horizons used by `classifyCard` to decide what counts as new; `ackedReasons` lists acknowledged state-based attention reasons (muted while continuously true); `lastStatus` is the card's Jira status as of the last refresh, compared each refresh to release a pin when the status transitions (#53). All are optional in pre-existing state files.
 - **celebrated**: legacy PR-merge celebration ids from older state files. No longer written — completion is now tracked by Jira Done, not PR merges — but still read at load time so `migratePrLog` can backfill `prLog` history for pre-`prLog` state files.
 - **doneCelebrated**: Jira cards observed in the Done category (keyed by card key), so the completion confetti only fires once per card. The `doneTotal` counter is not derived from it — it's `doneCards.length`, so the number always matches the Done list. Completion — not a PR merge — is what the UI celebrates and counts. Two rules keep this ledger honest, both learned the hard way:
   - **Only your own cards are appended.** Before `buildJql`'s assignee filter was fixed, the board fetched other people's cards and the refresh loop celebrated every Done one it saw — 25 foreign rows in permanent state. A fetch-layer bug must not be able to write state that outlives it, so the writer checks `card.assigneeId` against the configured account rather than trusting the fetch.
@@ -112,7 +112,7 @@ Evaluated top to bottom; the first matching row wins:
 |---|---|
 | `self_review` | PR is open and a draft — always, even over attention triggers and overrides. |
 | `needs_attention` | A visible **routing** attention trigger fires (`ci_failing` or `merged_not_in_test`; acked state-based reasons are muted while continuously true). Badge-only triggers never route (one exception: `new_jira_comments` on an In Test card — see the `qa_ready` row). |
-| *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
+| *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear when the card's Jira status changes between refreshes (a transition supersedes the pin, #53) or once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
 | `qa_ready` | Jira status equals the configured "In Test" status — unless `new_jira_comments` is visible, which routes the card to `needs_attention` instead: a Jira comment on a card in test is QA waiting on the developer, and the `lastSeenJira` watermark clears it (and returns the card here) as soon as the comment is read. |
 | `mergeable` | PR is open and approved. |
 | `waiting_review` | PR is open, and either the card is in "Code Review"/"In Review" or the PR has any review activity. |
