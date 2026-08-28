@@ -314,7 +314,15 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
     const toEnrich = [...new Set(linked.values())];
-    const results = await Promise.allSettled(toEnrich.map(p => enrichPr(p, config.github)));
+    // Enrich in small batches to avoid GitHub's secondary (concurrency-based)
+    // rate limit. Each enrichPr fires 3-4 parallel API calls, so a batch of 3
+    // means ~12 concurrent requests, well under the threshold.
+    const BATCH = 3;
+    const results: PromiseSettledResult<Pr>[] = [];
+    for (let i = 0; i < toEnrich.length; i += BATCH) {
+      const batch = toEnrich.slice(i, i + BATCH);
+      results.push(...await Promise.allSettled(batch.map(p => enrichPr(p, config.github))));
+    }
     const failed = results.filter(r => r.status === 'rejected');
     if (failed.length) errors.github = [errors.github, ...failed.map(f => (f as PromiseRejectedResult).reason?.message)].filter(Boolean).join('; ');
     // Replace any PR whose enrichment rejected with its last-known-good

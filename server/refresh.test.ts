@@ -479,3 +479,46 @@ test('a whole-fetch GitHub failure degrades everything and preserves acks', asyn
   await refresh({ config, state });
   expect(state.cards['PROJ-1']!.ackedReasons).toEqual(['ci_failing']);
 });
+
+// Regression guard for the GitHub secondary (concurrency) rate limit. The
+// batching this asserts was written once, landed on a non-default branch, and
+// was silently absent from master until it was cherry-picked back — an
+// uncapped Promise.allSettled over every linked PR looks identical in review.
+// No mocks are auto-reset in this file, so enrichPr's implementation is put
+// back afterwards.
+test('enrichPr runs in capped batches, so a big board cannot trip the secondary rate limit', async () => {
+  const { fetchPrs, enrichPr } = await import('./github.ts');
+  const { fetchJiraCards } = await import('./jira.ts');
+  const count = 9;
+  const cards = Array.from({ length: count }, (_, i) => card({ key: `PROJ-${i + 1}` }));
+  const prs = Array.from({ length: count }, (_, i) => pr({ number: i + 1, branch: `PROJ-${i + 1}-x` }));
+  vi.mocked(fetchJiraCards).mockResolvedValueOnce(cards);
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs, errors: [] });
+
+  let inFlight = 0;
+  let peak = 0;
+  let calls = 0;
+  const original = vi.mocked(enrichPr).getMockImplementation();
+  vi.mocked(enrichPr).mockImplementation(async (p: Pr) => {
+    calls++;
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    inFlight--;
+    return p;
+  });
+
+  try {
+    await refresh({ config, state: emptyState() });
+  } finally {
+    vi.mocked(enrichPr).mockImplementation(original!);
+  }
+
+  // Counted in the closure, not on the spy: the mock is shared across this
+  // file and never reset, so the spy's tally includes earlier tests.
+  expect(calls).toBe(count);
+  // Capped, but still concurrent: serializing them would also pass a
+  // "<= BATCH" assertion while making a 25-PR refresh crawl.
+  expect(peak).toBeGreaterThan(1);
+  expect(peak).toBeLessThanOrEqual(3);
+});
