@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { applyAction, BUCKETS } from './actions.ts';
+import { applyAction, BUCKETS, classifierDest } from './actions.ts';
 import { emptyState, cardState } from './state.ts';
 import type { Config, Snapshot } from './types.ts';
 
@@ -249,4 +249,29 @@ test('acking a card on an approved draft PR lands where the classifier would put
   // Draft outranks approval in classifyCard, so 'mergeable' would be a
   // destination the very next refresh undoes.
   expect(applyAction({ state, config, type: 'ack', key: 'P-1' })).toMatchObject({ ok: true, bucket: 'self_review' });
+});
+
+// classifierDest exists to track the classifier exactly (see its comment), and
+// it carried the same #64 bug: the Code Review check was nested inside the
+// open-PR branch, so an ack or unpin on a Code Review card with no PR sent it
+// to in_progress while the next refresh put it in waiting_review — the exact
+// bucket-fighting this function was written to prevent.
+test('classifierDest sends a Code Review card with no PR to waiting_review (#64)', () => {
+  const state = stateWithItem();
+  const item = { ...state.snapshot!.buckets.needs_attention[0]!, jiraStatus: 'Code Review', attention: [], pr: null };
+  expect(classifierDest(item, config)).toBe('waiting_review');
+});
+
+test('classifierDest and the classifier agree on an unpinned Code Review card', () => {
+  const state = stateWithItem();
+  const item = state.snapshot!.buckets.needs_attention[0]!;
+  item.jiraStatus = 'Code Review';
+  item.attention = [];
+  item.pinned = true;
+  state.cards['P-1'] = { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z' };
+
+  const result = applyAction({ state, config, type: 'unpin', key: 'P-1' });
+
+  expect(result).toMatchObject({ ok: true, bucket: 'waiting_review' });
+  expect(state.snapshot!.buckets.waiting_review.map(i => i.key)).toEqual(['P-1']);
 });

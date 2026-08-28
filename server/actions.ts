@@ -1,5 +1,5 @@
 import { cardState } from './state.ts';
-import { STATE_REASONS } from './classify.ts';
+import { STATE_REASONS, isInReview } from './classify.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
 export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
@@ -27,14 +27,18 @@ const ackReasons = (prior: string[] | null | undefined, attention: string[]): st
 // each other or from the classifier.
 export function classifierDest(item: Item, config: Config): Bucket {
   const pr = item.pr;
+  const statuses = config.jira?.statuses;
   if (pr?.state === 'open' && pr.isDraft) return 'self_review';
   if (item.attention.length) return 'needs_attention';
-  if (item.jiraStatus === config.jira?.statuses?.inTest) return 'qa_ready';
+  if (item.jiraStatus === statuses?.inTest) return 'qa_ready';
   if (pr?.state === 'open') {
     if (pr.reviewState === 'approved') return 'mergeable';
-    if (item.jiraStatus === 'Code Review' || item.jiraStatus === 'In Review' || pr.reviewState !== 'none') return 'waiting_review';
+    if (isInReview(item.jiraStatus, statuses) || pr.reviewState !== 'none') return 'waiting_review';
     return 'self_review';
   }
+  // Mirrors the classifier's no-PR review case (#64) — this function exists to
+  // track it exactly, so the two cannot disagree about where a card belongs.
+  if (isInReview(item.jiraStatus, statuses)) return 'waiting_review';
   return 'in_progress';
 }
 

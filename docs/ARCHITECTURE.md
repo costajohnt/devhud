@@ -115,7 +115,7 @@ Evaluated top to bottom; the first matching row wins:
 | *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear when the card's Jira status changes between refreshes (a transition supersedes the pin, #53) or once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
 | `qa_ready` | Jira status equals the configured "In Test" status — unless `new_jira_comments` is visible, which routes the card to `needs_attention` instead: a Jira comment on a card in test is QA waiting on the developer, and the `lastSeenJira` watermark clears it (and returns the card here) as soon as the comment is read. |
 | `mergeable` | PR is open and approved. |
-| `waiting_review` | PR is open, and either the card is in "Code Review"/"In Review" or the PR has any review activity. |
+| `waiting_review` | The card is in a review status ("Code Review"/"In Review", or `jira.statuses.review`; matched case-insensitively) — with or without a PR — or an open PR has any review activity. An approved or draft PR still wins. |
 | `self_review` | PR is open with no review activity and the card isn't in a review status. |
 | `in_progress` | Default: none of the above apply. |
 

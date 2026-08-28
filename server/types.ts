@@ -16,6 +16,10 @@ export interface JiraStatuses {
   // from the whole dashboard. Optional so existing { todo, inTest, done }
   // config/test fixtures keep working; defaults to 'Canceled' in loadConfig.
   canceled?: string;
+  // Status name that means the work is out for review. Optional: the two
+  // common Jira defaults ('Code Review', 'In Review') are always recognised,
+  // so this only needs setting for a project that renamed it (#64).
+  review?: string;
 }
 
 // Jira status categories: every status rolls up to one of these three. Used

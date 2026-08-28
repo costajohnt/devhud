@@ -310,3 +310,44 @@ test('In Test card whose only comment is from an ignored author stays in qa_read
   expect(r.attention).not.toContain('new_jira_comments');
   expect(r.bucket).toBe('qa_ready');
 });
+
+// #64: a card moved to Code Review in Jira sat in In Progress forever, because
+// the Code Review check lived inside the `pr?.state === 'open'` branch — so the
+// developer's own statement about the work only counted if the board had
+// already linked an open PR.
+test('Code Review with no PR at all -> waiting_review, not in_progress', () => {
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: null, cs: cs() }).bucket).toBe('waiting_review');
+});
+
+test('Code Review still routes to waiting_review with an open unreviewed PR', () => {
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr(), cs: cs() }).bucket).toBe('waiting_review');
+});
+
+// The PR state is more specific than the Jira status where they disagree, so
+// these two must not regress into waiting_review.
+test('an approved PR still beats a Code Review status', () => {
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ reviewState: 'approved' }), cs: cs() }).bucket).toBe('mergeable');
+});
+
+test('a draft PR still beats a Code Review status', () => {
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('self_review');
+});
+
+// A Jira status name is free text an admin can edit or re-case.
+test('the review status matches case-insensitively and ignores surrounding space', () => {
+  for (const status of ['code review', 'CODE REVIEW', '  In Review  ', 'in review']) {
+    expect(classifyCard({ ...base, card: card({ status }), pr: null, cs: cs() }).bucket).toBe('waiting_review');
+  }
+});
+
+test('a project that renamed the status configures it, and the stock names keep working', () => {
+  const renamed: JiraStatuses = { ...statuses, review: 'Peer Review' };
+  expect(classifyCard({ ...base, statuses: renamed, card: card({ status: 'Peer Review' }), pr: null, cs: cs() }).bucket).toBe('waiting_review');
+  expect(classifyCard({ ...base, statuses: renamed, card: card({ status: 'Code Review' }), pr: null, cs: cs() }).bucket).toBe('waiting_review');
+});
+
+test('an unrelated in-flight status with no PR is still in_progress', () => {
+  for (const status of ['In Progress', 'Reviewing the docs', 'Blocked']) {
+    expect(classifyCard({ ...base, card: card({ status }), pr: null, cs: cs() }).bucket).toBe('in_progress');
+  }
+});

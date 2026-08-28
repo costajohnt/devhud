@@ -9,7 +9,8 @@
       "todo": "To Do",
       "inTest": "In Test",
       "done": "Done",
-      "canceled": "Canceled"
+      "canceled": "Canceled",
+      "review": "Code Review"
     }
   },
   "github": {

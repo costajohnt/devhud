@@ -149,17 +149,38 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   else if (pr?.state === 'open') {
     if (pr.reviewState === 'approved') {
       bucket = 'mergeable';
-    } else if (card.status === 'Code Review' || card.status === 'In Review' || pr.reviewState !== 'none') {
+    } else if (isInReview(card.status, statuses) || pr.reviewState !== 'none') {
       bucket = 'waiting_review';
     } else {
       bucket = 'self_review';
     }
   }
+  // A Code Review status routes here even with no open PR. Previously this
+  // check lived only inside the branch above, so moving a card to Code Review
+  // before its PR existed (or while the board had not linked one yet) left it
+  // sitting in In Progress no matter how many refreshes ran (#64). The Jira
+  // status is the developer's own statement about the work; it should not be
+  // conditional on the board having found a PR.
+  else if (isInReview(card.status, statuses)) bucket = 'waiting_review';
   else bucket = 'in_progress';
 
   newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
   return { bucket, attention: visible, newComments };
 }
+
+// Unlike To Do / Done, this cannot be decided by status category: Jira files
+// both 'In Progress' and 'Code Review' under the same 'indeterminate'
+// category, so the name is the only signal. Compared case-insensitively and
+// trimmed because a Jira status name is free text an admin can edit, and the
+// two stock names stay recognised alongside any configured one so existing
+// configs (which have no `review` key) keep working (#64).
+const REVIEW_ALIASES = ['code review', 'in review'];
+
+export const isInReview = (status: string | undefined, statuses: JiraStatuses | undefined): boolean => {
+  const name = status?.trim().toLowerCase();
+  if (!name) return false;
+  return name === statuses?.review?.trim().toLowerCase() || REVIEW_ALIASES.includes(name);
+};
 
 // Category-first, exact-name fallback. Jira routing must follow the status
 // *category*, not one hard-coded name: 'Assigned' is a To Do status, 'Canceled'
