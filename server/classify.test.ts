@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { classifyCard, isTodo, isDone, isCanceled } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled, sameStatus } from './classify.ts';
 import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 
 const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
@@ -350,4 +350,47 @@ test('an unrelated in-flight status with no PR is still in_progress', () => {
   for (const status of ['In Progress', 'Reviewing the docs', 'Blocked']) {
     expect(classifyCard({ ...base, card: card({ status }), pr: null, cs: cs() }).bucket).toBe('in_progress');
   }
+});
+
+// #67: only isInReview normalized, so a project whose column read "in test"
+// routed review case-insensitively and In Test not at all. Every status
+// comparison now goes through sameStatus, so each gets its own re-cased case.
+test('In Test matches case-insensitively and ignores surrounding space', () => {
+  for (const status of ['in test', 'IN TEST', '  In Test  ']) {
+    const c = card({ status, description: 'QA instructions: click it', fixVersions: ['1.0'] });
+    expect(classifyCard({ ...base, card: c, pr: null, cs: cs() }).bucket).toBe('qa_ready');
+    // The same comparison gates the merged-not-in-test attention reason and
+    // the auto-clear of a stale override.
+    expect(classifyCard({ ...base, card: c, pr: pr({ state: 'merged' }), cs: cs() }).attention).not.toContain('merged_not_in_test');
+    const pinned = cs({ override: 'in_progress', lastStatus: status });
+    classifyCard({ ...base, card: c, pr: null, cs: pinned });
+    expect(pinned.override).toBeNull();
+  }
+});
+
+test('Done, To Do and Canceled match case-insensitively and ignore surrounding space', () => {
+  for (const status of ['done', 'DONE', '  Done  ']) expect(isDone(card({ status }), statuses)).toBe(true);
+  for (const status of ['to do', 'TO DO', '  To Do  ']) expect(isTodo(card({ status }), statuses)).toBe(true);
+  for (const status of ['canceled', 'CANCELED', '  Canceled  ']) {
+    expect(isCanceled(card({ status }), statuses)).toBe(true);
+    // Canceled sits in the Done category but is an abandonment, not a
+    // completion — normalizing must not blur that.
+    expect(isDone(card({ status }), statuses)).toBe(false);
+  }
+});
+
+test('a project that re-cased its statuses in Jira still routes Done and merged-not-in-test', () => {
+  const recased: JiraStatuses = { todo: 'to do', inTest: 'in test', done: 'done', canceled: 'canceled' };
+  expect(isDone(card({ status: 'Done' }), recased)).toBe(true);
+  expect(classifyCard({ ...base, statuses: recased, card: card({ status: 'In Progress' }), pr: pr({ state: 'merged' }), cs: cs() }).attention)
+    .toContain('merged_not_in_test');
+});
+
+// sameStatus must not treat "both missing" as a match: a card with no status
+// and a config with no canceled name are not the same status.
+test('sameStatus never matches a blank or missing status', () => {
+  expect(sameStatus(undefined, undefined)).toBe(false);
+  expect(sameStatus('   ', '')).toBe(false);
+  expect(sameStatus('Done', undefined)).toBe(false);
+  expect(sameStatus(' Done ', 'done')).toBe(true);
 });

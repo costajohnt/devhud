@@ -255,6 +255,7 @@ One entry per PR ever fetched, keyed by `org/repo#number` (`id`). Upserted (not 
 - If the GitHub PR list fetch fails per-repo (one bad repo shouldn't blank the others), that repo's error is appended into `errors.github`, and that repo's PRs are spliced back in from `state.lastPrs`.
 - If enriching an individual linked PR (comments/CI/review detail) rejects, `errors.github` gets the failure message appended, and that one PR falls back to its `state.lastPrs` counterpart (matched by repo + number) rather than losing its CI/review/comment data.
 - If the whole GitHub fetch step throws unexpectedly, `errors.github` is set and `prs` falls back to `state.lastPrs` wholesale.
+- Rate limiting is retried inside `gh()` first (see `github.ts`). Whatever still reaches `errors.github` as a rate-limit failure — from any of the paths above — is replaced by the single line `GitHub throttled this refresh (rate limit) — showing last known data.`, since the fallbacks above have already kept the board usable; any non-throttle failure in the same refresh keeps its own message alongside it (#69).
 
 `errors` on the payload always reflects the current refresh's outcome (not accumulated across refreshes); a clean refresh after a failed one resets both back to `null`.
 

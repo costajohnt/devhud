@@ -7,7 +7,10 @@ vi.mock('./jira.ts', () => ({
   fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))),
   doneWatermark: vi.fn(() => undefined),
 }));
-vi.mock('./github.ts', () => ({
+// Only the two network functions are stubbed; isThrottleMessage is pure and
+// shared with refresh's banner composition, so it keeps its real behavior.
+vi.mock('./github.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./github.ts')>(),
   fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
   enrichPr: vi.fn((p: Pr) => Promise.resolve(p)),
 }));
@@ -498,9 +501,11 @@ test('enrichPr runs in capped batches, so a big board cannot trip the secondary 
   let inFlight = 0;
   let peak = 0;
   let calls = 0;
+  const startedAt: number[] = [];
   const original = vi.mocked(enrichPr).getMockImplementation();
   vi.mocked(enrichPr).mockImplementation(async (p: Pr) => {
     calls++;
+    startedAt.push(Date.now());
     inFlight++;
     peak = Math.max(peak, inFlight);
     await new Promise(resolve => setTimeout(resolve, 5));
@@ -508,11 +513,13 @@ test('enrichPr runs in capped batches, so a big board cannot trip the secondary 
     return p;
   });
 
+  const began = Date.now();
   try {
     await refresh({ config, state: emptyState() });
   } finally {
     vi.mocked(enrichPr).mockImplementation(original!);
   }
+  const elapsed = Date.now() - began;
 
   // Counted in the closure, not on the spy: the mock is shared across this
   // file and never reset, so the spy's tally includes earlier tests.
@@ -521,4 +528,34 @@ test('enrichPr runs in capped batches, so a big board cannot trip the secondary 
   // "<= BATCH" assertion while making a 25-PR refresh crawl.
   expect(peak).toBeGreaterThan(1);
   expect(peak).toBeLessThanOrEqual(3);
+  // #69: the secondary limit is rate-shaped as well as concurrency-shaped, so
+  // batches are paced, not fired back to back. 9 PRs = 3 batches = 2 pauses.
+  expect(elapsed).toBeGreaterThanOrEqual(2 * 200);
+  expect(startedAt[3]! - startedAt[0]!).toBeGreaterThanOrEqual(200);
+});
+
+// #69: a throttle that outlives gh()'s retries used to reach the banner as a raw
+// URL plus a JSON blob, which reads like an outage even though the board still
+// shows last-known-good data.
+test('a GitHub throttle collapses into one calm banner, keeping any real failure alongside it', async () => {
+  const { fetchPrs } = await import('./github.ts');
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: [
+    'o/r: GitHub 403 /repos/o/r/issues/1/comments: { "message": "You have exceeded a secondary rate limit." }',
+  ] });
+  const state = emptyState();
+  state.lastCards = [card()];
+  state.lastPrs = [pr()];
+  const payload = await refresh({ config, state });
+  expect(payload.errors.github).toBe('GitHub throttled this refresh (rate limit) — showing last known data.');
+  // The fallback still runs: the throttled repo's PRs stay on the board.
+  expect(payload.buckets.self_review[0]?.pr?.number).toBe(1);
+
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: [
+    'o/r: GitHub 403 /repos/o/r: { "message": "You have exceeded a secondary rate limit." }',
+    'o/other: GitHub 404 /repos/o/other: not found',
+  ] });
+  const both = await refresh({ config, state: emptyState() });
+  expect(both.errors.github).toContain('GitHub throttled this refresh');
+  expect(both.errors.github).toContain('404');
+  expect(both.errors.github).not.toContain('secondary rate limit');
 });

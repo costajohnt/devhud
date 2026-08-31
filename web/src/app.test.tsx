@@ -388,3 +388,32 @@ test('a granted permission revoked in site settings leaves the bell off', () => 
   const bell = [...host.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.includes('notifications'))!;
   expect(bell.getAttribute('aria-pressed')).toBe('false');
 });
+
+// #70: the Todo column used to render inside Extras, below the charts, so the
+// actionable work sat under the summary panels. Order is the assertion — a
+// test on presence alone would have passed before the move.
+test('the Todo column renders above Monthly Activity and Top Repos (#70)', () => {
+  act(() => {
+    es().emit(snap({
+      buckets: { ...emptyBuckets(), in_progress: [item()] },
+      todo: [{ key: 'P-9', summary: 'Not started yet', jiraUrl: 'https://j/browse/P-9', createdAt: '2026-07-01T00:00:00Z' }],
+      prLog: [{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: null, closedAt: null }],
+    }));
+  });
+
+  const todo = host.querySelector('#todo')!;
+  const charts = host.querySelector('.chart-panel')!;
+  expect(todo).not.toBeNull();
+  expect(charts.textContent).toContain('Monthly Activity');
+  expect(charts.textContent).toContain('Top Repos');
+  // DOCUMENT_POSITION_FOLLOWING: the charts come after the Todo section.
+  expect(todo.compareDocumentPosition(charts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // And the board columns still come first of all.
+  const board = host.querySelector('.dashboard-content')!;
+  expect(board.compareDocumentPosition(todo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test('an empty Todo list renders no Todo section at all', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] }, todo: [] })); });
+  expect(host.querySelector('#todo')).toBeNull();
+});

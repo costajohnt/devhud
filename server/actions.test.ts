@@ -275,3 +275,15 @@ test('classifierDest and the classifier agree on an unpinned Code Review card', 
   expect(result).toMatchObject({ ok: true, bucket: 'waiting_review' });
   expect(state.snapshot!.buckets.waiting_review.map(i => i.key)).toEqual(['P-1']);
 });
+
+// #67: classifierDest's In Test check was the one comparison in this file that
+// stayed exact after #64 normalized the review one, so an ack on a card whose
+// project spells the column "in test" landed in in_progress while the next
+// refresh moved it to qa_ready — the same bucket-fighting as above.
+test('classifierDest matches In Test case-insensitively (#67)', () => {
+  const state = stateWithItem();
+  const base = { ...state.snapshot!.buckets.needs_attention[0]!, attention: [], pr: null };
+  for (const jiraStatus of ['in test', 'IN TEST', '  In Test  ']) {
+    expect(classifierDest({ ...base, jiraStatus }, config)).toBe('qa_ready');
+  }
+});

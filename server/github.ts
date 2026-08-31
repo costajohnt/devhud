@@ -115,26 +115,89 @@ export function reviewStateFrom(pr: { requested_reviewers?: unknown[]; requested
 const ETAG_CACHE_MAX = 500;
 const etagCache = new Map<string, { etag: string; body: unknown }>();
 
+// GitHub's *secondary* rate limit is rate-shaped, not quota-shaped: it fires on
+// bursts and on many requests against one endpoint family in a short window, and
+// 304s from the ETag cache above still count against it. Capping concurrency (the
+// BATCH loop in refresh.ts) is therefore a guess, not a fix — a large enrich set
+// trips it anyway and the raw 403 used to land in the dashboard's error banner
+// (#69). GitHub's documented contract is to honor Retry-After / x-ratelimit-reset
+// and back off, which is what this does; only an exhausted retry budget throws.
+const THROTTLE_RETRIES = 3;
+// A ceiling on any server-supplied wait. A primary-limit reset can be most of an
+// hour away, and a refresh that blocks that long is worse than a degraded one
+// that falls back to last-known-good data and retries on the next tick.
+const MAX_THROTTLE_WAIT_MS = 60_000;
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// Returns how long to wait before retrying, or null if this failure isn't a
+// throttle. Detects the secondary limit by body text, and both limits by the
+// presence of Retry-After / an exhausted x-ratelimit-remaining, so a 429 or a
+// 403 carrying only headers is still recognised.
+export function throttleWaitMs(
+  res: { status: number; headers?: { get(name: string): string | null } },
+  body: string,
+  attempt: number,
+  now = Date.now(),
+): number | null {
+  if (res.status !== 403 && res.status !== 429) return null;
+  const num = (name: string) => {
+    const raw = res.headers?.get(name);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const retryAfter = num('retry-after');
+  const reset = num('x-ratelimit-reset');
+  const exhausted = res.headers?.get('x-ratelimit-remaining') === '0';
+  const secondary = /secondary rate limit/i.test(body);
+  // A 403 that is not a throttle (a bad token, a repo the token can't see)
+  // must still fail fast — retrying it just delays the banner.
+  if (!secondary && retryAfter == null && !exhausted) return null;
+  // Exponential backoff is the floor: GitHub often answers a secondary limit
+  // with no Retry-After at all.
+  let wait = 1000 * 2 ** attempt;
+  if (retryAfter != null && retryAfter > 0) wait = Math.max(wait, retryAfter * 1000);
+  else if (exhausted && reset != null) wait = Math.max(wait, reset * 1000 - now);
+  return Math.min(Math.max(wait, 0), MAX_THROTTLE_WAIT_MS);
+}
+
+// True for an error message produced by an exhausted throttle retry budget, so
+// callers can say "GitHub throttled us" instead of pasting a URL and a JSON blob
+// into the UI. Matches on the message because per-repo failures are flattened to
+// strings before they reach the banner (fetchPrs).
+export const isThrottleMessage = (msg: string | undefined): boolean =>
+  /secondary rate limit|rate limit exceeded|api rate limit/i.test(msg ?? '');
+
 async function gh<T>(path: string, token: string): Promise<T> {
-  const cached = etagCache.get(path);
-  const res = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
-      ...(cached ? { 'If-None-Match': cached.etag } : {}),
-    },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (res.status === 304 && cached) return cached.body as T;
-  if (!res.ok) throw new Error(`GitHub ${res.status} ${path}: ${(await res.text()).slice(0, 200)}`);
-  const body = await res.json() as T;
-  // Optional chain: test stubs (and any minimal fetch shim) may return a
-  // response without a headers object.
-  const etag = res.headers?.get('etag');
-  if (etag) {
-    if (etagCache.size >= ETAG_CACHE_MAX) etagCache.clear();
-    etagCache.set(path, { etag, body });
+  for (let attempt = 0; ; attempt++) {
+    const cached = etagCache.get(path);
+    const res = await fetch(`https://api.github.com${path}`, {
+      headers: {
+        Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
+        ...(cached ? { 'If-None-Match': cached.etag } : {}),
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (res.status === 304 && cached) return cached.body as T;
+    if (!res.ok) {
+      const text = await res.text();
+      const wait = attempt < THROTTLE_RETRIES ? throttleWaitMs(res, text, attempt) : null;
+      if (wait !== null) {
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`GitHub ${res.status} ${path}: ${text.slice(0, 200)}`);
+    }
+    const body = await res.json() as T;
+    // Optional chain: test stubs (and any minimal fetch shim) may return a
+    // response without a headers object.
+    const etag = res.headers?.get('etag');
+    if (etag) {
+      if (etagCache.size >= ETAG_CACHE_MAX) etagCache.clear();
+      etagCache.set(path, { etag, body });
+    }
+    return body;
   }
-  return body;
 }
 
 interface RawSearchResult {

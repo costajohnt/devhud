@@ -1,25 +1,33 @@
 import type { DashboardData } from './types.js';
 import { ago } from './board.js';
 
+// Split out of Extras so the app can render it directly under the board,
+// above the charts: Todo is actionable work and belongs next to the columns,
+// while Monthly Activity / Top Repos are summary context (#70). Everything
+// else in Extras stays below them.
+export function TodoSection({ data }: { data: DashboardData }) {
+  if (data.todo.length === 0) return null;
+  return (
+    <section id="todo" class="pr-section">
+      <div class="pr-section-header">
+        <span class="pr-section-dot muted" />
+        <span class="pr-section-title">Todo</span>
+        <span class="pr-section-count">{data.todo.length}</span>
+      </div>
+      {data.todo.map(t => (
+        <div key={t.key} class="pr-row">
+          <span class="pr-row-id">{t.key}</span>
+          <a class="pr-row-title" href={t.jiraUrl} target="_blank" rel="noopener noreferrer">{t.summary}</a>
+          <span class="pr-row-age">{ago(t.createdAt)}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export function Extras({ data }: { data: DashboardData }) {
   return (
     <>
-      {data.todo.length > 0 && (
-        <section id="todo" class="pr-section">
-          <div class="pr-section-header">
-            <span class="pr-section-dot muted" />
-            <span class="pr-section-title">Todo</span>
-            <span class="pr-section-count">{data.todo.length}</span>
-          </div>
-          {data.todo.map(t => (
-            <div key={t.key} class="pr-row">
-              <span class="pr-row-id">{t.key}</span>
-              <a class="pr-row-title" href={t.jiraUrl} target="_blank" rel="noopener noreferrer">{t.summary}</a>
-              <span class="pr-row-age">{ago(t.createdAt)}</span>
-            </div>
-          ))}
-        </section>
-      )}
       {data.unlinkedPrs.length > 0 && (
         <section class="pr-section">
           <div class="pr-section-header">

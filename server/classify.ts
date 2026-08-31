@@ -75,14 +75,14 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
     newComments.push(...jiraNew.map(jiraNewComment));
   }
 
-  if (pr?.state === 'merged' && card.status !== statuses.inTest && card.status !== statuses.done) {
+  if (pr?.state === 'merged' && !sameStatus(card.status, statuses.inTest) && !sameStatus(card.status, statuses.done)) {
     attention.push('merged_not_in_test');
   }
 
   // An In Test card without QA instructions is invisible to QA: nudge the
   // developer to add them before a tester picks the card up. Jira-derived,
   // so it stays valid even when PR data is degraded.
-  if (card.status === statuses.inTest && !hasQaInstructions(card.description ?? '')) {
+  if (sameStatus(card.status, statuses.inTest) && !hasQaInstructions(card.description ?? '')) {
     attention.push('missing_qa_instructions');
   }
 
@@ -90,7 +90,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   // is missing from the release notes and gives the tester nothing to target.
   // Badge, not routing, for the same reason as the QA rule — it is retroactive
   // and would otherwise empty QA Ready on the day it ships.
-  if (card.status === statuses.inTest && !(card.fixVersions ?? []).length) {
+  if (sameStatus(card.status, statuses.inTest) && !(card.fixVersions ?? []).length) {
     attention.push('missing_fix_version');
   }
 
@@ -108,7 +108,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
 
   // Auto-clear a stale override once the card reaches In Test or Done:
   // the card's lifecycle has moved past developer-side bucketing.
-  if (cs.override && (card.status === statuses.inTest || card.status === statuses.done)) {
+  if (cs.override && (sameStatus(card.status, statuses.inTest) || sameStatus(card.status, statuses.done))) {
     cs.override = null;
     cs.overrideAt = null;
   }
@@ -143,7 +143,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   // STATE_REASON and so is not ack-governed — the lastSeen watermark clears it
   // as soon as the developer reads the comment, and the card falls straight
   // back to QA Ready.
-  else if (card.status === statuses.inTest) {
+  else if (sameStatus(card.status, statuses.inTest)) {
     bucket = visible.includes('new_jira_comments') ? 'needs_attention' : 'qa_ready';
   }
   else if (pr?.state === 'open') {
@@ -168,18 +168,29 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   return { bucket, attention: visible, newComments };
 }
 
+// Every Jira status name — configured or fetched — is free text an admin can
+// re-case or pad, so no status comparison in this file may be an exact `===`.
+// The review comparison normalized (#64) while In Test / Done / Canceled / To Do
+// stayed exact, so a project whose column read "in test" routed review
+// case-insensitively and In Test not at all (#67). This helper is the single
+// comparison every one of them now goes through. An undefined or blank status
+// never matches, including against another blank.
+export const sameStatus = (a: string | undefined, b: string | undefined): boolean => {
+  const x = a?.trim().toLowerCase();
+  return !!x && x === b?.trim().toLowerCase();
+};
+
 // Unlike To Do / Done, this cannot be decided by status category: Jira files
 // both 'In Progress' and 'Code Review' under the same 'indeterminate'
-// category, so the name is the only signal. Compared case-insensitively and
-// trimmed because a Jira status name is free text an admin can edit, and the
-// two stock names stay recognised alongside any configured one so existing
-// configs (which have no `review` key) keep working (#64).
+// category, so the name is the only signal. The two stock names stay
+// recognised alongside any configured one so existing configs (which have no
+// `review` key) keep working (#64).
 const REVIEW_ALIASES = ['code review', 'in review'];
 
 export const isInReview = (status: string | undefined, statuses: JiraStatuses | undefined): boolean => {
   const name = status?.trim().toLowerCase();
   if (!name) return false;
-  return name === statuses?.review?.trim().toLowerCase() || REVIEW_ALIASES.includes(name);
+  return sameStatus(name, statuses?.review) || REVIEW_ALIASES.includes(name);
 };
 
 // Category-first, exact-name fallback. Jira routing must follow the status
@@ -187,12 +198,12 @@ export const isInReview = (status: string | undefined, statuses: JiraStatuses | 
 // is a Done status, and neither equals the configured todo/done name. Fixtures
 // and configs without a category fall back to the exact-name comparison.
 export const isCanceled = (card: Card, statuses: JiraStatuses): boolean =>
-  card.status === (statuses.canceled ?? 'Canceled');
+  sameStatus(card.status, statuses.canceled ?? 'Canceled');
 
 export const isTodo = (card: Card, statuses: JiraStatuses): boolean =>
-  card.statusCategory === 'new' || card.status === statuses.todo;
+  card.statusCategory === 'new' || sameStatus(card.status, statuses.todo);
 
 // Completion is the Jira Done category, minus Canceled (which lives in the Done
 // category but is an abandonment, not a completion — see isCanceled).
 export const isDone = (card: Card, statuses: JiraStatuses): boolean =>
-  !isCanceled(card, statuses) && (card.statusCategory === 'done' || card.status === statuses.done);
+  !isCanceled(card, statuses) && (card.statusCategory === 'done' || sameStatus(card.status, statuses.done));

@@ -1,5 +1,5 @@
 import { cardState } from './state.ts';
-import { STATE_REASONS, isInReview } from './classify.ts';
+import { STATE_REASONS, isInReview, sameStatus } from './classify.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
 export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
@@ -30,7 +30,7 @@ export function classifierDest(item: Item, config: Config): Bucket {
   const statuses = config.jira?.statuses;
   if (pr?.state === 'open' && pr.isDraft) return 'self_review';
   if (item.attention.length) return 'needs_attention';
-  if (item.jiraStatus === statuses?.inTest) return 'qa_ready';
+  if (sameStatus(item.jiraStatus, statuses?.inTest)) return 'qa_ready';
   if (pr?.state === 'open') {
     if (pr.reviewState === 'approved') return 'mergeable';
     if (isInReview(item.jiraStatus, statuses) || pr.reviewState !== 'none') return 'waiting_review';

@@ -2,7 +2,7 @@ import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { classifyCard, isTodo, isDone, isCanceled, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, doneWatermark } from './jira.ts';
-import { fetchPrs, enrichPr } from './github.ts';
+import { fetchPrs, enrichPr, isThrottleMessage } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
 
 const DAY = 86400000;
@@ -296,6 +296,9 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     errors.jira = (e as Error).message;
     cards = state.lastCards ?? [];
   }
+  // Collected rather than concatenated as we go, so the compose step below can
+  // tell a throttle apart from a real failure and keep both legible (#69).
+  const githubErrors: string[] = [];
   try {
     const gh = await fetchPrs(config.github);
     prs = gh.prs;
@@ -303,7 +306,7 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     // bad repo doesn't blank the others; splice that repo's last-known-good
     // PRs back in from state.lastPrs so it doesn't vanish from the board.
     if (gh.errors.length) {
-      errors.github = gh.errors.join('; ');
+      githubErrors.push(...gh.errors);
       for (const err of gh.errors) {
         const failedRepo = err.match(/^([^:]+):/)?.[1];
         if (failedRepo) {
@@ -314,17 +317,23 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
     const toEnrich = [...new Set(linked.values())];
-    // Enrich in small batches to avoid GitHub's secondary (concurrency-based)
-    // rate limit. Each enrichPr fires 3-4 parallel API calls, so a batch of 3
-    // means ~12 concurrent requests, well under the threshold.
+    // Enrich in small batches to avoid GitHub's secondary rate limit. Each
+    // enrichPr fires 3-4 parallel API calls, so a batch of 3 means ~12
+    // concurrent requests, well under the concurrency threshold — but that
+    // limit is rate-shaped too, and back-to-back batches sustain a request
+    // *rate* that trips it on a large enrich set (#69). The pause between
+    // batches shapes the whole sweep rather than just its width; gh() backs
+    // off and retries if one gets through anyway.
     const BATCH = 3;
+    const BATCH_PAUSE_MS = 200;
     const results: PromiseSettledResult<Pr>[] = [];
     for (let i = 0; i < toEnrich.length; i += BATCH) {
+      if (i > 0) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
       const batch = toEnrich.slice(i, i + BATCH);
       results.push(...await Promise.allSettled(batch.map(p => enrichPr(p, config.github))));
     }
     const failed = results.filter(r => r.status === 'rejected');
-    if (failed.length) errors.github = [errors.github, ...failed.map(f => (f as PromiseRejectedResult).reason?.message)].filter(Boolean).join('; ');
+    if (failed.length) githubErrors.push(...failed.map(f => (f as PromiseRejectedResult).reason?.message).filter((m): m is string => !!m));
     // Replace any PR whose enrichment rejected with its last-known-good
     // counterpart (matched by repo+number) so a transient detail-fetch
     // failure doesn't strip CI/review/comment data the board already had.
@@ -339,10 +348,20 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     });
     githubOk = true;
   } catch (e) {
-    errors.github = [errors.github, (e as Error).message].filter(Boolean).join('; ');
+    githubErrors.push((e as Error).message);
     prs = state.lastPrs ?? [];
     prFetchFailed = true;
   }
+  // A throttle that survives gh()'s retries is the least alarming failure the
+  // banner can carry: the last-known-good splices above keep the board usable
+  // and the next tick usually clears it, so every throttled path collapses into
+  // one calm sentence instead of pasting a URL and a JSON blob at the user
+  // (#69). Any non-throttle failure keeps its own message — that one still
+  // needs reading.
+  const throttled = githubErrors.filter(isThrottleMessage);
+  const realFailures = githubErrors.filter(m => !isThrottleMessage(m));
+  if (throttled.length) realFailures.unshift('GitHub throttled this refresh (rate limit) — showing last known data.');
+  if (realFailures.length) errors.github = realFailures.join('; ');
   const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos });
   if (seq > lastCompletedRefreshSeq) {
     lastCompletedRefreshSeq = seq;

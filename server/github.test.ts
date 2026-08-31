@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapPr, ciFromCheckRuns, reviewStateFrom, fetchPrs, enrichPr } from './github.ts';
+import { mapPr, ciFromCheckRuns, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage } from './github.ts';
 import type { Pr, GithubConfig } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -274,4 +274,106 @@ test('enrichPr still queries check-runs and overwrites CI when _raw carries a he
   expect(urls.some(u => u.includes('/commits/deadbeef/check-runs'))).toBe(true);
   expect(pr.ciStatus).toBe('failing');
   expect(pr.reviewState).toBe('none'); // _raw present: an empty reviews list is authoritative
+});
+
+// #69: GitHub's secondary rate limit answered a large enrich sweep with a 403,
+// which gh() threw immediately, so a transient throttle became a raw error
+// banner and a degraded refresh. gh() now honors GitHub's documented contract
+// (Retry-After / x-ratelimit-reset, exponential backoff otherwise) and only
+// throws once the retry budget is spent.
+
+const headers = (h: Record<string, string> = {}) => ({ get: (n: string) => h[n.toLowerCase()] ?? null });
+const SECONDARY = '{ "message": "You have exceeded a secondary rate limit." }';
+
+test('throttleWaitMs recognises a throttle and picks the longest applicable wait', () => {
+  const now = 1_000_000;
+  // Body text alone is enough: GitHub often sends no Retry-After with a
+  // secondary limit, so the exponential backoff is the floor.
+  expect(throttleWaitMs({ status: 403, headers: headers() }, SECONDARY, 0, now)).toBe(1000);
+  expect(throttleWaitMs({ status: 403, headers: headers() }, SECONDARY, 2, now)).toBe(4000);
+  // Retry-After wins when it asks for longer than the backoff.
+  expect(throttleWaitMs({ status: 429, headers: headers({ 'retry-after': '5' }) }, 'slow down', 0, now)).toBe(5000);
+  expect(throttleWaitMs({ status: 429, headers: headers({ 'retry-after': '0' }) }, SECONDARY, 0, now)).toBe(1000);
+  // Exhausted quota with a reset timestamp: wait until the reset, not past it.
+  expect(throttleWaitMs(
+    { status: 403, headers: headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 30) }) },
+    'API rate limit exceeded', 0, now)).toBe(30_000);
+  // Never block the refresh for longer than the cap, however far off the reset.
+  expect(throttleWaitMs(
+    { status: 403, headers: headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 3600) }) },
+    'API rate limit exceeded', 0, now)).toBe(60_000);
+});
+
+test('throttleWaitMs leaves a non-throttle failure alone', () => {
+  // A 403 from a bad token or an invisible repo must fail fast; retrying it
+  // only delays the banner. Same for anything that isn't 403/429.
+  expect(throttleWaitMs({ status: 403, headers: headers() }, '{ "message": "Bad credentials" }', 0)).toBeNull();
+  expect(throttleWaitMs({ status: 404, headers: headers({ 'retry-after': '5' }) }, 'nope', 0)).toBeNull();
+  expect(throttleWaitMs({ status: 500, headers: headers() }, SECONDARY, 0)).toBeNull();
+  // A response object with no headers at all (test stubs, minimal shims).
+  expect(throttleWaitMs({ status: 403 }, 'forbidden', 0)).toBeNull();
+});
+
+test('isThrottleMessage separates a throttle from a real failure', () => {
+  expect(isThrottleMessage(`GitHub 403 /repos/o/r/issues/1/comments: ${SECONDARY}`)).toBe(true);
+  expect(isThrottleMessage('GitHub 403 /repos/o/r: { "message": "API rate limit exceeded" }')).toBe(true);
+  expect(isThrottleMessage('GitHub 404 /repos/o/r: not found')).toBe(false);
+  expect(isThrottleMessage(undefined)).toBe(false);
+});
+
+test('gh backs off and retries a secondary rate limit instead of surfacing it', async () => {
+  vi.useFakeTimers();
+  try {
+    let calls = 0;
+    const fetchMock = vi.fn((url: string | URL) => {
+      const u = String(url);
+      if (u.includes('/search/issues')) {
+        calls++;
+        if (calls <= 2) {
+          return Promise.resolve({ ok: false, status: 403, headers: headers(), text: () => Promise.resolve(SECONDARY) });
+        }
+        return Promise.resolve({ ok: true, headers: headers(), json: () => Promise.resolve({ items: [{ number: 3 }] }) });
+      }
+      return Promise.resolve({ ok: true, headers: headers(), json: () => Promise.resolve(
+        { number: 3, html_url: 'u3', head: { ref: 'b3', sha: 's3' }, state: 'open', created_at: 'c', updated_at: 'u' }) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const cfg: GithubConfig = { token: 't', org: 'o', repos: ['throttled'], username: 'me' };
+    const pending = fetchPrs(cfg);
+    await vi.runAllTimersAsync();
+    const { prs, errors } = await pending;
+    expect(errors).toEqual([]);
+    expect(prs.map(p => p.number)).toEqual([3]);
+    expect(calls).toBe(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('gh gives up after the retry budget, and a non-throttle 403 is not retried at all', async () => {
+  vi.useFakeTimers();
+  try {
+    const throttleFetch = vi.fn(() => Promise.resolve(
+      { ok: false, status: 403, headers: headers(), text: () => Promise.resolve(SECONDARY) }));
+    vi.stubGlobal('fetch', throttleFetch);
+    const cfg: GithubConfig = { token: 't', org: 'o', repos: ['always-throttled'], username: 'me' };
+    const pending = fetchPrs(cfg);
+    await vi.runAllTimersAsync();
+    const { errors } = await pending;
+    // 1 initial attempt + 3 retries, then the error reaches the caller with the
+    // body intact so refresh.ts can recognise it as a throttle.
+    expect(throttleFetch).toHaveBeenCalledTimes(4);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('secondary rate limit');
+
+    const badToken = vi.fn(() => Promise.resolve(
+      { ok: false, status: 403, headers: headers(), text: () => Promise.resolve('{ "message": "Bad credentials" }') }));
+    vi.stubGlobal('fetch', badToken);
+    const bad = fetchPrs({ ...cfg, repos: ['bad-token'] });
+    await vi.runAllTimersAsync();
+    expect((await bad).errors[0]).toContain('Bad credentials');
+    expect(badToken).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

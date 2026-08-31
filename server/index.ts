@@ -261,7 +261,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       res.writeHead(200, {
         'content-type': MIME[extname(p)] ?? 'application/octet-stream',
         'x-content-type-options': 'nosniff',
-        'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       });
       res.end(buf);
     } catch (e) {
