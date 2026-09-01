@@ -329,8 +329,13 @@ test('an approved PR still beats a Code Review status', () => {
   expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ reviewState: 'approved' }), cs: cs() }).bucket).toBe('mergeable');
 });
 
-test('a draft PR still beats a Code Review status', () => {
-  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('self_review');
+// The draft PR is the one exception, reversed by #53: Simon labels every PR it
+// opens `Draft`, so "PR state is more specific" left every executor-shipped card
+// stuck in Self Review Needed. Moving the card to a review status is the
+// operator overriding that. An approved PR (above) still wins.
+test('a draft PR yields to a Code Review status (#53)', () => {
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('waiting_review');
+  expect(classifyCard({ ...base, card: card({ status: 'In Progress' }), pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('self_review');
 });
 
 // A Jira status name is free text an admin can edit or re-case.
@@ -393,4 +398,34 @@ test('sameStatus never matches a blank or missing status', () => {
   expect(sameStatus('   ', '')).toBe(false);
   expect(sameStatus('Done', undefined)).toBe(false);
   expect(sameStatus(' Done ', 'done')).toBe(true);
+});
+
+// #53. Simon labels every PR it opens "Draft" (github.ts maps that label to
+// isDraft), so its cards sit in Self Review Needed until the label comes off.
+// Moving the Jira card to Code Review is the operator saying "I have reviewed
+// this, it is out for peer review" — an explicit lifecycle statement that the
+// draft rule used to outrank, leaving the card in Self Review Needed forever.
+test('a draft PR whose card is in a review status -> waiting_review (#53)', () => {
+  const draft = pr({ isDraft: true });
+  expect(classifyCard({ ...base, card: card(), pr: draft, cs: cs() }).bucket).toBe('self_review');
+  for (const status of ['Code Review', 'In Review', 'code review']) {
+    expect(classifyCard({ ...base, card: card({ status }), pr: draft, cs: cs() }).bucket).toBe('waiting_review');
+  }
+});
+
+// The review status is a lifecycle statement, not an override of blocked-or-
+// broken: ROUTING_REASONS still evict the card (#42/#46), a pin still wins,
+// and a draft never claims Mergeable — it cannot be merged as it stands.
+test('a draft PR in a review status yields to routing reasons and pins, and never reads as mergeable', () => {
+  const inReview = card({ status: 'Code Review' });
+  expect(classifyCard({ ...base, card: inReview, pr: pr({ isDraft: true, ciStatus: 'failing' }), cs: cs() }).bucket).toBe('needs_attention');
+  expect(classifyCard({ ...base, card: inReview, pr: pr({ isDraft: true }), cs: cs({ override: 'in_qa' }) }).bucket).toBe('in_qa');
+  expect(classifyCard({ ...base, card: inReview, pr: pr({ isDraft: true, reviewState: 'approved' }), cs: cs() }).bucket).toBe('waiting_review');
+});
+
+// The exception is scoped to review statuses and nothing else: a draft PR on a
+// card in any other status still routes to Self Review Needed exactly as before.
+test('the #53 draft exception does not fire on a non-review status', () => {
+  const c = card({ status: 'In Test', description: 'QA instructions: click it', fixVersions: ['1.0'] });
+  expect(classifyCard({ ...base, card: c, pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('self_review');
 });

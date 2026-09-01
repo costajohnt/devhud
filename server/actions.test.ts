@@ -287,3 +287,15 @@ test('classifierDest matches In Test case-insensitively (#67)', () => {
     expect(classifierDest({ ...base, jiraStatus }, config)).toBe('qa_ready');
   }
 });
+
+// classifierDest mirrors classifyCard, so it has to mirror the #53 exception
+// too: a draft PR whose card is in a review status is out for peer review.
+// Without this the ack landed the card in self_review and the next refresh
+// moved it to waiting_review — the bucket-fighting this function exists to stop.
+test('classifierDest sends a draft PR in a review status to waiting_review (#53)', () => {
+  const state = stateWithItem();
+  const item = { ...state.snapshot!.buckets.needs_attention[0]!, attention: [], jiraStatus: 'Code Review',
+    pr: { repo: 'o/r', number: 1, url: 'u', branch: 'b', state: 'open' as const, ciStatus: 'passing' as const, reviewState: 'approved' as const, isDraft: true } };
+  expect(classifierDest(item, config)).toBe('waiting_review');
+  expect(classifierDest({ ...item, jiraStatus: 'In Progress' }, config)).toBe('self_review');
+});

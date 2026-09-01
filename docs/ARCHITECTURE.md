@@ -110,10 +110,11 @@ Evaluated top to bottom; the first matching row wins:
 
 | Bucket | Condition |
 |---|---|
-| `self_review` | PR is open and a draft — always, even over attention triggers and overrides. |
+| `self_review` | PR is open and a draft, and the card is not in a review status — otherwise always, even over attention triggers and overrides. |
 | `needs_attention` | A visible **routing** attention trigger fires (`ci_failing` or `merged_not_in_test`; acked state-based reasons are muted while continuously true). Badge-only triggers never route (one exception: `new_jira_comments` on an In Test card — see the `qa_ready` row). |
 | *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear when the card's Jira status changes between refreshes (a transition supersedes the pin, #53) or once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
 | `qa_ready` | Jira status equals the configured "In Test" status — unless `new_jira_comments` is visible, which routes the card to `needs_attention` instead: a Jira comment on a card in test is QA waiting on the developer, and the `lastSeenJira` watermark clears it (and returns the card here) as soon as the comment is read. |
+| `waiting_review` | PR is open and a draft while the card is in a review status. Moving the card there is the operator saying it is out for peer review, so the draft stops holding it in Self Review Needed (#53). Checked before `mergeable`: a draft PR cannot be merged as it stands, however its reviews landed. |
 | `mergeable` | PR is open and approved. |
 | `waiting_review` | The card is in a review status ("Code Review"/"In Review", or `jira.statuses.review`; matched case-insensitively) — with or without a PR — or an open PR has any review activity. An approved or draft PR still wins. |
 | `self_review` | PR is open with no review activity and the card isn't in a review status. |

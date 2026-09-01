@@ -20,7 +20,9 @@ const ackReasons = (prior: string[] | null | undefined, attention: string[]): st
 // waiting for the next refresh.
 //
 // Deliberately mirrors classifyCard's order (classify.ts), including the
-// draft-PR rule that outranks everything: ack used to compute this inline
+// draft-PR rule that outranks everything and its one exception (a card in a
+// review status is out for peer review, so the draft stops holding it in
+// self_review, #53): ack used to compute this inline
 // without the draft check, so acking a card on an approved draft PR sent it
 // to `mergeable` while the next refresh moved it straight back to
 // `self_review`. Shared between ack and unpin so the two can't drift from
@@ -28,9 +30,14 @@ const ackReasons = (prior: string[] | null | undefined, attention: string[]): st
 export function classifierDest(item: Item, config: Config): Bucket {
   const pr = item.pr;
   const statuses = config.jira?.statuses;
-  if (pr?.state === 'open' && pr.isDraft) return 'self_review';
+  const draftOpen = pr?.state === 'open' && !!pr.isDraft;
+  const outForReview = isInReview(item.jiraStatus, statuses);
+  if (draftOpen && !outForReview) return 'self_review';
   if (item.attention.length) return 'needs_attention';
   if (sameStatus(item.jiraStatus, statuses?.inTest)) return 'qa_ready';
+  // Mirrors the classifier's #53 exception, and its position: a draft PR is
+  // never Mergeable, so this is checked before the approved branch.
+  if (draftOpen) return 'waiting_review';
   if (pr?.state === 'open') {
     if (pr.reviewState === 'approved') return 'mergeable';
     if (isInReview(item.jiraStatus, statuses) || pr.reviewState !== 'none') return 'waiting_review';
