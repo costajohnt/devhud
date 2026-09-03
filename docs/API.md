@@ -15,7 +15,7 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
   "updatedAt": null,
   "errors": { "jira": null, "github": null },
   "buckets": { "needs_attention": [], "in_progress": [], "self_review": [], "waiting_review": [], "mergeable": [], "qa_ready": [], "in_qa": [] },
-  "todo": [], "unlinkedPrs": [],
+  "todo": [], "blocked": [], "unlinkedPrs": [],
   "doneCards": [], "doneTotal": 0, "newlyDone": [], "recentActivity": [],
   "prLog": []
 }
@@ -143,6 +143,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
     needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], mergeable: Item[], qa_ready: Item[], in_qa: Item[]
   },
   todo: TodoItem[],
+  blocked: TodoItem[],              // Jira Blocked cards, split out like todo
   unlinkedPrs: UnlinkedPr[],
   doneCards: DoneCard[],           // cards Jira has marked Done — drives the /done page
   doneTotal: number,               // doneCards.length — the "Done" counter

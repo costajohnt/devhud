@@ -10,7 +10,8 @@
       "inTest": "In Test",
       "done": "Done",
       "canceled": "Canceled",
-      "review": "Code Review"
+      "review": "Code Review",
+      "blocked": "Blocked"
     }
   },
   "github": {

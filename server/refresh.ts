@@ -1,6 +1,6 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
-import { classifyCard, isTodo, isDone, isCanceled, githubNewComment, jiraNewComment } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, doneWatermark } from './jira.ts';
 import { fetchPrs, enrichPr, isThrottleMessage } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
@@ -73,6 +73,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
 
   const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] };
   const todo: Snapshot['todo'] = [];
+  const blocked: Snapshot['blocked'] = [];
   const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
   // Cards seen this refresh that are NOT done (reopened, or canceled after
   // reaching Done). They must leave the lifetime ledger, or a card QA kicks
@@ -88,17 +89,22 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   for (const card of cards) {
     // Canceled work is neither active nor complete — drop it from every bucket,
     // the Todo list, the Done page, and all counts.
-    // Off-board routes (canceled/todo/done) never reach classifyCard, so its
+    // Off-board routes (canceled/todo/blocked/done) never reach classifyCard, so its
     // ack-pruning can't run for them; forget acks here so a card that later
     // returns to the board (e.g. QA rejects a Done card back to In Progress)
     // re-triggers on a still-true reason instead of staying muted forever.
-    if (isCanceled(card, statuses) || isTodo(card, statuses) || isDone(card, statuses)) {
+    if (isCanceled(card, statuses) || isTodo(card, statuses) || isBlocked(card, statuses) || isDone(card, statuses)) {
       const cs = state.cards[card.key];
       if (cs?.ackedReasons) cs.ackedReasons = null;
     }
     if (!isDone(card, statuses)) notDone.add(card.key);
     if (isCanceled(card, statuses)) continue;
     const pr = linked.get(card.key) ?? null;
+    // Blocked is name-only and more specific than the To Do category, so it
+    // wins if a project files the status under 'new'. Unlike todo, a linked
+    // PR does not keep the card on the board: Jira saying blocked is the
+    // lifecycle statement.
+    if (isBlocked(card, statuses)) { blocked.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     if (isTodo(card, statuses) && !pr) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     const cs = cardState(state, card.key);
 
@@ -219,7 +225,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   return {
     updatedAt: new Date().toISOString(),
     errors: { jira: errors.jira ?? null, github: errors.github ?? null },
-    buckets, todo,
+    buckets, todo, blocked,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     // Done page and counter both come from the lifetime ledger, so they agree

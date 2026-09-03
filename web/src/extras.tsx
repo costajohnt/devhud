@@ -25,6 +25,26 @@ export function TodoSection({ data }: { data: DashboardData }) {
   );
 }
 
+export function BlockedSection({ data }: { data: DashboardData }) {
+  if (data.blocked.length === 0) return null;
+  return (
+    <section id="blocked" class="pr-section">
+      <div class="pr-section-header">
+        <span class="pr-section-dot red" />
+        <span class="pr-section-title">Blocked</span>
+        <span class="pr-section-count">{data.blocked.length}</span>
+      </div>
+      {data.blocked.map(t => (
+        <div key={t.key} class="pr-row">
+          <span class="pr-row-id">{t.key}</span>
+          <a class="pr-row-title" href={t.jiraUrl} target="_blank" rel="noopener noreferrer">{t.summary}</a>
+          <span class="pr-row-age">{ago(t.createdAt)}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export function Extras({ data }: { data: DashboardData }) {
   return (
     <>

@@ -35,7 +35,7 @@ const item = (overrides: Partial<Item> = {}): Item => ({
 
 const snap = (overrides: Partial<DashboardData> = {}): DashboardData => ({
   updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null },
-  buckets: emptyBuckets(), todo: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
+  buckets: emptyBuckets(), todo: [], blocked: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
   newlyDone: [], recentActivity: [], prLog: [], ...overrides,
 });
 
@@ -416,4 +416,22 @@ test('the Todo column renders above Monthly Activity and Top Repos (#70)', () =>
 test('an empty Todo list renders no Todo section at all', () => {
   act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] }, todo: [] })); });
   expect(host.querySelector('#todo')).toBeNull();
+});
+
+test('the Blocked column renders under the board and hides when empty', () => {
+  act(() => {
+    es().emit(snap({
+      buckets: { ...emptyBuckets(), in_progress: [item()] },
+      blocked: [{ key: 'P-8', summary: 'Waiting on vendor', jiraUrl: 'https://j/browse/P-8', createdAt: '2026-07-01T00:00:00Z' }],
+    }));
+  });
+  const blocked = host.querySelector('#blocked')!;
+  expect(blocked).not.toBeNull();
+  expect(blocked.textContent).toContain('P-8');
+  expect(blocked.textContent).toContain('Waiting on vendor');
+  const board = host.querySelector('.dashboard-content')!;
+  expect(board.compareDocumentPosition(blocked) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] }, blocked: [] })); });
+  expect(host.querySelector('#blocked')).toBeNull();
 });

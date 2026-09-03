@@ -29,7 +29,7 @@ const emptyBuckets = (): Record<Bucket, Item[]> => ({
 const data = (buckets: Partial<Record<Bucket, Item[]>> = {}): DashboardData => ({
   updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null },
   buckets: { ...emptyBuckets(), ...buckets },
-  todo: [], unlinkedPrs: [], doneCards: [], doneTotal: 3, newlyDone: [], recentActivity: [], prLog: [],
+  todo: [], blocked: [], unlinkedPrs: [], doneCards: [], doneTotal: 3, newlyDone: [], recentActivity: [], prLog: [],
 });
 
 // A DragEvent stand-in: happy-dom has no DataTransfer, and the handlers only
@@ -262,6 +262,22 @@ test('stat cards link to their section only when the bucket has cards', () => {
   // Empty bucket: a plain span, not a dead link to a section that won't render.
   expect(mergeable.tagName).toBe('SPAN');
   expect(mergeable.hasAttribute('href')).toBe(false);
+});
+
+test('the Blocked stat card links only when there are blocked cards', () => {
+  const empty = data();
+  host = document.createElement('div');
+  act(() => { render(h(BoardStats, { data: empty }), host); });
+  const emptyBlocked = [...host.querySelectorAll('.stat-card')].find(c => c.textContent?.includes('Blocked'))!;
+  expect(emptyBlocked.tagName).toBe('SPAN');
+
+  const withBlocked = data();
+  withBlocked.blocked = [{ key: 'P-9', summary: 'Waiting', jiraUrl: 'https://j/browse/P-9', createdAt: '2026-07-01T00:00:00Z' }];
+  host = document.createElement('div');
+  act(() => { render(h(BoardStats, { data: withBlocked }), host); });
+  const linked = [...host.querySelectorAll('.stat-card')].find(c => c.textContent?.includes('Blocked'))!;
+  expect(linked.tagName).toBe('A');
+  expect(linked.getAttribute('href')).toBe('#blocked');
 });
 
 test('ago() reads today as "today" and older dates in whole days', () => {

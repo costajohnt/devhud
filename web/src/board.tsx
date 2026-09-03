@@ -157,6 +157,15 @@ export function BoardStats({ data }: { data: DashboardData }) {
           </Tag>
         );
       })()}
+      {(() => {
+        const Tag = data.blocked.length > 0 ? 'a' : 'span';
+        return (
+          <Tag class="stat-card red" {...(data.blocked.length > 0 ? { href: '#blocked' } : {})}>
+            <span class="stat-value"><AnimatedValue value={data.blocked.length} /></span>
+            <span class="stat-label">Blocked</span>
+          </Tag>
+        );
+      })()}
       <a class="stat-card purple" href="/done">
         <span class="stat-value"><AnimatedValue value={data.doneTotal} /></span>
         <span class="stat-label">Done</span>
