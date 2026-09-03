@@ -33,6 +33,7 @@ export interface DashboardData {
   errors: { jira: string | null; github: string | null };
   buckets: Record<Bucket, Item[]>;
   todo: { key: string; summary: string; jiraUrl: string; createdAt: string }[];
+  blocked: { key: string; summary: string; jiraUrl: string; createdAt: string }[];
   unlinkedPrs: { repo: string; number: number; url: string; title: string; state: string }[];
   doneCards: { key: string; summary: string; jiraStatus: string; jiraUrl: string; pr: PrRef | null; doneAt: string }[];
   doneTotal: number;

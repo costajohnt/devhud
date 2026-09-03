@@ -213,6 +213,12 @@ export const isInReview = (status: string | undefined, statuses: JiraStatuses | 
 export const isCanceled = (card: Card, statuses: JiraStatuses): boolean =>
   sameStatus(card.status, statuses.canceled ?? 'Canceled');
 
+// Name-only, not category: Jira files Blocked under the same 'indeterminate'
+// category as In Progress, so the status name is the only signal. Same
+// optional-config pattern as canceled/review.
+export const isBlocked = (card: Card, statuses: JiraStatuses): boolean =>
+  sameStatus(card.status, statuses.blocked ?? 'Blocked');
+
 export const isTodo = (card: Card, statuses: JiraStatuses): boolean =>
   card.statusCategory === 'new' || sameStatus(card.status, statuses.todo);
 

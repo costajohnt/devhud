@@ -66,12 +66,22 @@ function migratePrLog(state: State): State {
   return state;
 }
 
+// Pre-blocked snapshots omit the field. The web client reads
+// data.blocked.length unconditionally (same as todo), so a missing key
+// would crash the board on first load of an old state.json.
+function migrateSnapshot(state: State): State {
+  if (state.snapshot && !Array.isArray(state.snapshot.blocked)) {
+    state.snapshot.blocked = [];
+  }
+  return state;
+}
+
 // A missing file is the normal first-run case (no warn). An existing but
 // unparseable file is a corruption signal: warn and fall back to the
 // rotating .bak written by saveState, rather than silently losing overrides.
 export function loadState(path: string): State {
   const hydrate = (json: string): State =>
-    withNullProtoCards(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(json) })));
+    withNullProtoCards(migrateSnapshot(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(json) }))));
   const fromBak = (): State | null => {
     try { return hydrate(readFileSync(path + '.bak', 'utf8')); }
     catch { return null; }
@@ -131,7 +141,7 @@ export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
-    todo: [], unlinkedPrs: [],
+    todo: [], blocked: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     prLog: [],
   };

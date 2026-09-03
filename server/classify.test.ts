@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { classifyCard, isTodo, isDone, isCanceled, sameStatus } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled, isBlocked, sameStatus } from './classify.ts';
 import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 
 const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
@@ -352,9 +352,25 @@ test('a project that renamed the status configures it, and the stock names keep 
 });
 
 test('an unrelated in-flight status with no PR is still in_progress', () => {
-  for (const status of ['In Progress', 'Reviewing the docs', 'Blocked']) {
+  for (const status of ['In Progress', 'Reviewing the docs']) {
     expect(classifyCard({ ...base, card: card({ status }), pr: null, cs: cs() }).bucket).toBe('in_progress');
   }
+});
+
+test('isBlocked matches the status name case-insensitively, not the category', () => {
+  expect(isBlocked(card({ status: 'Blocked', statusCategory: 'indeterminate' }), statuses)).toBe(true);
+  for (const status of ['blocked', 'BLOCKED', '  Blocked  ']) {
+    expect(isBlocked(card({ status }), statuses)).toBe(true);
+  }
+  expect(isBlocked(card({ status: 'In Progress' }), statuses)).toBe(false);
+  expect(isBlocked(card({ status: 'On Hold' }), statuses)).toBe(false);
+});
+
+test('a project that renamed Blocked configures it, and the stock name keeps working', () => {
+  const renamed: JiraStatuses = { ...statuses, blocked: 'On Hold' };
+  expect(isBlocked(card({ status: 'On Hold' }), renamed)).toBe(true);
+  expect(isBlocked(card({ status: 'Blocked' }), renamed)).toBe(false);
+  expect(isBlocked(card({ status: 'Blocked' }), { todo: 'To Do', inTest: 'In Test', done: 'Done' })).toBe(true);
 });
 
 // #67: only isInReview normalized, so a project whose column read "in test"

@@ -15,6 +15,7 @@ test('loads config and applies defaults', () => {
   const c = loadConfig(p);
   expect(c.port).toBe(3010);
   expect(c.jira.statuses.inTest).toBe('In Test');
+  expect(c.jira.statuses.blocked).toBe('Blocked');
   expect(c.writeEnabled).toBe(false); // off by default
 });
 

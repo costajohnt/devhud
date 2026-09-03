@@ -50,12 +50,22 @@ test('todo cards split out; a Done card with a merged PR lands in doneCards + ce
   expect(p2.prLog).toEqual([{ id: 'o/r#1', repo: 'o/r', openedAt: '2026-07-01T00:00:00Z', mergedAt: '2026-07-03T00:00:00Z', closedAt: null }]); // no duplicate on re-run
 });
 
-test('canceled cards are excluded from every bucket, the todo list, and doneCards', () => {
+test('canceled cards are excluded from every bucket, the todo list, blocked, and doneCards', () => {
   const cards = [card({ key: 'PROJ-C', status: 'Canceled', statusCategory: 'done' })];
   const p = buildSnapshot({ cards, prs: [], state: emptyState(), config, errors: {} });
   expect(Object.values(p.buckets).flat()).toHaveLength(0);
   expect(p.todo).toHaveLength(0);
+  expect(p.blocked).toHaveLength(0);
   expect(p.doneCards).toHaveLength(0);
+});
+
+test('a Blocked card splits out of the board even with a linked PR or unseen comment', () => {
+  const cards = [card({ key: 'PROJ-B', status: 'Blocked', statusCategory: 'indeterminate',
+    comments: [{ authorId: 'other', author: 'Someone', body: 'waiting', createdAt: '2026-07-09T00:00:00Z' }] })];
+  const p = buildSnapshot({ cards, prs: [pr({ branch: 'PROJ-B-x' })], state: emptyState(), config, errors: {} });
+  expect(p.blocked.map(t => t.key)).toEqual(['PROJ-B']);
+  expect(Object.values(p.buckets).flat()).toHaveLength(0);
+  expect(p.todo).toHaveLength(0);
 });
 
 test('an assigned card in the To Do category routes to Todo, not Needs Attention', () => {
@@ -361,6 +371,7 @@ test('demo mode builds populated snapshot without network', async () => {
   const boardCount = Object.values(p.buckets).flat().length;
   expect(boardCount).toBeGreaterThan(0);
   expect(p.todo.length).toBeGreaterThan(0);
+  expect(p.blocked.length).toBeGreaterThan(0);
   expect(p.buckets.needs_attention.length).toBeGreaterThan(0);
   expect(p.buckets.qa_ready.length).toBeGreaterThan(0);
   expect(p.doneCards.length).toBeGreaterThan(0);   // Jira-done cards drive the Done page

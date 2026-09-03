@@ -3,7 +3,7 @@ import { LocationProvider, useLocation } from 'preact-iso';
 import { useData } from './use-data.js';
 import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.js';
 import { Detail } from './detail.js';
-import { Extras, TodoSection } from './extras.js';
+import { Extras, TodoSection, BlockedSection } from './extras.js';
 import { DonePage } from './done.js';
 import { SimonRunsPage, SimonRunPage } from './simon.js';
 import { fireConfetti } from './celebrate.js';
@@ -317,6 +317,7 @@ function AppContent() {
             </div>
             <div class="animate-in delay-3">
               <TodoSection data={data} />
+              <BlockedSection data={data} />
             </div>
             {data.prLog.length > 0 && (
               <div class="animate-in delay-4">

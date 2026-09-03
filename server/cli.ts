@@ -54,7 +54,7 @@ export function formatStatus(payload: Snapshot): string {
   const lines = [
     `Needs Attention: ${b.needs_attention.length}  In Progress: ${b.in_progress.length}  ` +
       `Self Review: ${b.self_review.length}  Waiting in Review: ${b.waiting_review.length}  Mergeable: ${b.mergeable.length}  QA Ready: ${b.qa_ready.length}  In QA: ${b.in_qa.length}`,
-    `Todo: ${payload.todo.length}  Done: ${payload.doneTotal}`,
+    `Todo: ${payload.todo.length}  Blocked: ${payload.blocked.length}  Done: ${payload.doneTotal}`,
   ];
   if (b.needs_attention.length) {
     lines.push('', 'Needs Attention:');

@@ -117,6 +117,17 @@ test('loadState backfill does not clobber an existing prLog entry for the same i
   expect(s.prLog['org/repo#42'].openedAt).toBe('2025-12-01T00:00:00Z');
 });
 
+test('loadState hydrates a missing snapshot.blocked so an old state.json does not crash the board', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const raw = emptyState();
+  raw.snapshot = emptySnapshot();
+  delete (raw.snapshot as { blocked?: unknown }).blocked;
+  writeFileSync(path, JSON.stringify(raw));
+  const s = loadState(path);
+  expect(s.snapshot!.blocked).toEqual([]);
+});
+
 test('emptySnapshot() has the same top-level keys as a real buildSnapshot payload', () => {
   const config: Config = { jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } }, github: { username: 'me', org: 'o', token: '', repos: [] }, port: 3010, demo: false, writeEnabled: false };
   const real = buildSnapshot({ cards: [], prs: [], state: emptyState(), config, errors: {} });

@@ -28,7 +28,7 @@ const snap = (updatedAt: string | null, newlyDone: string[] = []): DashboardData
   updatedAt,
   errors: { jira: null, github: null },
   buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
-  todo: [], unlinkedPrs: [], doneCards: [], doneTotal: 0, newlyDone, recentActivity: [],
+  todo: [], blocked: [], unlinkedPrs: [], doneCards: [], doneTotal: 0, newlyDone, recentActivity: [],
   prLog: [],
 });
 

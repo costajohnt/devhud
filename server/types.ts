@@ -20,6 +20,10 @@ export interface JiraStatuses {
   // common Jira defaults ('Code Review', 'In Review') are always recognised,
   // so this only needs setting for a project that renamed it (#64).
   review?: string;
+  // Status name that means the work is parked waiting on something outside
+  // the developer. Optional so existing { todo, inTest, done } config/test
+  // fixtures keep working; defaults to 'Blocked' in loadConfig.
+  blocked?: string;
 }
 
 // Jira status categories: every status rolls up to one of these three. Used
@@ -228,6 +232,10 @@ export interface Snapshot {
   errors: { jira: string | null; github: string | null };
   buckets: Record<Bucket, Item[]>;
   todo: TodoItem[];
+  // Jira "Blocked" cards, split out of the board the same way as todo.
+  // Not a Bucket: the classifier never sees them, and they are not a
+  // drag-and-drop destination.
+  blocked: TodoItem[];
   unlinkedPrs: UnlinkedPr[];
   // Completion is driven by the Jira Done category (a merged PR only means code
   // is ready for QA). A merged PR rides along on its active card's `pr` as

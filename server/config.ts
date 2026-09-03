@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Config, JiraStatuses } from './types.ts';
 
-const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
+const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled', blocked: 'Blocked' };
 
 // Comment authors whose comments never trigger triage or enter the actionable
 // queue: the user themselves and Atlassian's Rovo agent. Overridable via

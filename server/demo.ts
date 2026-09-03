@@ -42,6 +42,9 @@ export function demoCards(cfg: JiraConfig): Card[] {
     card('DEMO-92', 'Dark mode for customer portal', 'Done', 2, { fixVersions: ['2026.8'] }),
     card('DEMO-112', 'Spike: evaluate feature flag providers', 'To Do', 1),
     card('DEMO-113', 'Clean up deprecated user settings endpoints', 'To Do', 3),
+    // Blocked (In Progress category, parked waiting on something outside us):
+    // belongs in Blocked, not In Progress.
+    card('DEMO-122', 'Waiting on vendor API quota increase', 'Blocked', 5),
     // Assigned-but-not-started (To Do category, non-"To Do" name): belongs in
     // Todo, not Needs Attention.
     card('DEMO-120', 'Investigate flaky checkout integration test', 'Assigned', 2, { category: 'new' }),

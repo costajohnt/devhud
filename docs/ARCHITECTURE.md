@@ -60,9 +60,9 @@ POST /api/refresh   ▼
      │            classifyCard()    : bucket + attention, per card
      │                    │
      │                    ▼
-     │            buildSnapshot()   : assembles the full payload:
-     │                                buckets, todo, unlinkedPrs,
-     │                                doneCards, recentActivity, prLog
+      │            buildSnapshot()   : assembles the full payload:
+      │                                buckets, todo, blocked, unlinkedPrs,
+      │                                doneCards, recentActivity, prLog
      │                    │
      │                    ▼
      │            state.snapshot = payload;  saveState(data/state.json)
@@ -150,12 +150,13 @@ Comments authored by anyone in `config.ignoreAuthors` (default `["John", "Rovo"]
 
 A manual override (`type: 'move'`) is honored only when no *routing* attention trigger fires. The "live" triggers (CI failing, merged-not-in-test) always re-flag the card into `needs_attention` on the next refresh even if it was previously pinned elsewhere. Only the comment-based triggers are silenced by acking or moving, because those actions reset the seen horizon; CI status and merge state aren't horizon-gated, they're re-evaluated fresh every refresh.
 
-Routing keys off the Jira **status category** (`new`/`indeterminate`/`done`), not exact status names, so `Assigned` counts as To Do and `Closed` as Done. Where a name *is* the only available signal (review status, In Test, Done, To Do, Canceled), every comparison goes through `sameStatus` in `classify.ts` — trimmed and lowercased, because a status name is free text an admin can re-case (#67). In order, before bucket classification:
+Routing keys off the Jira **status category** (`new`/`indeterminate`/`done`), not exact status names, so `Assigned` counts as To Do and `Closed` as Done. Where a name *is* the only available signal (review status, In Test, Done, To Do, Canceled, Blocked), every comparison goes through `sameStatus` in `classify.ts` — trimmed and lowercased, because a status name is free text an admin can re-case (#67). In order, before bucket classification:
 
-1. **Canceled** cards (status matching `statuses.canceled`, default "Canceled") are dropped entirely — no bucket, no todo, no done, no counts.
-2. **To Do category** cards are split into `todo` and skip classification.
-3. **Done category** cards (excluding Canceled) are added to `doneCards`, and to `doneCelebrated` once if assigned to the configured account, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge. `doneTotal` is `doneCards.length`, not the ledger size.
-4. Everything else is classified into a bucket. A merged-but-not-Done card stays on the board (QA can still reject it) with the merged PR carried on the item's `pr` as context — there's no separate merged list.
+1. **Canceled** cards (status matching `statuses.canceled`, default "Canceled") are dropped entirely — no bucket, no todo, no blocked, no done, no counts.
+2. **Blocked** cards (status matching `statuses.blocked`, default "Blocked") are split into `blocked` and skip classification. Name-only, not category: Jira files Blocked under the same `indeterminate` category as In Progress. A linked PR does not keep the card on the board.
+3. **To Do category** cards are split into `todo` and skip classification.
+4. **Done category** cards (excluding Canceled) are added to `doneCards`, and to `doneCelebrated` once if assigned to the configured account, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge. `doneTotal` is `doneCards.length`, not the ledger size.
+5. Everything else is classified into a bucket. A merged-but-not-Done card stays on the board (QA can still reject it) with the merged PR carried on the item's `pr` as context — there's no separate merged list.
 
 ## Concurrency
 

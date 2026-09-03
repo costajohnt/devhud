@@ -58,7 +58,7 @@ function seedSnapshot(statePath: string) {
       }],
       in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
     },
-    todo: [], unlinkedPrs: [],
+    todo: [], blocked: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 3, newlyDone: [], recentActivity: [],
     prLog: [],
   };
