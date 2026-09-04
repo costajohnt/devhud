@@ -2,7 +2,7 @@ import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { classifyCard, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, doneWatermark } from './jira.ts';
-import { fetchPrs, enrichPr, isThrottleMessage } from './github.ts';
+import { fetchPrs, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
 
 const DAY = 86400000;
@@ -239,28 +239,37 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   };
 }
 
-// Module-level, single-process monotonic sequence for concurrent refreshes
-// (two browser tabs, or the CLI plus the web UI's own poll timer). Neither
-// fetch nor buildSnapshot has any ordering guarantee — the slower call can
-// easily be the one with fresher upstream data, so "last buildSnapshot to
-// finish wins" would let a call that started earlier (and fetched newer
-// data) get clobbered by one that started later but happened to finish
-// first with staler data. Each refresh() call grabs the next number at
-// entry; the actual state.snapshot/lastRefreshAt write near the end of the
-// function only happens if no later-sequenced call has already completed
-// one. Card-state and celebration mutations inside buildSnapshot are NOT
-// gated by this — they run unconditionally on every call regardless of
-// ordering, verified safe: a merge is celebrated once no matter which
-// refresh notices it first, and cardState/override mutations are
-// idempotent writes keyed by card key, not append-only history. One
-// exception to that idempotence claim: ackedReasons pruning in
-// classifyCard is data-driven and destructive, so a losing (staler)
-// refresh can prune an ack the winning refresh's data would have kept.
-// The prDegraded guard covers the error paths; a healthy-but-stale race
-// window remains and is accepted — worst case is one extra
-// needs_attention round-trip.
-let refreshSeq = 0;
-let lastCompletedRefreshSeq = 0;
+// Concurrent refreshes (two browser tabs, the CLI, a writeback's post-write
+// refresh, the server's own timer) are serialized per State, and every caller
+// that arrives while one is in flight shares a single follow-up (#72). That
+// bounds the API spend to at most one extra sweep however many callers pile
+// up, and it keeps the ordering guarantee the old sequence gate provided:
+// snapshot and last-known-good caches are always written by the refresh
+// that fetched most recently. A follow-up rather than a join, because a
+// writeback's post-write refresh needs data fetched *after* its write, and
+// the in-flight sweep may have read Jira before it.
+const running = new WeakMap<State, Promise<Snapshot>>();
+const queued = new WeakMap<State, Promise<Snapshot>>();
+
+export function refresh(opts: { config: Config; state: State; quiet?: boolean }): Promise<Snapshot> {
+  const { state } = opts;
+  const current = running.get(state);
+  if (!current) {
+    const p = runRefresh(opts).finally(() => { if (running.get(state) === p) running.delete(state); });
+    running.set(state, p);
+    return p;
+  }
+  const follow = queued.get(state);
+  if (follow) return follow;
+  // The follow-up starts once the current sweep settles (success or failure
+  // alike: a failed refresh already fell back to last-known-good data).
+  const p = current.then(() => undefined, () => undefined).then(() => {
+    queued.delete(state);
+    return refresh(opts);
+  });
+  queued.set(state, p);
+  return p;
+}
 
 // On a source failure, reuse that source's last-known-good data instead of
 // blanking the board — a transient Jira/GitHub outage shouldn't wipe out
@@ -270,8 +279,7 @@ let lastCompletedRefreshSeq = 0;
 // post-write refresh), which previously monkeypatched the global
 // console.log around the call; under concurrent server requests two
 // interleaved patches could permanently noop console.log for the process.
-export async function refresh({ config, state, quiet }: { config: Config; state: State; quiet?: boolean }): Promise<Snapshot> {
-  const seq = ++refreshSeq;
+async function runRefresh({ config, state, quiet }: { config: Config; state: State; quiet?: boolean }): Promise<Snapshot> {
   const errors: { jira?: string; github?: string } = {};
   // Repos whose PR data is degraded this refresh (fetch or enrichment
   // failure — even with a last-known-good fallback the data is stale);
@@ -279,6 +287,7 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
   // buildSnapshot's degradedPrRepos.
   const degradedPrRepos = new Set<string>();
   let prFetchFailed = false;
+  let reused = 0;
   let cards: Card[], prs: Pr[];
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
@@ -286,14 +295,12 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     cards = demoCards(config.jira);
     prs = demoPrs(config.github);
     const payload = buildSnapshot({ cards, prs, state, config, errors });
-    if (seq > lastCompletedRefreshSeq) {
-      lastCompletedRefreshSeq = seq;
-      state.snapshot = payload;
-      state.lastRefreshAt = payload.updatedAt;
-    }
+    state.snapshot = payload;
+    state.lastRefreshAt = payload.updatedAt;
     if (!quiet) console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
-    return state.snapshot ?? payload;
+    return payload;
   }
+  resetGithubStats();
   let jiraOk = false, githubOk = false;
   try {
     cards = await fetchJiraCards(config.jira, doneWatermark(state.doneLedger ?? []));
@@ -322,9 +329,24 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
       }
     }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
-    const toEnrich = [...new Set(linked.values())];
+    // Enrich only linked PRs that changed since the last refresh. GitHub bumps
+    // a PR's updated_at for every comment, review, review request, push and
+    // label, so an unchanged updatedAt means last refresh's comments and
+    // review state still hold; CI arrives with discovery (mapPr) and is
+    // already fresh on the new object. This is what makes a quiet refresh
+    // cost one request per repo instead of three per linked PR (#72).
+    const previous = new Map((state.lastPrs ?? []).map(p => [`${p.repo}#${p.number}`, p]));
+    const toEnrich: Pr[] = [];
+    for (const p of new Set(linked.values())) {
+      const last = previous.get(`${p.repo}#${p.number}`);
+      if (!last?.enriched || last.updatedAt !== p.updatedAt) { toEnrich.push(p); continue; }
+      p.comments = last.comments;
+      if (p.reviewState !== 'review_required') p.reviewState = last.reviewState;
+      p.enriched = true;
+      reused++;
+    }
     // Enrich in small batches to avoid GitHub's secondary rate limit. Each
-    // enrichPr fires 3-4 parallel API calls, so a batch of 3 means ~12
+    // enrichPr fires 3 parallel API calls, so a batch of 3 means ~9
     // concurrent requests, well under the concurrency threshold — but that
     // limit is rate-shaped too, and back-to-back batches sustain a request
     // *rate* that trips it on a large enrich set (#69). The pause between
@@ -342,7 +364,9 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
     if (failed.length) githubErrors.push(...failed.map(f => (f as PromiseRejectedResult).reason?.message).filter((m): m is string => !!m));
     // Replace any PR whose enrichment rejected with its last-known-good
     // counterpart (matched by repo+number) so a transient detail-fetch
-    // failure doesn't strip CI/review/comment data the board already had.
+    // failure doesn't strip review/comment data the board already had. The
+    // counterpart keeps its older updatedAt, so the next refresh re-enriches
+    // it rather than reusing it.
     results.forEach((r, i) => {
       if (r.status !== 'rejected') return;
       const pr = toEnrich[i]!;
@@ -369,19 +393,15 @@ export async function refresh({ config, state, quiet }: { config: Config; state:
   if (throttled.length) realFailures.unshift('GitHub throttled this refresh (rate limit) — showing last known data.');
   if (realFailures.length) errors.github = realFailures.join('; ');
   const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos });
-  if (seq > lastCompletedRefreshSeq) {
-    lastCompletedRefreshSeq = seq;
-    state.snapshot = payload;
-    state.lastRefreshAt = payload.updatedAt;
-    // The last-known-good caches live inside the same gate as the snapshot:
-    // they're the outage fallback, and an unguarded write let a slower stale
-    // refresh overwrite a fresher call's caches after the fact.
-    if (jiraOk) state.lastCards = cards;
-    if (githubOk) state.lastPrs = prs;
+  state.snapshot = payload;
+  state.lastRefreshAt = payload.updatedAt;
+  // The last-known-good caches are the outage fallback; only a source that
+  // answered this refresh may overwrite its cache.
+  if (jiraOk) state.lastCards = cards;
+  if (githubOk) state.lastPrs = prs;
+  if (!quiet) {
+    console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
+    console.log(`refresh: github ${formatGithubStats()}, ${reused} linked PRs reused unchanged`);
   }
-  if (!quiet) console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
-  // state.snapshot, not payload: if this call lost the seq race, the winner's
-  // snapshot is fresher — returning our own would hand callers (and the SSE
-  // broadcast) stale data that state itself already rejected.
-  return state.snapshot ?? payload;
+  return payload;
 }

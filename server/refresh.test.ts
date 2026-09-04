@@ -385,49 +385,53 @@ test('demo mode builds populated snapshot without network', async () => {
   expect(p.recentActivity.some(e => e.type === 'merged')).toBe(true);
 });
 
-// M7: concurrent /api/refresh calls (two browser tabs, CLI + the web timer)
-// have no ordering guarantee — the slower call can be the one with fresher
-// upstream data. "Last buildSnapshot to finish wins" would let a refresh
-// that started earlier (and fetched newer data) get clobbered by one that
-// started later but finished first with staler data. The sequence guard
-// must make the opposite true: whichever refresh *completes* with the
-// highest sequence number keeps the write; a later-arriving completion
-// from an earlier-started, lower-sequence call must not overwrite it.
-test('a later-sequenced refresh that completes first is not overwritten by an earlier-sequenced one that finishes after it', async () => {
+// Concurrent /api/refresh calls (two browser tabs, CLI + the web timer, a
+// writeback's post-write refresh) used to each run their own sweep, with a
+// sequence gate deciding whose snapshot survived. #72 serializes them per
+// State instead: a caller that arrives mid-sweep gets one follow-up sweep,
+// shared with every other caller that arrives before it starts. Ordering
+// falls out for free (the refresh that fetched last always writes last), and
+// the follow-up sees data fetched after the caller asked — a writeback's
+// transition is visible to its own post-write refresh.
+test('refreshes on one State are serialized, and callers arriving mid-sweep share a single follow-up', async () => {
   const { fetchPrs } = await import('./github.ts');
   const state = emptyState();
   state.lastCards = [card()];
 
   let resolveFirstCallPrs!: (v: { prs: Pr[]; errors: string[] }) => void;
   const firstCallPrsPromise = new Promise<{ prs: Pr[]; errors: string[] }>((resolve) => { resolveFirstCallPrs = resolve; });
+  const before = vi.mocked(fetchPrs).mock.calls.length;
 
-  // Call A starts first (gets the lower sequence number) but its PR fetch
-  // hangs until we resolve it manually below — it will finish LAST.
+  // Call A starts and hangs on its PR fetch.
   vi.mocked(fetchPrs).mockImplementationOnce(() => firstCallPrsPromise);
   const callA = refresh({ config, state });
-
-  // Call B starts second (higher sequence number) and resolves immediately
-  // with the default mock — it finishes FIRST.
+  // B and C arrive while A is in flight: neither starts a sweep yet, and
+  // they share the same follow-up promise.
   const callB = refresh({ config, state });
-  const payloadB = await callB;
-  expect(state.snapshot).toBe(payloadB); // B, the only completed call so far, has written
+  const callC = refresh({ config, state });
+  expect(callC).toBe(callB);
+  await new Promise(r => setTimeout(r, 10));
+  expect(vi.mocked(fetchPrs).mock.calls.length - before).toBe(1);
+  expect(state.snapshot).toBeNull();
 
-  const lastPrsAfterB = state.lastPrs;
-
-  // Now let A's PR fetch resolve — with a distinctive PR, so an unguarded
-  // cache write would be detectable — after B already completed.
-  resolveFirstCallPrs({ prs: [pr({ repo: 'o/stale', number: 99 })], errors: [] });
+  // A finishes with a distinctive PR list; it writes first.
+  resolveFirstCallPrs({ prs: [pr({ repo: 'o/older', number: 99 })], errors: [] });
   const payloadA = await callA;
+  expect(state.snapshot).toBe(payloadA);
+  expect(state.lastPrs!.some(p => p.repo === 'o/older')).toBe(true);
 
-  // A lost the sequence race, so it returns the AUTHORITATIVE snapshot (B's)
-  // rather than its own stale build — callers (the HTTP response, the SSE
-  // broadcast) must never receive data that state itself already rejected.
-  expect(payloadA).toBe(payloadB);
+  // Then exactly one follow-up runs (the default mock: no PRs) and, having
+  // fetched later, overwrites A's snapshot and caches.
+  const payloadB = await callB;
+  expect(await callC).toBe(payloadB);
+  expect(vi.mocked(fetchPrs).mock.calls.length - before).toBe(2);
   expect(state.snapshot).toBe(payloadB);
-  // The outage-fallback caches sit inside the same seq gate: A's stale PR
-  // list must not overwrite the fresher cache B installed.
-  expect(state.lastPrs).toBe(lastPrsAfterB);
-  expect(state.lastPrs!.some(p => p.repo === 'o/stale')).toBe(false);
+  expect(state.lastPrs).toEqual([]);
+
+  // A different State object is an independent lane.
+  const other = emptyState();
+  await refresh({ config, state: other });
+  expect(vi.mocked(fetchPrs).mock.calls.length - before).toBe(3);
 });
 
 test('item comment history is capped per source so a chatty PR cannot evict Jira history', () => {

@@ -1,39 +1,60 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapPr, ciFromCheckRuns, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage } from './github.ts';
+import { mapPr, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats } from './github.ts';
 import type { Pr, GithubConfig } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
-test('mapPr basic fields + merged state', () => {
-  const raw = { number: 7, html_url: 'u', title: 'T', body: 'B', head: { ref: 'PROJ-1-x' },
-    state: 'closed', merged_at: '2026-07-01T00:00:00Z', created_at: '2026-06-01T00:00:00Z', updated_at: '2026-07-01T00:00:00Z' };
-  const p = mapPr(raw, 'org/r');
-  expect(p).toMatchObject({ repo: 'org/r', number: 7, branch: 'PROJ-1-x', state: 'merged' });
+// A GraphQL search node in the shape PR_SEARCH asks for (#72).
+const gqlPr = (o: Partial<Parameters<typeof mapPr>[0]> = {}) => ({
+  number: 7, url: 'u', title: 'T', body: 'B', headRefName: 'PROJ-1-x', state: 'OPEN', isDraft: false,
+  createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', mergedAt: null, closedAt: null,
+  labels: { nodes: [] }, reviewRequests: { totalCount: 0 },
+  commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+  ...o,
 });
 
-test('ciFromCheckRuns rollup', () => {
-  expect(ciFromCheckRuns([])).toBe('unknown');
-  expect(ciFromCheckRuns([{ status: 'completed', conclusion: 'success' }])).toBe('passing');
-  expect(ciFromCheckRuns([{ status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'failure' }])).toBe('failing');
-  expect(ciFromCheckRuns([{ status: 'in_progress', conclusion: null }])).toBe('pending');
-  expect(ciFromCheckRuns([{ status: 'completed', conclusion: 'neutral' }, { status: 'completed', conclusion: 'skipped' }])).toBe('passing');
+// A fake GitHub: POST /graphql answers a search with `nodes` per repo (keyed
+// by the repo: term in the query), and any REST path answers `rest(url)`.
+type FetchInit = { method?: string; body?: string; headers: Record<string, string> };
+const fakeGithub = (nodes: Record<string, unknown[]> | ((q: string) => unknown), rest: (url: string) => unknown = () => []) =>
+  vi.fn((url: string | URL, init?: FetchInit) => {
+    const u = String(url);
+    const ok = (body: unknown) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve(body) });
+    if (u.endsWith('/graphql')) {
+      const q = String((JSON.parse(init?.body ?? '{}') as { variables?: { q?: string } }).variables?.q ?? '');
+      if (typeof nodes === 'function') return ok(nodes(q));
+      const repo = q.match(/repo:(\S+)/)?.[1] ?? '';
+      return ok({ data: { search: { nodes: nodes[repo] ?? [] } } });
+    }
+    return ok(rest(u));
+  });
+
+test('mapPr basic fields, merged state, CI from the head commit rollup, pending review request', () => {
+  const p = mapPr(gqlPr({ state: 'MERGED', mergedAt: '2026-07-01T00:00:00Z' }), 'org/r');
+  expect(p).toMatchObject({ repo: 'org/r', number: 7, branch: 'PROJ-1-x', state: 'merged', ciStatus: 'unknown', reviewState: 'none', isDraft: false });
+  const open = mapPr(gqlPr({ reviewRequests: { totalCount: 2 }, labels: { nodes: [{ name: 'Draft' }] } }), 'org/r');
+  expect(open).toMatchObject({ state: 'open', ciStatus: 'passing', reviewState: 'review_required', isDraft: true });
+  expect(mapPr(gqlPr({ state: 'CLOSED', closedAt: '2026-07-02T00:00:00Z' }), 'org/r')).toMatchObject({ state: 'closed', closedAt: '2026-07-02T00:00:00Z' });
 });
 
-test('ciFromCheckRuns dedups reruns by name, keeping the latest', () => {
-  const runs = [
-    { name: 'build', status: 'completed', conclusion: 'failure', started_at: '2026-01-01T00:00:00Z' },
-    { name: 'build', status: 'completed', conclusion: 'success', started_at: '2026-01-01T00:05:00Z' },
-  ];
-  expect(ciFromCheckRuns(runs)).toBe('passing');
+test('ciFromRollup maps GitHub\'s combined status onto the four board states', () => {
+  expect(ciFromRollup('SUCCESS')).toBe('passing');
+  expect(ciFromRollup('FAILURE')).toBe('failing');
+  expect(ciFromRollup('ERROR')).toBe('failing');
+  expect(ciFromRollup('PENDING')).toBe('pending');
+  expect(ciFromRollup('EXPECTED')).toBe('pending');
+  // No checks configured, or no rollup on the commit.
+  expect(ciFromRollup(null)).toBe('unknown');
+  expect(ciFromRollup(undefined)).toBe('unknown');
 });
 
 test('reviewStateFrom', () => {
-  expect(reviewStateFrom({ requested_reviewers: [{}] }, [])).toBe('review_required');
-  expect(reviewStateFrom({ requested_reviewers: [] }, [{ state: 'CHANGES_REQUESTED', user: { login: 'a' }, submitted_at: '1' }])).toBe('changes_requested');
-  expect(reviewStateFrom({ requested_reviewers: [] }, [
+  expect(reviewStateFrom(true, [])).toBe('review_required');
+  expect(reviewStateFrom(false, [{ state: 'CHANGES_REQUESTED', user: { login: 'a' }, submitted_at: '1' }])).toBe('changes_requested');
+  expect(reviewStateFrom(false, [
     { state: 'CHANGES_REQUESTED', user: { login: 'a' }, submitted_at: '2026-01-01' },
     { state: 'APPROVED', user: { login: 'a' }, submitted_at: '2026-01-02' }])).toBe('approved');
-  expect(reviewStateFrom({ requested_reviewers: [] }, [])).toBe('none');
+  expect(reviewStateFrom(false, [])).toBe('none');
 });
 
 // enrichPr and fetchPrs are the network-orchestration functions in this
@@ -42,13 +63,14 @@ test('reviewStateFrom', () => {
 // left enrichPr's comment-merge-and-sort logic (real orchestration, not a
 // thin wrapper) running unverified.
 
-test('enrichPr merges issue comments, review comments, and review bodies into one sorted (oldest-first) list, sets ciStatus/reviewState, and deletes _raw', async () => {
-  const pr: Pr = {
-    repo: 'o/r', number: 5, url: 'u', title: 'T', body: '', branch: 'b',
-    state: 'open', createdAt: 'c', updatedAt: 'u', mergedAt: null, closedAt: null,
-    ciStatus: 'unknown', reviewState: 'none', comments: [],
-    _raw: { head: { sha: 'abc123' }, requested_reviewers: [], requested_teams: [] },
-  };
+const basePr = (o: Partial<Pr> = {}): Pr => ({
+  repo: 'o/r', number: 5, url: 'u', title: 'T', body: '', branch: 'b',
+  state: 'open', createdAt: 'c', updatedAt: 'u', mergedAt: null, closedAt: null,
+  ciStatus: 'passing', reviewState: 'none', comments: [], ...o,
+});
+
+test('enrichPr merges issue comments, review comments, and review bodies into one sorted (oldest-first) list, sets reviewState, leaves CI to discovery, and marks the PR enriched', async () => {
+  const pr = basePr();
   const fetchMock = vi.fn((url: string | URL) => {
     const u = String(url);
     if (u.includes('/issues/5/comments')) {
@@ -66,9 +88,6 @@ test('enrichPr merges issue comments, review comments, and review bodies into on
         { state: 'APPROVED', user: { login: 'carol' }, submitted_at: '2026-01-03T00:00:00Z', body: 'lgtm' },
       ]) });
     }
-    if (u.includes('/commits/abc123/check-runs')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ check_runs: [{ status: 'completed', conclusion: 'success' }] }) });
-    }
     throw new Error(`unexpected fetch: ${u}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -77,203 +96,124 @@ test('enrichPr merges issue comments, review comments, and review bodies into on
   // Oldest first: bob (Jan 1) -> alice (Jan 2) -> carol's review body (Jan 3).
   expect(result.comments.map(c => c.author)).toEqual(['bob', 'alice', 'carol']);
   expect(result.comments.map(c => c.body)).toEqual(['review comment', 'issue comment', 'lgtm']);
+  // CI came with discovery (the head commit rollup); enrichment never asks
+  // check-runs and never touches it (#72).
   expect(result.ciStatus).toBe('passing');
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('check-runs'))).toBe(false);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
   expect(result.reviewState).toBe('approved');
-  expect(result._raw).toBeUndefined();
+  expect(result.enriched).toBe(true);
 });
 
-test('enrichPr does not fetch check-runs for a non-open PR and leaves ciStatus unknown', async () => {
-  const pr: Pr = {
-    repo: 'o/r', number: 6, url: 'u', title: 'T', body: '', branch: 'b',
-    state: 'merged', createdAt: 'c', updatedAt: 'u', mergedAt: '2026-01-01T00:00:00Z', closedAt: null,
-    ciStatus: 'unknown', reviewState: 'none', comments: [],
-    _raw: { head: { sha: 'zzz' } },
-  };
-  const fetchMock = vi.fn((url: string | URL) => {
-    const u = String(url);
-    if (u.includes('check-runs')) throw new Error('should not fetch check-runs for a merged PR');
-    return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const cfg: GithubConfig = { token: 't', org: 'o', repos: [], username: 'me' };
-  const result = await enrichPr(pr, cfg);
-  expect(result.ciStatus).toBe('unknown');
+test('enrichPr keeps a pending review request ahead of an older approval', async () => {
+  vi.stubGlobal('fetch', fakeGithub({}, u => u.includes('/reviews')
+    ? [{ state: 'APPROVED', user: { login: 'carol' }, submitted_at: '2026-01-03T00:00:00Z' }]
+    : []));
+  const pr = await enrichPr(basePr({ reviewState: 'review_required' }), { token: 't', org: 'o', repos: [], username: 'me' });
+  expect(pr.reviewState).toBe('review_required');
 });
 
-test('fetchPrs filters by author server-side via search, then detail-fetches each PR', async () => {
-  const seen: string[] = [];
-  const fetchMock = vi.fn((url: string | URL) => {
-    const u = String(url);
-    seen.push(u);
-    // Search applies the per_page window to *the user's* PRs, so it returns
-    // only the author's — no repo-window client filter is needed anymore.
-    if (u.includes('/search/issues')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ number: 1 }, { number: 4 }] }) });
-    }
-    if (u.includes('/repos/o/r/pulls/1')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(
-        { number: 1, html_url: 'u1', head: { ref: 'b1', sha: 's1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
-    }
-    if (u.includes('/repos/o/r/pulls/4')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(
-        { number: 4, html_url: 'u4', head: { ref: 'b4', sha: 's4' }, merged_at: '2026-07-01T00:00:00Z', state: 'closed', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
-    }
-    throw new Error(`unexpected fetch: ${u}`);
+test('fetchPrs filters by author server-side in one GraphQL search per repo, no per-PR detail request', async () => {
+  const fetchMock = fakeGithub({
+    'o/r': [
+      gqlPr({ number: 1, url: 'u1', headRefName: 'b1' }),
+      gqlPr({ number: 4, url: 'u4', headRefName: 'b4', state: 'MERGED', mergedAt: '2026-07-01T00:00:00Z' }),
+      // An Issue node (search type ISSUE can return one) is an empty object
+      // under the PullRequest fragment and must be skipped, not mapped.
+      {},
+    ],
   });
   vi.stubGlobal('fetch', fetchMock);
   const cfg: GithubConfig = { token: 't', org: 'o', repos: ['r'], username: 'me' };
+  resetGithubStats();
   const { prs, errors } = await fetchPrs(cfg);
   expect(errors).toEqual([]);
-  // The author filter now rides in the search query, not a client-side filter.
-  expect(seen.some(u => u.includes('/search/issues') && u.includes(encodeURIComponent('author:me')) && u.includes(encodeURIComponent('repo:o/r')))).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [url, init] = fetchMock.mock.calls[0]! as [string, FetchInit];
+  expect(url).toBe('https://api.github.com/graphql');
+  expect(init.method).toBe('POST');
+  const q = (JSON.parse(init.body ?? '') as { variables: { q: string } }).variables.q;
+  expect(q).toContain('is:pr');
+  expect(q).toContain('author:me');
+  expect(q).toContain('repo:o/r');
   expect(prs.map(p => p.number)).toEqual([1, 4]);
-  expect(prs[0]!.branch).toBe('b1');       // head.ref survives the detail fetch
-  expect(prs[1]!.state).toBe('merged');    // merged_at survives the detail fetch
+  expect(prs[0]!.branch).toBe('b1');       // headRefName survives the mapping
+  expect(prs[1]!.state).toBe('merged');    // mergedAt survives the mapping
+  expect(githubStats()).toMatchObject({ requests: 1, byFamily: { graphql: 1 } });
 });
 
 test('fetchPrs preserves an owner-qualified repository entry', async () => {
-  const seen: string[] = [];
-  const fetchMock = vi.fn((url: string | URL) => {
-    const u = String(url);
-    seen.push(u);
-    if (u.includes('/search/issues')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ number: 1 }] }) });
-    }
-    if (u.includes('/repos/other/repo/pulls/1')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(
-        { number: 1, html_url: 'u1', head: { ref: 'b1', sha: 's1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
-    }
-    throw new Error(`unexpected fetch: ${u}`);
-  });
+  const fetchMock = fakeGithub({ 'other/repo': [gqlPr({ number: 1 })] });
   vi.stubGlobal('fetch', fetchMock);
   const cfg: GithubConfig = { token: 't', org: 'o', repos: ['other/repo'], username: 'me' };
-  const { errors } = await fetchPrs(cfg);
+  const { prs, errors } = await fetchPrs(cfg);
   expect(errors).toEqual([]);
-  expect(seen.some(u => u.includes(encodeURIComponent('repo:other/repo')))).toBe(true);
+  expect(prs[0]!.repo).toBe('other/repo');
 });
 
 test('fetchPrs isolates a per-repo failure into an "org/repo: message" error, without blanking the other repos', async () => {
-  const fetchMock = vi.fn((url: string | URL) => {
-    const u = String(url);
-    if (u.includes('/search/issues') && u.includes(encodeURIComponent('repo:o/good'))) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ number: 1 }] }) });
+  const fetchMock = vi.fn((url: string | URL, init?: FetchInit) => {
+    const q = String((JSON.parse(init?.body ?? '{}') as { variables?: { q?: string } }).variables?.q ?? '');
+    if (q.includes('repo:o/good')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { search: { nodes: [gqlPr({ number: 1 })] } } }) });
     }
-    if (u.includes('/repos/o/good/pulls/1')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(
-        { number: 1, html_url: 'u1', head: { ref: 'b1', sha: 's1' }, state: 'open', created_at: 'c', updated_at: 'u', user: { login: 'me' } }) });
-    }
-    if (u.includes('/search/issues') && u.includes(encodeURIComponent('repo:o/bad'))) {
+    if (q.includes('repo:o/bad')) {
       return Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve('boom') });
     }
-    throw new Error(`unexpected fetch: ${u}`);
+    if (q.includes('repo:o/gql-error')) {
+      // GraphQL reports some failures as a 200 with an errors array.
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: null, errors: [{ message: 'Could not resolve to a Repository' }] }) });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
-  const cfg: GithubConfig = { token: 't', org: 'o', repos: ['good', 'bad'], username: 'me' };
+  const cfg: GithubConfig = { token: 't', org: 'o', repos: ['good', 'bad', 'gql-error'], username: 'me' };
   const { prs, errors } = await fetchPrs(cfg);
   expect(prs).toHaveLength(1);
   expect(prs[0]!.number).toBe(1);
-  expect(errors).toHaveLength(1);
+  expect(errors).toHaveLength(2);
   expect(errors[0]).toContain('o/bad:');
   expect(errors[0]).toContain('500');
+  expect(errors[1]).toContain('o/gql-error:');
+  expect(errors[1]).toContain('Could not resolve');
 });
 
 test('gh() sends If-None-Match on repeat calls and serves the cached body on 304', async () => {
   // Unique repo name: the etag cache is module-level and keyed by path, so
   // this test must not collide with paths other tests use.
-  const rawPr = { number: 1, html_url: 'u', head: { ref: 'b1' }, state: 'open', created_at: 'c', updated_at: 'u2', user: { login: 'me' } };
   const etagged = (h: string) => h.toLowerCase() === 'etag' ? '"abc123"' : null;
-  let searchCalls = 0;
-  let secondSearchHeaders: Record<string, string> | undefined;
-  const fetchMock = vi.fn((url: string, init: { headers: Record<string, string> }) => {
+  let reviewCalls = 0;
+  let secondReviewHeaders: Record<string, string> | undefined;
+  const fetchMock = vi.fn((url: string, init: FetchInit) => {
     const u = String(url);
-    if (u.includes('/search/issues?')) {
-      searchCalls++;
-      if (searchCalls === 1) {
+    if (u.includes('/repos/etag-org/etag-repo/pulls/1/reviews')) {
+      reviewCalls++;
+      if (reviewCalls === 1) {
         return Promise.resolve({
           ok: true, status: 200,
           headers: { get: etagged },
-          json: () => Promise.resolve({ items: [{ number: 1 }] }),
+          json: () => Promise.resolve([{ state: 'APPROVED', user: { login: 'a' }, submitted_at: '1' }]),
         });
       }
-      secondSearchHeaders = init.headers;
+      secondReviewHeaders = init.headers;
       return Promise.resolve({ ok: false, status: 304, headers: { get: () => null } });
     }
-    if (u.includes('/repos/etag-org/etag-repo/pulls/1')) {
-      // Detail fetch: no etag header, so it stays uncached — irrelevant here.
-      return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve(rawPr) });
-    }
-    throw new Error(`unexpected URL ${u}`);
+    // Comment endpoints: no etag header, so they stay uncached — irrelevant here.
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
   });
   vi.stubGlobal('fetch', fetchMock);
   const cfg: GithubConfig = { token: 't', org: 'etag-org', repos: ['etag-repo'], username: 'me' };
 
-  const first = await fetchPrs(cfg);
-  expect(first.errors).toEqual([]);
-  expect(first.prs).toHaveLength(1);
+  const first = await enrichPr(basePr({ repo: 'etag-org/etag-repo', number: 1 }), cfg);
+  expect(first.reviewState).toBe('approved');
 
-  const second = await fetchPrs(cfg);
-  expect(secondSearchHeaders?.['If-None-Match']).toBe('"abc123"');
-  // 304 is not an error: the cached search body is served as if fresh.
-  expect(second.errors).toEqual([]);
-  expect(second.prs).toHaveLength(1);
-  expect(second.prs[0]!.number).toBe(1);
-});
-
-// --- fallback PRs restored from state.lastPrs (no _raw) ---
-
-// enrichPr deletes _raw, and refresh.ts caches those same objects in
-// state.lastPrs as the outage fallback. When a repo's fetch later fails they
-// are spliced back in and re-enriched, so enrichPr must cope with the _raw it
-// itself removed — it used to request /commits/undefined/check-runs and 404,
-// making every degraded refresh noisier than the outage that caused it.
-const fallbackCfg: GithubConfig = { token: 't', org: 'o', repos: ['r'], username: 'me' };
-
-const fallbackPr = (): Pr => ({
-  repo: 'o/r', number: 7, url: 'u', title: 'T', body: '', branch: 'b',
-  state: 'open', createdAt: 'c', updatedAt: 'u2',
-  mergedAt: null, closedAt: null, ciStatus: 'passing', reviewState: 'approved',
-  isDraft: false, comments: [],
-});
-
-test('enrichPr on a _raw-less fallback PR skips check-runs instead of 404ing on an undefined SHA', async () => {
-  const urls: string[] = [];
-  vi.stubGlobal('fetch', vi.fn((url: string) => {
-    urls.push(String(url));
-    if (String(url).includes('/check-runs')) {
-      return Promise.resolve({ ok: false, status: 404, text: () => Promise.resolve('Not Found'), headers: { get: () => null } });
-    }
-    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
-  }));
-
-  const pr = fallbackPr();
-  await expect(enrichPr(pr, fallbackCfg)).resolves.toBe(pr);
-  expect(urls.some(u => u.includes('/check-runs'))).toBe(false);
-  // No head SHA to ask about, so the last-known CI status is kept rather than
-  // being downgraded to 'unknown' on data we simply couldn't re-check.
-  expect(pr.ciStatus).toBe('passing');
-  // Likewise reviewState: requested reviewers live in _raw, so an empty
-  // reviews list means "can't tell", not "nobody requested".
-  expect(pr.reviewState).toBe('approved');
-});
-
-test('enrichPr still queries check-runs and overwrites CI when _raw carries a head SHA', async () => {
-  const urls: string[] = [];
-  vi.stubGlobal('fetch', vi.fn((url: string) => {
-    urls.push(String(url));
-    if (String(url).includes('/check-runs')) {
-      return Promise.resolve({
-        ok: true, status: 200, headers: { get: () => null },
-        json: () => Promise.resolve({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'failure' }] }),
-      });
-    }
-    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
-  }));
-
-  const pr = { ...fallbackPr(), _raw: { head: { sha: 'deadbeef' } } };
-  await enrichPr(pr, fallbackCfg);
-  expect(urls.some(u => u.includes('/commits/deadbeef/check-runs'))).toBe(true);
-  expect(pr.ciStatus).toBe('failing');
-  expect(pr.reviewState).toBe('none'); // _raw present: an empty reviews list is authoritative
+  resetGithubStats();
+  const second = await enrichPr(basePr({ repo: 'etag-org/etag-repo', number: 1 }), cfg);
+  expect(secondReviewHeaders?.['If-None-Match']).toBe('"abc123"');
+  // 304 is not an error: the cached reviews body is served as if fresh, and
+  // the stats line shows it as a request that was not modified.
+  expect(second.reviewState).toBe('approved');
+  expect(githubStats()).toMatchObject({ requests: 3, notModified: 1, byFamily: { reviews: 1, issue_comments: 1, review_comments: 1 } });
 });
 
 // #69: GitHub's secondary rate limit answered a large enrich sweep with a 403,
@@ -325,26 +265,23 @@ test('gh backs off and retries a secondary rate limit instead of surfacing it', 
   vi.useFakeTimers();
   try {
     let calls = 0;
-    const fetchMock = vi.fn((url: string | URL) => {
-      const u = String(url);
-      if (u.includes('/search/issues')) {
-        calls++;
-        if (calls <= 2) {
-          return Promise.resolve({ ok: false, status: 403, headers: headers(), text: () => Promise.resolve(SECONDARY) });
-        }
-        return Promise.resolve({ ok: true, headers: headers(), json: () => Promise.resolve({ items: [{ number: 3 }] }) });
+    const fetchMock = vi.fn(() => {
+      calls++;
+      if (calls <= 2) {
+        return Promise.resolve({ ok: false, status: 403, headers: headers(), text: () => Promise.resolve(SECONDARY) });
       }
-      return Promise.resolve({ ok: true, headers: headers(), json: () => Promise.resolve(
-        { number: 3, html_url: 'u3', head: { ref: 'b3', sha: 's3' }, state: 'open', created_at: 'c', updated_at: 'u' }) });
+      return Promise.resolve({ ok: true, headers: headers(), json: () => Promise.resolve({ data: { search: { nodes: [gqlPr({ number: 3 })] } } }) });
     });
     vi.stubGlobal('fetch', fetchMock);
     const cfg: GithubConfig = { token: 't', org: 'o', repos: ['throttled'], username: 'me' };
+    resetGithubStats();
     const pending = fetchPrs(cfg);
     await vi.runAllTimersAsync();
     const { prs, errors } = await pending;
     expect(errors).toEqual([]);
     expect(prs.map(p => p.number)).toEqual([3]);
     expect(calls).toBe(3);
+    expect(githubStats()).toMatchObject({ requests: 3, retries: 2 });
   } finally {
     vi.useRealTimers();
   }

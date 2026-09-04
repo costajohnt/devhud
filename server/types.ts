@@ -115,10 +115,6 @@ export interface PrComment {
   createdAt: string | null | undefined;
 }
 
-// _raw carries just enough of the raw GitHub API response through fetchPrs
-// for enrichPr to finish the enrichment (check-run sha, requested
-// reviewers/teams) — deleted before the Pr is used anywhere else, so it's
-// optional here rather than a separate "PrWithRaw" type.
 export interface Pr {
   repo: string;
   number: number;
@@ -135,11 +131,11 @@ export interface Pr {
   reviewState: ReviewState;
   isDraft?: boolean;
   comments: PrComment[];
-  _raw?: {
-    head: { sha?: string };
-    requested_reviewers?: unknown[];
-    requested_teams?: unknown[];
-  };
+  // Set once enrichPr has filled comments/reviewState. refresh() reuses a
+  // last-known PR's enrichment when its updatedAt is unchanged, and an
+  // enriched PR with no comments is otherwise indistinguishable from one
+  // that was never linked (#72).
+  enriched?: boolean;
 }
 
 // --- Board / snapshot payload (mirrors web/src/types.ts) ---
