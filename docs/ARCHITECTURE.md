@@ -60,9 +60,9 @@ POST /api/refresh   ▼
      │            classifyCard()    : bucket + attention, per card
      │                    │
      │                    ▼
-      │            buildSnapshot()   : assembles the full payload:
-      │                                buckets, todo, blocked, unlinkedPrs,
-      │                                doneCards, recentActivity, prLog
+     │            buildSnapshot()   : assembles the full payload:
+     │                                buckets, todo, blocked, unlinkedPrs,
+     │                                doneCards, recentActivity, prLog
      │                    │
      │                    ▼
      │            state.snapshot = payload;  saveState(data/state.json)
