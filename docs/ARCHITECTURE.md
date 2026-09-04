@@ -8,7 +8,7 @@
 - **config.ts**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses), reads `GITHUB_TOKEN` env var as a token fallback.
 - **state.ts**: `data/state.json` load/save, migrations (`celebrated` string→object, `prLog` backfill), and `cardState` (per-card override/seen-horizon lookup, created lazily).
 - **jira.ts**: Jira Cloud REST client: JQL search, ADF-to-plain-text flattening, comment pagination fallback for cards with more comments than the search endpoint embeds.
-- **github.ts**: GitHub REST client: PR list per repo, PR detail enrichment (comments, reviews, check runs), CI/review-state derivation. Requests go through one `gh()` helper that carries the conditional-request (ETag) cache and the secondary-rate-limit backoff: a 403/429 that names the secondary limit or carries `Retry-After`/an exhausted `x-ratelimit-remaining` is retried up to 3 times (Retry-After, else the reset timestamp, else exponential backoff from 1s, capped at 60s) before it throws (#69). Refresh paces its enrich batches for the same reason — the limit is rate-shaped, so concurrency caps alone don't hold it.
+- **github.ts**: GitHub client. PR discovery is one GraphQL search per configured repo (the author's 50 most recently updated PRs with branch, state, draft flag, pending review requests and the head commit's CI rollup in a single response, #72); comments and reviews for PRs linked to a card come from REST. Every request goes through one `send()` helper that counts it into per-refresh stats (total, per endpoint family, 304s, retries, last `x-ratelimit-remaining`) and carries the secondary-rate-limit backoff: a 403/429 that names the secondary limit or carries `Retry-After`/an exhausted `x-ratelimit-remaining` is retried up to 3 times (Retry-After, else the reset timestamp, else exponential backoff from 1s, capped at 60s) before it throws (#69). REST GETs add a conditional-request (ETag) cache. Refresh paces its enrich batches for the same reason — the limit is rate-shaped, so concurrency caps alone don't hold it.
 - **link.ts**: Matches PRs to Jira cards by branch name, PR title, PR body (`/browse/KEY` link), or card description (containing the PR URL); returns the unlinked leftovers.
 - **classify.ts**: Given a card + its linked PR + its stored `cardState`, decides the bucket and attention flags.
 - **refresh.ts**: Orchestrates one refresh cycle: fetch (or demo-generate), link, classify, build the full snapshot payload (`buildSnapshot`), including `prLog` upsert and the `recentActivity`/`doneCards` derivations. Also the fallback-to-last-known-good logic on partial fetch failure.
@@ -52,6 +52,8 @@ config.json ──► loadConfig()
                     │
 POST /api/refresh   ▼
      │        fetchJiraCards() / fetchPrs()+enrichPr()   (or demo.ts in demo mode)
+     │            enrichPr only for linked PRs whose updatedAt changed since
+     │            state.lastPrs; concurrent refreshes serialize per State (#72)
      │                    │
      │                    ▼
      │            linkPrsToCards()  : match PRs to cards

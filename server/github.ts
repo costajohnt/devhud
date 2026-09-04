@@ -1,31 +1,23 @@
 import type { Pr, PrComment, GithubConfig, CiStatus, ReviewState } from './types.ts';
 
-// Minimal shapes for the slices of the raw GitHub REST API responses this
-// file actually reads — not full API types, just what's used below.
-interface RawPr {
+// Minimal shapes for the slices of the GitHub responses this file actually
+// reads — not full API types, just what's used below. PR discovery is one
+// GraphQL search per repo (#72); comments and reviews still come from REST.
+interface GqlPr {
   number: number;
-  html_url: string;
-  title?: string;
-  body?: string;
-  head?: { ref?: string; sha?: string };
-  merged_at?: string | null;
-  closed_at?: string | null;
-  state: string;
-  draft?: boolean;
-  labels?: { name?: string }[];
-  created_at: string;
-  updated_at: string;
-  user?: { login?: string };
-  requested_reviewers?: unknown[];
-  requested_teams?: unknown[];
-}
-
-interface RawCheckRun {
-  name?: string;
-  status: string;
-  conclusion: string | null;
-  started_at?: string | null;
-  completed_at?: string | null;
+  url: string;
+  title?: string | null;
+  body?: string | null;
+  headRefName?: string | null;
+  state: string; // OPEN | CLOSED | MERGED
+  isDraft?: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+  mergedAt?: string | null;
+  closedAt?: string | null;
+  labels?: { nodes?: ({ name?: string | null } | null)[] | null } | null;
+  reviewRequests?: { totalCount?: number | null } | null;
+  commits?: { nodes?: ({ commit?: { statusCheckRollup?: { state?: string | null } | null } | null } | null)[] | null } | null;
 }
 
 interface RawReview {
@@ -42,55 +34,49 @@ interface RawComment {
   submitted_at?: string;
 }
 
-export function mapPr(raw: RawPr, repo: string): Pr {
-  const hasDraftLabel = (raw.labels ?? []).some(l => l.name?.toLowerCase() === 'draft');
+// The head commit's combined status as GitHub itself rolls it up (check runs
+// and commit statuses, latest attempt per check). Replaces the per-PR
+// check-runs fetch: the rollup rides along on the discovery query, so CI
+// changes cost no extra request (#72).
+export function ciFromRollup(state: string | null | undefined): CiStatus {
+  switch (state) {
+    case 'SUCCESS': return 'passing';
+    case 'FAILURE':
+    case 'ERROR': return 'failing';
+    case 'PENDING':
+    case 'EXPECTED': return 'pending';
+    default: return 'unknown';
+  }
+}
+
+export function mapPr(node: GqlPr, repo: string): Pr {
+  const hasDraftLabel = (node.labels?.nodes ?? []).some(l => l?.name?.toLowerCase() === 'draft');
+  const state: Pr['state'] = node.state === 'MERGED' ? 'merged' : node.state === 'OPEN' ? 'open' : 'closed';
+  const rollup = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state;
   return {
     repo,
-    number: raw.number,
-    url: raw.html_url,
-    title: raw.title ?? '',
-    body: raw.body ?? '',
-    branch: raw.head?.ref ?? '',
-    state: (raw.merged_at ? 'merged' : raw.state) as Pr['state'], // 'open' | 'merged' | 'closed'
-    createdAt: raw.created_at,
-    updatedAt: raw.updated_at,
-    mergedAt: raw.merged_at ?? null,
-    closedAt: raw.closed_at ?? null,
-    ciStatus: 'unknown',
-    reviewState: 'none',
-    isDraft: (raw.draft ?? false) || hasDraftLabel,
+    number: node.number,
+    url: node.url,
+    title: node.title ?? '',
+    body: node.body ?? '',
+    branch: node.headRefName ?? '',
+    state,
+    createdAt: node.createdAt,
+    updatedAt: node.updatedAt,
+    mergedAt: node.mergedAt ?? null,
+    closedAt: node.closedAt ?? null,
+    // A closed PR's checks are history, not status: keep the pre-#72 'unknown'.
+    ciStatus: state === 'open' ? ciFromRollup(rollup) : 'unknown',
+    // Pending review requests are visible at discovery; approvals and change
+    // requests need the reviews list, which enrichPr fetches for linked PRs.
+    reviewState: (node.reviewRequests?.totalCount ?? 0) > 0 ? 'review_required' : 'none',
+    isDraft: (node.isDraft ?? false) || hasDraftLabel,
     comments: [],
   };
 }
 
-const OK = new Set(['success', 'neutral', 'skipped']);
-
-// A rerun creates a new check run with the same name; dedup by name keeping
-// only the latest (by started_at, falling back to completed_at) so an old
-// failing attempt doesn't shadow a newer passing rerun.
-function latestByName(runs: RawCheckRun[]): RawCheckRun[] {
-  const latest = new Map<string, RawCheckRun>();
-  runs.forEach((r, i) => {
-    // Runs without a name can't be meaningfully deduped against each other;
-    // give each an index-scoped key so they're all kept.
-    const key = r.name ?? `__unnamed_${i}`;
-    const prev = latest.get(key);
-    const at = r.started_at ?? r.completed_at ?? '';
-    const prevAt = prev ? (prev.started_at ?? prev.completed_at ?? '') : '';
-    if (!prev || at > prevAt) latest.set(key, r);
-  });
-  return [...latest.values()];
-}
-
-export function ciFromCheckRuns(runs: RawCheckRun[] | undefined | null): CiStatus {
-  if (!runs?.length) return 'unknown';
-  const deduped = latestByName(runs);
-  if (deduped.some(r => r.status !== 'completed')) return 'pending';
-  return deduped.every(r => OK.has(r.conclusion ?? '')) ? 'passing' : 'failing';
-}
-
-export function reviewStateFrom(pr: { requested_reviewers?: unknown[]; requested_teams?: unknown[] } | undefined, reviews: RawReview[] | undefined): ReviewState {
-  if (pr?.requested_reviewers?.length || pr?.requested_teams?.length) return 'review_required';
+export function reviewStateFrom(reviewRequested: boolean, reviews: RawReview[] | undefined): ReviewState {
+  if (reviewRequested) return 'review_required';
   // latest review per reviewer wins
   const latest = new Map<string | undefined, RawReview>();
   for (const r of reviews ?? []) {
@@ -104,13 +90,40 @@ export function reviewStateFrom(pr: { requested_reviewers?: unknown[]; requested
   return 'none';
 }
 
+// Per-refresh request instrumentation (#72): refresh() resets this at entry
+// and logs it at exit, so a change in request volume is visible in the server
+// log rather than inferred from a throttle banner. Refreshes are serialized
+// (refresh.ts), so one process-wide counter is one refresh's counter.
+export type GithubRequestFamily = 'graphql' | 'issue_comments' | 'review_comments' | 'reviews';
+export interface GithubRequestStats {
+  requests: number;
+  byFamily: Partial<Record<GithubRequestFamily, number>>;
+  notModified: number;
+  retries: number;
+  // Last x-ratelimit-remaining seen on each API; REST and GraphQL have
+  // separate budgets. null until a response carried the header.
+  rateLimitRemaining: { rest: number | null; graphql: number | null };
+}
+const freshStats = (): GithubRequestStats =>
+  ({ requests: 0, byFamily: {}, notModified: 0, retries: 0, rateLimitRemaining: { rest: null, graphql: null } });
+let stats = freshStats();
+export function resetGithubStats(): void { stats = freshStats(); }
+export function githubStats(): GithubRequestStats {
+  return { ...stats, byFamily: { ...stats.byFamily }, rateLimitRemaining: { ...stats.rateLimitRemaining } };
+}
+export function formatGithubStats(s: GithubRequestStats = githubStats()): string {
+  const families = Object.entries(s.byFamily).map(([k, v]) => `${k} ${v}`).join(', ');
+  const remaining = [s.rateLimitRemaining.rest, s.rateLimitRemaining.graphql]
+    .map(n => n ?? '?').join('/');
+  return `${s.requests} requests (${families || 'none'}), ${s.notModified} not-modified, ${s.retries} retries, remaining rest/graphql ${remaining}`;
+}
+
 // Conditional-request cache: GitHub 304s don't count against the rate
 // limit, and between refresh ticks most responses are byte-identical — with
 // the server polling every couple of minutes this turns almost the whole
-// sweep free. Keyed by path (token never varies within a process). Most key
-// families are stable (search per repo, comments/reviews per PR), but the
-// check-runs path is keyed by head SHA — a new entry per push, forever — so
-// a long-lived server needs the size cap below.
+// sweep free. Keyed by path (token never varies within a process). Keys are
+// comments/reviews per PR, so the cache grows with the number of PRs ever
+// linked; a long-lived server needs the size cap below.
 // ponytail: bulk-drop at the cap (one re-paid sweep), LRU if it ever matters.
 const ETAG_CACHE_MAX = 500;
 const etagCache = new Map<string, { etag: string; body: unknown }>();
@@ -168,67 +181,106 @@ export function throttleWaitMs(
 export const isThrottleMessage = (msg: string | undefined): boolean =>
   /secondary rate limit|rate limit exceeded|api rate limit/i.test(msg ?? '');
 
-async function gh<T>(path: string, token: string): Promise<T> {
+// One fetch with the throttle contract above, counted into the stats. Returns
+// the response for the caller to read (a 304 is a success here, not an error).
+async function send(family: GithubRequestFamily, path: string, token: string,
+  init: { method?: 'POST'; body?: string; headers?: Record<string, string> } = {}): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
-    const cached = etagCache.get(path);
+    stats.requests++;
+    stats.byFamily[family] = (stats.byFamily[family] ?? 0) + 1;
+    if (attempt > 0) stats.retries++;
     const res = await fetch(`https://api.github.com${path}`, {
-      headers: {
-        Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
-        ...(cached ? { 'If-None-Match': cached.etag } : {}),
-      },
+      method: init.method ?? 'GET',
+      body: init.body,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', ...init.headers },
       signal: AbortSignal.timeout(30_000),
     });
-    if (res.status === 304 && cached) return cached.body as T;
-    if (!res.ok) {
-      const text = await res.text();
-      const wait = attempt < THROTTLE_RETRIES ? throttleWaitMs(res, text, attempt) : null;
-      if (wait !== null) {
-        await sleep(wait);
-        continue;
-      }
-      throw new Error(`GitHub ${res.status} ${path}: ${text.slice(0, 200)}`);
-    }
-    const body = await res.json() as T;
     // Optional chain: test stubs (and any minimal fetch shim) may return a
     // response without a headers object.
-    const etag = res.headers?.get('etag');
-    if (etag) {
-      if (etagCache.size >= ETAG_CACHE_MAX) etagCache.clear();
-      etagCache.set(path, { etag, body });
+    const remaining = Number(res.headers?.get('x-ratelimit-remaining'));
+    if (Number.isFinite(remaining)) stats.rateLimitRemaining[family === 'graphql' ? 'graphql' : 'rest'] = remaining;
+    if (res.ok || res.status === 304) return res;
+    const text = await res.text();
+    const wait = attempt < THROTTLE_RETRIES ? throttleWaitMs(res, text, attempt) : null;
+    if (wait !== null) {
+      await sleep(wait);
+      continue;
     }
-    return body;
+    throw new Error(`GitHub ${res.status} ${path}: ${text.slice(0, 200)}`);
   }
 }
 
-interface RawSearchResult {
-  items?: { number: number }[];
+// REST GET through the ETag cache.
+async function gh<T>(family: GithubRequestFamily, path: string, token: string): Promise<T> {
+  const cached = etagCache.get(path);
+  const res = await send(family, path, token, cached ? { headers: { 'If-None-Match': cached.etag } } : {});
+  if (res.status === 304) {
+    if (!cached) throw new Error(`GitHub 304 ${path}: no cached body`);
+    stats.notModified++;
+    return cached.body as T;
+  }
+  const body = await res.json() as T;
+  const etag = res.headers?.get('etag');
+  if (etag) {
+    if (etagCache.size >= ETAG_CACHE_MAX) etagCache.clear();
+    etagCache.set(path, { etag, body });
+  }
+  return body;
 }
+
+interface GqlResponse<T> { data?: T | null; errors?: { message?: string }[] }
+
+// GraphQL POST. No ETag (POSTs aren't conditional) and its own rate-limit
+// budget. A rate-limit error can arrive as a 200 with an errors array; its
+// message names the rate limit, so isThrottleMessage still recognises it.
+async function graphql<T>(query: string, variables: Record<string, unknown>, token: string): Promise<T> {
+  const res = await send('graphql', '/graphql', token,
+    { method: 'POST', body: JSON.stringify({ query, variables }), headers: { 'Content-Type': 'application/json' } });
+  const body = await res.json() as GqlResponse<T>;
+  if (body.errors?.length) {
+    throw new Error(`GitHub graphql: ${body.errors.map(e => e.message ?? 'error').join('; ').slice(0, 200)}`);
+  }
+  if (!body.data) throw new Error('GitHub graphql: empty response');
+  return body.data;
+}
+
+// One request per repo: the author's 50 most recently updated PRs with every
+// field mapPr needs. The old shape was Search (issue shape only, no branch or
+// merge state) plus one /pulls/{n} detail request per hit — 51 requests per
+// repo, most of them 304s that still counted against the secondary limit (#72).
+const PR_SEARCH = `query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number url title body headRefName state isDraft createdAt updatedAt mergedAt closedAt
+        labels(first: 10) { nodes { name } }
+        reviewRequests(first: 1) { totalCount }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      }
+    }
+  }
+}`;
+
+interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
 
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
 //
-// Author filtering happens server-side. The old approach asked /pulls for the
-// repo's 50 most-recently-updated PRs and then filtered by author locally, but
-// on a busy repo the author's PRs are almost never inside that window — ~95% of
-// them were dropped before any dashboard logic ran, starving the board,
-// Recent Activity, and the charts. The Search API applies the per_page window to
-// *the user's* PRs instead of the repo's, so it returns the author's 50 newest.
+// Author filtering happens server-side. Asking /pulls for the repo's 50
+// most-recently-updated PRs and filtering by author locally dropped ~95% of
+// the author's PRs on a busy repo; a search applies the window to *the user's*
+// PRs instead, so it returns the author's 50 newest.
 export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: string[] }> {
   const prs: Pr[] = [];
   const errors: string[] = [];
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
     try {
-      // Search only returns the issue shape (no head.ref / merged_at), so it
-      // gives us the author's PR numbers; each still needs a /pulls/{number}
-      // detail fetch to get the branch and merge state mapPr depends on.
-      const q = encodeURIComponent(`is:pr author:${cfg.username} repo:${full}`);
-      const found = await gh<RawSearchResult>(`/search/issues?q=${q}&sort=updated&order=desc&per_page=50`, cfg.token);
-      const numbers = (found.items ?? []).map(i => i.number);
-      const details = await Promise.all(numbers.map(n => gh<RawPr>(`/repos/${full}/pulls/${n}`, cfg.token)));
-      prs.push(...details.map(r => ({
-        ...mapPr(r, full),
-        _raw: { head: { sha: r.head?.sha }, requested_reviewers: r.requested_reviewers, requested_teams: r.requested_teams },
-      })));
+      const data = await graphql<PrSearchData>(PR_SEARCH, { q: `is:pr author:${cfg.username} repo:${full}` }, cfg.token);
+      for (const node of data.search?.nodes ?? []) {
+        // A search typed ISSUE can hand back an Issue node, which the
+        // PullRequest fragment leaves empty.
+        if (node && typeof node.number === 'number') prs.push(mapPr(node as GqlPr, full));
+      }
     } catch (e) {
       errors.push(`${full}: ${(e as Error).message}`);
     }
@@ -236,27 +288,20 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   return { prs, errors };
 }
 
-// Detail-fetch only PRs that got linked to a card (keeps API calls bounded).
+// Detail-fetch only PRs that got linked to a card (keeps API calls bounded),
+// and only when the PR changed since the last refresh: refresh.ts reuses the
+// last-known enrichment for a linked PR whose updatedAt is unchanged (#72).
+// CI is not fetched here — it arrives with discovery (mapPr).
 export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [owner, repo] = pr.repo.split('/');
   const base = `/repos/${owner}/${repo}`;
-  // A PR restored from state.lastPrs (the outage fallback in refresh.ts) has
-  // no _raw: enrichPr deleted it on the refresh that cached the object, and
-  // state.json round-tripped it. Without a head SHA the check-runs path used
-  // to interpolate the string "undefined" and 404 on every degraded refresh —
-  // turning a partial outage into a louder one. null here means "couldn't
-  // ask", which the assignments below keep distinct from "asked, no runs".
-  const headSha = pr._raw?.head.sha;
   // sort=created&direction=desc so a >100-comment thread keeps the newest
   // comments (the ones that matter for attention) instead of silently
   // truncating to the oldest page. The reviews endpoint is left as-is.
-  const [issueComments, reviewComments, reviews, checks] = await Promise.all([
-    gh<RawComment[]>(`${base}/issues/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
-    gh<RawComment[]>(`${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
-    gh<RawReview[]>(`${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
-    pr.state === 'open' && headSha
-      ? gh<{ check_runs: RawCheckRun[] }>(`${base}/commits/${headSha}/check-runs?per_page=100`, cfg.token).then(d => d.check_runs)
-      : Promise.resolve(null),
+  const [issueComments, reviewComments, reviews] = await Promise.all([
+    gh<RawComment[]>('issue_comments', `${base}/issues/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
+    gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
+    gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
   ]);
   const comment = (c: RawComment): PrComment => ({ author: c.user?.login ?? '', body: c.body ?? '', createdAt: c.created_at ?? c.submitted_at });
   pr.comments = [
@@ -264,18 +309,8 @@ export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
     ...reviewComments.map(comment),
     ...reviews.filter(r => r.body).map(r => ({ author: r.user?.login ?? '', body: r.body ?? '', createdAt: r.submitted_at })),
   ].sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
-  // checks === null: no head SHA to ask about (see headSha above). Keep the
-  // last-known ciStatus rather than downgrading real data to 'unknown' —
-  // an empty array still means "asked, nothing configured" and maps to
-  // 'unknown' through ciFromCheckRuns as before.
-  if (pr.state !== 'open') pr.ciStatus = 'unknown';
-  else if (checks) pr.ciStatus = ciFromCheckRuns(checks);
-  // Same reasoning for reviews: requested_reviewers/_teams live in _raw, so
-  // without it a 'none' result means "couldn't see requested reviewers", not
-  // "none requested". A definite APPROVED/CHANGES_REQUESTED still comes from
-  // the reviews list itself and is safe to take.
-  const derivedReviewState = reviewStateFrom(pr._raw, reviews);
-  if (pr._raw || derivedReviewState !== 'none') pr.reviewState = derivedReviewState;
-  delete pr._raw;
+  // A pending review request (seen at discovery) outranks any earlier review.
+  pr.reviewState = reviewStateFrom(pr.reviewState === 'review_required', reviews);
+  pr.enriched = true;
   return pr;
 }
