@@ -315,5 +315,6 @@ export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   // A pending review request (seen at discovery) outranks any earlier review.
   pr.reviewState = reviewStateFrom(pr.reviewState === 'review_required', reviews);
   pr.enriched = true;
+  pr.enrichedAt = new Date().toISOString();
   return pr;
 }

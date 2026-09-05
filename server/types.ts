@@ -136,6 +136,18 @@ export interface Pr {
   // enriched PR with no comments is otherwise indistinguishable from one
   // that was never linked (#72).
   enriched?: boolean;
+  // When enrichPr last ran for this PR. refresh() treats an enrichment
+  // recorded within a couple of seconds of the updatedAt it saw as
+  // unconfirmed and re-enriches it once, because GitHub's timestamps are
+  // whole seconds and a comment landing in the same second leaves updatedAt
+  // equal while the comment list is stale (#75).
+  enrichedAt?: string;
+  // Set by refresh() once an enrichment has been re-checked (or was never in
+  // doubt) for this updatedAt. It is what makes the re-check one-shot: the
+  // time comparison alone re-fires on every poll when this host's clock runs
+  // behind GitHub's, and only a moved updatedAt clears the flag, because a
+  // fresh enrichPr result never carries it.
+  enrichConfirmed?: boolean;
 }
 
 // --- Board / snapshot payload (mirrors web/src/types.ts) ---
