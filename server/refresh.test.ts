@@ -68,6 +68,14 @@ test('a Blocked card splits out of the board even with a linked PR or unseen com
   expect(p.todo).toHaveLength(0);
 });
 
+test('routing off-board via Blocked forgets acked reasons like the other off-board routes', () => {
+  const state = emptyState();
+  state.cards['PROJ-B'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['ci_failing'] };
+  const cards = [card({ key: 'PROJ-B', status: 'Blocked', statusCategory: 'indeterminate' })];
+  buildSnapshot({ cards, prs: [], state, config, errors: {} });
+  expect(state.cards['PROJ-B']!.ackedReasons).toBeNull();
+});
+
 test('an assigned card in the To Do category routes to Todo, not Needs Attention', () => {
   // Even with an unseen comment that would otherwise trip needs_attention.
   const cards = [card({ key: 'PROJ-A', status: 'Assigned', statusCategory: 'new',

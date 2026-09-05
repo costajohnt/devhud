@@ -136,6 +136,8 @@ test('fetchPrs filters by author server-side in one GraphQL search per repo, no 
   expect(q).toContain('is:pr');
   expect(q).toContain('author:me');
   expect(q).toContain('repo:o/r');
+  // Best-match is the GraphQL search default; the window must be by updated.
+  expect(q).toContain('sort:updated-desc');
   expect(prs.map(p => p.number)).toEqual([1, 4]);
   expect(prs[0]!.branch).toBe('b1');       // headRefName survives the mapping
   expect(prs[1]!.state).toBe('merged');    // mergedAt survives the mapping

@@ -275,7 +275,10 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
     try {
-      const data = await graphql<PrSearchData>(PR_SEARCH, { q: `is:pr author:${cfg.username} repo:${full}` }, cfg.token);
+      // sort:updated-desc in the query string: GraphQL search has no sort
+      // argument and defaults to best match, which would break the "author's
+      // 50 most recently updated" window once the author has more PRs than fit.
+      const data = await graphql<PrSearchData>(PR_SEARCH, { q: `is:pr author:${cfg.username} repo:${full} sort:updated-desc` }, cfg.token);
       for (const node of data.search?.nodes ?? []) {
         // A search typed ISSUE can hand back an Issue node, which the
         // PullRequest fragment leaves empty.
