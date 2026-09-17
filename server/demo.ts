@@ -1,4 +1,4 @@
-import type { Card, Pr, JiraComment, JiraConfig, GithubConfig } from './types.ts';
+import type { Card, Pr, JiraComment, JiraConfig, GithubConfig, FiledCard } from './types.ts';
 
 // Canned cards/PRs for demo mode (config.demo). Shapes match jira.ts's
 // mapIssue and github.ts's mapPr post-enrichment, so refresh() runs the real
@@ -97,5 +97,19 @@ export function demoPrs(cfg: GithubConfig): Pr[] {
     pr('mobile', 210, 'rejected-push-redesign', { state: 'closed', mergedAt: null, createdAt: iso(20), updatedAt: iso(15), reviewState: 'changes_requested', ciStatus: 'unknown' }),
     // Recent closed-unmerged PR (within the 7-day Recent Activity window).
     pr('webapp', 495, 'wont-fix-legacy-toggle', { state: 'closed', mergedAt: null, createdAt: iso(5), updatedAt: iso(2), reviewState: 'none', ciStatus: 'unknown' }),
+  ];
+}
+
+// Cards the demo user reported. Spans a second project on purpose: the filed
+// list is site-wide, unlike the assignee-scoped board.
+export function demoFiled(cfg: JiraConfig): FiledCard[] {
+  const base = cfg.baseUrl?.startsWith('http') ? cfg.baseUrl : 'https://example.atlassian.net';
+  const filed = (key: string, summary: string, jiraStatus: string, age: number): FiledCard =>
+    ({ key, summary, jiraStatus, jiraUrl: `${base}/browse/${key}`, createdAt: iso(age) });
+  return [
+    filed('DEMO-112', 'Flaky timeout in checkout smoke test', 'To Do', 0.5),
+    filed('PLAT-311', 'Staging DB snapshot job silently skips weekends', 'In Progress', 4),
+    filed('DEMO-104', 'Add rate limiting to public API', 'In Progress', 10),
+    filed('PLAT-287', 'Rotate CI runner tokens quarterly', 'Done', 40),
   ];
 }

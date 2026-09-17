@@ -5,6 +5,7 @@ import type { Config, Card, Pr } from './types.ts';
 
 vi.mock('./jira.ts', () => ({
   fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))),
+  fetchFiledCards: vi.fn(() => Promise.resolve([])),
   doneWatermark: vi.fn(() => undefined),
 }));
 // Only the two network functions are stubbed; isThrottleMessage is pure and
@@ -274,6 +275,20 @@ test('refresh() success path: a resolved fetchJiraCards sets state.lastCards and
   expect(payload.errors.jira).toBeNull();
   expect(payload.buckets.in_progress.some(i => i.key === 'PROJ-9')).toBe(true);
   expect(payload.buckets.in_progress.some(i => i.key === 'PROJ-OLD')).toBe(false);
+});
+
+test('refresh() carries the filed list through, and a filed fetch failure keeps the last list and names itself', async () => {
+  const { fetchFiledCards } = await import('./jira.ts');
+  const filed = [{ key: 'OTHER-3', summary: 'Filed', jiraStatus: 'To Do', jiraUrl: 'https://x/browse/OTHER-3', createdAt: '2026-07-01T00:00:00Z' }];
+  vi.mocked(fetchFiledCards).mockResolvedValueOnce(filed);
+  const state = emptyState();
+  expect((await refresh({ config, state })).filed).toEqual(filed);
+
+  vi.mocked(fetchFiledCards).mockRejectedValueOnce(new Error('reporter query failed'));
+  const payload = await refresh({ config, state });
+  expect(payload.filed).toEqual(filed);
+  // Both Jira queries failed this pass; the banner must name both.
+  expect(payload.errors.jira).toBe('jira down; filed cards: reporter query failed');
 });
 
 test('never blanks the board: jira error reuses lastCards, errors.jira is set', async () => {

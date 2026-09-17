@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapIssue, buildJql, doneWatermark, adfToText, fetchJiraCards } from './jira.ts';
+import { mapIssue, buildJql, buildFiledJql, doneWatermark, adfToText, fetchJiraCards, fetchFiledCards } from './jira.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -114,4 +114,31 @@ test('fetchJiraCards refetches the newest comments when the embedded list was tr
   expect(searchAuth).toBe('Basic ' + Buffer.from('a@b.c:t').toString('base64'));
   expect(warnSpy).toHaveBeenCalled();
   warnSpy.mockRestore();
+});
+
+test('buildFiledJql is reporter-scoped, site-wide, newest first', () => {
+  const jql = buildFiledJql(cfg);
+  expect(jql).toContain('reporter = "me"');
+  expect(jql).not.toContain('project');
+  expect(jql).toContain('ORDER BY created DESC');
+});
+
+test('fetchFiledCards follows nextPageToken and maps only the Filed page fields', async () => {
+  const page = (issues: object[], nextPageToken?: string) => ({ issues, nextPageToken });
+  const fetchMock = vi.fn((url: string | URL) => {
+    const u = new URL(String(url));
+    if (!u.pathname.endsWith('/rest/api/3/search/jql')) throw new Error(`unexpected URL ${u}`);
+    expect(u.searchParams.get('jql')).toBe(buildFiledJql(cfg));
+    const body = u.searchParams.get('nextPageToken') === 't2'
+      ? page([{ key: 'OTHER-1', fields: { summary: 'Older', status: { name: 'Done' }, created: '2026-06-01T00:00:00.000+0000' } }])
+      : page([{ key: 'PROJ-2', fields: { summary: 'Newer', status: { name: 'To Do' }, created: 'not a date' } }], 't2');
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const filed = await fetchFiledCards({ ...cfg, email: 'a@b.c', apiToken: 't' });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(filed).toEqual([
+    { key: 'PROJ-2', summary: 'Newer', jiraStatus: 'To Do', jiraUrl: 'https://x.atlassian.net/browse/PROJ-2', createdAt: null },
+    { key: 'OTHER-1', summary: 'Older', jiraStatus: 'Done', jiraUrl: 'https://x.atlassian.net/browse/OTHER-1', createdAt: '2026-06-01T00:00:00.000Z' },
+  ]);
 });

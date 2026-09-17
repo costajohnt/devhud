@@ -149,7 +149,8 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   doneTotal: number,               // doneCards.length — the "Done" counter
   newlyDone: string[],             // cards that reached Done on this refresh — drives confetti
   recentActivity: ActivityEntry[], // merged/closed/comment activity in the last 7 days
-  prLog: PrLogEntry[]
+  prLog: PrLogEntry[],
+  filed: FiledCard[]               // cards this user reported, newest first — drives the /filed page
 }
 ```
 
@@ -217,6 +218,14 @@ Open PRs that couldn't be matched to any tracked Jira card by branch name, PR ti
 Cards Jira has marked complete — status category `done`, excluding Canceled. Drives the `/done` page and the header's Done counter. `doneAt` is the card's last-updated time (when it reached Done); `pr` is the linked PR, if any, as supporting context. Completion follows the **Jira card's Done state**, not a PR merge — a merged-but-not-Done card stays on the active board with its merged PR shown as context.
 
 There is no Merged or Closed page/counter/field. A merged PR surfaces only on its active card (the board's "Merged" pill and the detail panel's "PR merged" chip) and, for merges/closes in the last 7 days, in `recentActivity`.
+
+### filed
+
+```ts
+{ key: string, summary: string, jiraStatus: string, jiraUrl: string, createdAt: string | null }
+```
+
+Every card whose Jira **reporter** is the configured `accountId`, site-wide (not limited to `projectKey`) and in any status, ordered by `created` descending. A second JQL query per refresh; if it fails, the previous snapshot's list is kept and the failure is appended to `errors.jira`. Drives the "Filed by me" stat card and the `/filed` page.
 
 ### doneTotal / newlyDone
 

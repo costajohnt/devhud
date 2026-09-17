@@ -128,6 +128,16 @@ test('loadState hydrates a missing snapshot.blocked so an old state.json does no
   expect(s.snapshot!.blocked).toEqual([]);
 });
 
+test('loadState hydrates a missing snapshot.filed the same way', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const path = join(dir, 'state.json');
+  const raw = emptyState();
+  raw.snapshot = emptySnapshot();
+  delete (raw.snapshot as { filed?: unknown }).filed;
+  writeFileSync(path, JSON.stringify(raw));
+  expect(loadState(path).snapshot!.filed).toEqual([]);
+});
+
 test('emptySnapshot() has the same top-level keys as a real buildSnapshot payload', () => {
   const config: Config = { jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } }, github: { username: 'me', org: 'o', token: '', repos: [] }, port: 3010, demo: false, writeEnabled: false };
   const real = buildSnapshot({ cards: [], prs: [], state: emptyState(), config, errors: {} });

@@ -170,6 +170,10 @@ export function BoardStats({ data }: { data: DashboardData }) {
         <span class="stat-value"><AnimatedValue value={data.doneTotal} /></span>
         <span class="stat-label">Done</span>
       </a>
+      <a class="stat-card teal" href="/filed">
+        <span class="stat-value"><AnimatedValue value={data.filed.length} /></span>
+        <span class="stat-label">Filed by me</span>
+      </a>
     </div>
   );
 }

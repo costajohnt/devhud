@@ -5,6 +5,7 @@ import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.j
 import { Detail } from './detail.js';
 import { Extras, TodoSection, BlockedSection } from './extras.js';
 import { DonePage } from './done.js';
+import { FiledPage } from './filed.js';
 import { SimonRunsPage, SimonRunPage } from './simon.js';
 import { fireConfetti } from './celebrate.js';
 import { SkeletonLoader } from './skeleton-loader.js';
@@ -301,6 +302,8 @@ function AppContent() {
       <main id="main-content" class="dashboard-main">
         {path === '/done' ? (
           <DonePage data={data} />
+        ) : path === '/filed' ? (
+          <FiledPage data={data} />
         ) : path === '/simon' ? (
           <SimonRunsPage />
         ) : path.startsWith('/simon/') && safeDecode(path.slice('/simon/'.length)) !== null ? (
@@ -339,7 +342,7 @@ function AppContent() {
             <div class="merged-view-empty">
               <p>
                 The path <code>{path}</code> doesn't match any known route. Try the dashboard home, or the
-                Done stat card.
+                Done or Filed by me stat cards.
               </p>
             </div>
           </div>

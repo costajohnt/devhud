@@ -1,9 +1,9 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { classifyCard, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
-import { fetchJiraCards, doneWatermark } from './jira.ts';
+import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
-import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment } from './types.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard } from './types.ts';
 
 const DAY = 86400000;
 
@@ -53,8 +53,11 @@ function upsertPrLog(state: State, prs: Pr[]): void {
   }
 }
 
-export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos }: {
+export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, filed }: {
   cards: Card[]; prs: Pr[]; state: State; config: Config; errors: { jira?: string; github?: string };
+  // Cards this user reported (jira.ts fetchFiledCards). Optional so callers
+  // that don't fetch them (tests, direct use) get an empty list.
+  filed?: FiledCard[];
   // Which repos' PR data is degraded this refresh ('all' = the whole GitHub
   // fetch failed). Callers that don't track it (tests, direct use) default to
   // 'all' whenever errors.github is set — conservative, never prunes acks on
@@ -236,6 +239,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // job it is good for: celebrate-once dedup via newlyDone.
     doneCards: doneLedger, doneTotal: doneLedger.length, newlyDone, recentActivity,
     prLog: Object.values(state.prLog) as PrLogEntry[],
+    filed: filed ?? [],
   };
 }
 
@@ -304,10 +308,10 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   let cards: Card[], prs: Pr[];
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
-    const { demoCards, demoPrs } = await import('./demo.ts');
+    const { demoCards, demoPrs, demoFiled } = await import('./demo.ts');
     cards = demoCards(config.jira);
     prs = demoPrs(config.github);
-    const payload = buildSnapshot({ cards, prs, state, config, errors });
+    const payload = buildSnapshot({ cards, prs, state, config, errors, filed: demoFiled(config.jira) });
     state.snapshot = payload;
     state.lastRefreshAt = payload.updatedAt;
     if (!quiet) console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
@@ -321,6 +325,16 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   } catch (e) {
     errors.jira = (e as Error).message;
     cards = state.lastCards ?? [];
+  }
+  // The filed list is a second Jira query with its own failure: it must not
+  // take the board down with it, and the board's failure must not blank it.
+  // Last-known-good is the previous snapshot's list (the only place it lives).
+  let filed: FiledCard[];
+  try {
+    filed = await fetchFiledCards(config.jira);
+  } catch (e) {
+    errors.jira = [errors.jira, `filed cards: ${(e as Error).message}`].filter(Boolean).join('; ');
+    filed = state.snapshot?.filed ?? [];
   }
   // Collected rather than concatenated as we go, so the compose step below can
   // tell a throttle apart from a real failure and keep both legible (#69).
@@ -428,7 +442,7 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   const realFailures = githubErrors.filter(m => !isThrottleMessage(m));
   if (throttled.length) realFailures.unshift('GitHub throttled this refresh (rate limit) — showing last known data.');
   if (realFailures.length) errors.github = realFailures.join('; ');
-  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos });
+  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos, filed });
   state.snapshot = payload;
   state.lastRefreshAt = payload.updatedAt;
   // The last-known-good caches are the outage fallback; only a source that

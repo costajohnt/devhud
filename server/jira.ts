@@ -1,4 +1,4 @@
-import type { Card, JiraConfig, JiraComment } from './types.ts';
+import type { Card, FiledCard, JiraConfig, JiraComment } from './types.ts';
 
 // Minimal ADF (Atlassian Document Format) node shape — a recursive tree of
 // text/paragraph/mention/hardBreak nodes. Only the fields adfToText reads.
@@ -44,6 +44,13 @@ export function buildJql(cfg: JiraConfig, doneSince?: string): string {
   // fetch exists to collect.
   const clause = doneSince ? ` AND (statusCategory != Done OR updated >= "${doneSince}")` : '';
   return `project = ${cfg.projectKey} AND assignee = "${cfg.accountId}"${clause} ORDER BY updated DESC`;
+}
+
+// Cards this user reported, site-wide rather than project-scoped: a bug filed
+// against another team's project is exactly the kind of card the reporter
+// loses track of. Newest first so the list needs no client-side sort.
+export function buildFiledJql(cfg: JiraConfig): string {
+  return `reporter = "${cfg.accountId}" ORDER BY created DESC`;
 }
 
 // yyyy-MM-dd, one day before the newest Done card already stored. undefined
@@ -131,7 +138,7 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
 }
 
 export async function fetchJiraCards(cfg: JiraConfig, doneSince?: string): Promise<Card[]> {
-  const auth = 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
+  const auth = basicAuth(cfg);
   const fields = 'summary,status,fixVersions,description,created,updated,comment,assignee';
   const cards: Card[] = [];
   const seenKeys = new Set<string>();
@@ -151,19 +158,47 @@ export async function fetchJiraCards(cfg: JiraConfig, doneSince?: string): Promi
     }
   };
 
+  for await (const page of searchPages(cfg, auth, buildJql(cfg, doneSince), fields)) await processIssues(page);
+
+  return cards;
+}
+
+const basicAuth = (cfg: JiraConfig): string =>
+  'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
+
+// One page of issues per iteration, following Jira's nextPageToken cursor
+// until it runs out.
+async function* searchPages(cfg: JiraConfig, auth: string, jql: string, fields: string): AsyncGenerator<RawJiraIssue[]> {
   let nextPageToken: string | undefined;
   do {
     const url = new URL('/rest/api/3/search/jql', cfg.baseUrl);
-    url.searchParams.set('jql', buildJql(cfg, doneSince));
+    url.searchParams.set('jql', jql);
     url.searchParams.set('fields', fields);
     url.searchParams.set('maxResults', '50');
     if (nextPageToken) url.searchParams.set('nextPageToken', nextPageToken);
     const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json() as { issues?: RawJiraIssue[]; nextPageToken?: string };
-    await processIssues(data.issues ?? []);
+    yield data.issues ?? [];
     nextPageToken = data.nextPageToken;
   } while (nextPageToken);
+}
 
-  return cards;
+// Every card this user reported, newest first. Not routed through the board
+// pipeline: the reporter list is a read-only reference, so it carries only
+// what the Filed page renders.
+export async function fetchFiledCards(cfg: JiraConfig): Promise<FiledCard[]> {
+  const filed: FiledCard[] = [];
+  for await (const page of searchPages(cfg, basicAuth(cfg), buildFiledJql(cfg), 'summary,status,created')) {
+    for (const issue of page) {
+      filed.push({
+        key: issue.key,
+        summary: issue.fields.summary ?? '',
+        jiraStatus: issue.fields.status?.name ?? '',
+        jiraUrl: `${cfg.baseUrl}/browse/${issue.key}`,
+        createdAt: iso(issue.fields.created),
+      });
+    }
+  }
+  return filed;
 }

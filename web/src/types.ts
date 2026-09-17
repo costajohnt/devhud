@@ -40,7 +40,12 @@ export interface DashboardData {
   newlyDone: string[];
   recentActivity: { type: 'merged' | 'closed' | 'comment'; label: string; url: string; date: string }[];
   prLog: PrLogEntry[];
+  // Cards this user reported, newest first (server migrates an old snapshot
+  // that lacks it, so it is always present).
+  filed: FiledCard[];
 }
+
+export interface FiledCard { key: string; summary: string; jiraStatus: string; jiraUrl: string; createdAt: string | null }
 
 // --- Simon executor runs (mirrors server/types.ts, same duplication
 // convention as the payload shapes above) ---

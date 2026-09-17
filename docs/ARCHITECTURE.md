@@ -30,13 +30,14 @@ A stdio MCP server exposing the board to Claude sessions, using the exact same d
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
 
 - **main.tsx**: Entry point: mounts `<App>` wrapped in an `<ErrorBoundary>`.
-- **app.tsx**: Top-level shell: live-update/refresh wiring, theme state (OS-aware), route branching (`/`, `/done`, 404), header, banners, toast. Acknowledging a Needs Attention card auto-advances the selection to the next such card.
+- **app.tsx**: Top-level shell: live-update/refresh wiring, theme state (OS-aware), route branching (`/`, `/done`, `/filed`, 404), header, banners, toast. Acknowledging a Needs Attention card auto-advances the selection to the next such card.
 - **notify.ts**: Desktop-notification rules for cards entering Needs Attention. Split like live-event.ts — `decideNotification()` is pure (keyed on card identity, not bucket length; skips the connect replay; only fires while the tab is hidden; always advances its baseline even when suppressed) and the Notification API calls sit below it.
 - **use-data.ts**: `useData()` hook: holds an `EventSource` on `/api/events` for all data (initial render included), exposes `refresh()` for the manual button and `act()` for `/api/action` calls with error handling.
 - **board.tsx**: `useBoardFilter()` hook (search/status/repo filter state, drag-and-drop handlers) plus `BoardStats`, `BoardFilterBar`, `BoardList` components.
 - **detail.tsx**: Card detail side panel: a prominent status + next-action strip, Fix Version (with an explicit missing-state), PR/CI/review status, actionable New Jira Comments / New GitHub Comments queues, the per-source comment history behind "All Jira activity" / "All GitHub activity" disclosures, and ack/move actions.
 - **extras.tsx**: Todo section, Unlinked PRs section, Recent Activity (grouped by merged/closed/comment).
 - **done.tsx**: `/done` full-page sortable table of `doneCards` (cards Jira has marked Done). Replaces the former `/merged` and `/closed` pages.
+- **filed.tsx**: `/filed` full-page table of `filed` (cards this user reported, any project), newest first.
 - **chart-panel.tsx**: Chart.js-backed Monthly Activity (line) and Top Repos (stacked bar) charts, built from `prLog`.
 - **chart-panel-lazy.tsx**: Dynamic-import wrapper around `chart-panel.tsx` so Chart.js ships in its own chunk, not the initial bundle.
 - **celebrate.ts**: Lazy-loaded `canvas-confetti` wrapper, respects `prefers-reduced-motion`.

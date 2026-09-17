@@ -66,12 +66,16 @@ function migratePrLog(state: State): State {
   return state;
 }
 
-// Pre-blocked snapshots omit the field. The web client reads
-// data.blocked.length unconditionally (same as todo), so a missing key
-// would crash the board on first load of an old state.json.
+// Pre-blocked and pre-filed snapshots omit those fields. The web client
+// reads data.blocked.length and data.filed.length unconditionally (same as
+// todo), so a missing key would crash the board on first load of an old
+// state.json.
 function migrateSnapshot(state: State): State {
   if (state.snapshot && !Array.isArray(state.snapshot.blocked)) {
     state.snapshot.blocked = [];
+  }
+  if (state.snapshot && !Array.isArray(state.snapshot.filed)) {
+    state.snapshot.filed = [];
   }
   return state;
 }
@@ -143,7 +147,7 @@ export function emptySnapshot(): Snapshot {
     buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
     todo: [], blocked: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
-    prLog: [],
+    prLog: [], filed: [],
   };
 }
 

@@ -35,7 +35,7 @@ const item = (overrides: Partial<Item> = {}): Item => ({
 
 const snap = (overrides: Partial<DashboardData> = {}): DashboardData => ({
   updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null },
-  buckets: emptyBuckets(), todo: [], blocked: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
+  buckets: emptyBuckets(), todo: [], blocked: [], filed: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
   newlyDone: [], recentActivity: [], prLog: [], ...overrides,
 });
 
