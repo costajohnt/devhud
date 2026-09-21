@@ -1,6 +1,6 @@
-node_modules/
+# No trailing slash: a worktree that symlinks node_modules must stay ignored too.
+node_modules
 config.json
 data/*
 !data/.gitkeep
 web/dist/
-web/node_modules/
