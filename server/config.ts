@@ -26,6 +26,7 @@ interface RawConfig {
   port?: number;
   demo?: boolean;
   writeEnabled?: boolean;
+  autoTransitionMerged?: boolean;
   refreshIntervalSeconds?: number;
   ignoreAuthors?: string[];
   // null allowed at parse time: "simon": null is how a hand-edited config
@@ -148,6 +149,7 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     port,
     demo,
     writeEnabled: Boolean(c.writeEnabled),
+    autoTransitionMerged: Boolean(c.autoTransitionMerged),
     refreshIntervalSeconds: c.refreshIntervalSeconds,
     ignoreAuthors: Array.isArray(c.ignoreAuthors) ? c.ignoreAuthors : DEFAULT_IGNORE_AUTHORS,
     simon: simon ? { root: simon.root!, bin: simon.bin ?? 'simon' } : undefined,

@@ -7,7 +7,7 @@ import { loadConfig } from './config.ts';
 import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
-import { performWrite } from './writeback.ts';
+import { performWrite, autoTransitionMergedCards } from './writeback.ts';
 import { listRuns, readRun } from './simon.ts';
 import { writePidFile } from './transport.ts';
 import type { Config, State, Snapshot } from './types.ts';
@@ -300,6 +300,16 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         console.error('scheduled refresh saved nothing (memory is fresh, disk is stale):', e);
       }
       broadcast(snapshot);
+      // Auto-transition merged cards if configured. Direct transitionCard()
+      // call (not performWrite) to avoid a re-entrant refresh and doubled API
+      // spend. Per-card errors are caught and logged inside the function;
+      // this outer try-catch guards against unexpected throws from the function
+      // itself so the tick loop stays alive regardless.
+      try {
+        await autoTransitionMergedCards({ state, configPath });
+      } catch (e) {
+        console.error('auto-transition batch failed unexpectedly:', e);
+      }
     } catch (e) {
       // Keep the loop alive: a transient Jira/GitHub outage shouldn't kill
       // live updates for the rest of the process lifetime. Full error object

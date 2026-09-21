@@ -1,10 +1,10 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr } from './writeback.ts';
-import { emptyState } from './state.ts';
+import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr, autoTransitionMergedCards } from './writeback.ts';
+import { emptyState, emptySnapshot } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Config, JiraConfig, GithubConfig } from './types.ts';
+import type { Config, JiraConfig, GithubConfig, State, Item } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -364,4 +364,149 @@ test('performWrite allows in-scope targets through the scope check', async () =>
   }) as LooseWrite;
   expect(result.ok).toBe(true);
   expect(result.error).toBeUndefined();
+});
+
+// --- autoTransitionMergedCards ---
+
+// Minimal Config shape for autoTransitionMergedCards tests.
+const baseAutoConfig: Config = {
+  demo: false,
+  writeEnabled: true,
+  autoTransitionMerged: true,
+  jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+  github: { token: 'tok', org: 'o', repos: ['r'], username: 'u' },
+  port: 3010,
+  ignoreAuthors: [],
+};
+
+// Build a minimal State with one card in the needs_attention bucket with
+// merged_not_in_test in its attention list.
+function stateWithMergedCard(key: string, ackedReasons?: string[]): State {
+  const state = emptyState();
+  const snap = emptySnapshot();
+  const item: Item = {
+    key,
+    summary: 'Test card',
+    jiraStatus: 'In Progress',
+    jiraUrl: `https://x.atlassian.net/browse/${key}`,
+    fixVersions: [],
+    bucket: 'needs_attention',
+    attention: ['merged_not_in_test'],
+    newComments: [],
+    comments: [],
+    pr: null,
+    createdAt: null,
+    updatedAt: null,
+    daysSinceActivity: null,
+    pinned: false,
+    pinnedAt: null,
+  };
+  snap.buckets.needs_attention.push(item);
+  state.snapshot = snap;
+  if (ackedReasons) {
+    state.cards[key] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons };
+  }
+  return state;
+}
+
+test('autoTransitionMergedCards: flag off (autoTransitionMerged: false) skips all transitions', async () => {
+  const config = { ...baseAutoConfig, autoTransitionMerged: false };
+  const state = stateWithMergedCard('PROJ-1');
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => config, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+test('autoTransitionMergedCards: writeEnabled false skips all transitions', async () => {
+  const config = { ...baseAutoConfig, writeEnabled: false };
+  const state = stateWithMergedCard('PROJ-1');
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => config, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+test('autoTransitionMergedCards: demo mode skips all transitions', async () => {
+  const config = { ...baseAutoConfig, demo: true };
+  const state = stateWithMergedCard('PROJ-1');
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => config, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+test('autoTransitionMergedCards: card acked for merged_not_in_test is skipped', async () => {
+  const state = stateWithMergedCard('PROJ-1', ['merged_not_in_test']);
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+test('autoTransitionMergedCards: unacked card with merged_not_in_test is transitioned to inTest', async () => {
+  const state = stateWithMergedCard('PROJ-1');
+  const transitionCardFn = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  expect(transitionCardFn).toHaveBeenCalledOnce();
+  expect(transitionCardFn).toHaveBeenCalledWith(baseAutoConfig.jira, 'PROJ-1', 'In Test');
+  expect(result).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+});
+
+test('autoTransitionMergedCards: transition throwing is caught, other cards still processed', async () => {
+  // Two cards: first throws (no transition available), second succeeds.
+  const state = stateWithMergedCard('PROJ-1');
+  const item2: Item = {
+    key: 'PROJ-2',
+    summary: 'Second card',
+    jiraStatus: 'In Progress',
+    jiraUrl: 'https://x.atlassian.net/browse/PROJ-2',
+    fixVersions: [],
+    bucket: 'needs_attention',
+    attention: ['merged_not_in_test'],
+    newComments: [],
+    comments: [],
+    pr: null,
+    createdAt: null,
+    updatedAt: null,
+    daysSinceActivity: null,
+    pinned: false,
+    pinnedAt: null,
+  };
+  state.snapshot!.buckets.needs_attention.push(item2);
+
+  let callCount = 0;
+  const transitionCardFn = vi.fn().mockImplementation(() => {
+    callCount++;
+    if (callCount === 1) return Promise.reject(new Error('no transition to "In Test" available'));
+    return Promise.resolve({ transitionedTo: 'In Test' });
+  });
+
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  expect(transitionCardFn).toHaveBeenCalledTimes(2);
+  expect(result).toEqual({ attempted: 2, succeeded: 1, failed: 1 });
+});
+
+test('autoTransitionMergedCards: null snapshot returns early without attempting transitions', async () => {
+  const state = emptyState(); // snapshot is null
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+test('autoTransitionMergedCards: config re-read failure fails closed', async () => {
+  const state = stateWithMergedCard('PROJ-1');
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => { throw new Error('ENOENT'); }, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+test('autoTransitionMergedCards: card outside the configured project is skipped', async () => {
+  const state = stateWithMergedCard('OTHER-1');
+  const transitionCardFn = vi.fn();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  expect(transitionCardFn).not.toHaveBeenCalled();
+  expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
 });

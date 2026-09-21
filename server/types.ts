@@ -71,6 +71,12 @@ export interface Config {
   // Comments queue — e.g. the user themselves ('John') and the Rovo agent.
   // They remain visible in the full activity history. Defaults in loadConfig.
   ignoreAuthors?: string[];
+  // When true, cards flagged merged_not_in_test (PR merged, card not yet In
+  // Test or Done) are automatically transitioned to the In Test status after
+  // each tick. Off by default so no existing deployment changes behavior.
+  // Acked cards are never auto-transitioned; per-card errors are logged and
+  // the batch continues. Requires writeEnabled: true.
+  autoTransitionMerged?: boolean;
 }
 
 // --- Jira cards ---

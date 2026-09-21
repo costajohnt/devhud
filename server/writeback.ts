@@ -270,3 +270,69 @@ export async function performWrite({
 
   return refreshError ? { ok: true, ...result, refreshError } : { ok: true, ...result };
 }
+
+export interface AutoTransitionResult {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}
+
+// After each tick completes, find all cards flagged merged_not_in_test that
+// are not acked and transition them to the In Test status. Called from the
+// tick function in index.ts, after refreshFn() returns.
+//
+// Does NOT call performWrite() (which triggers a re-entrant refresh and
+// doubles API spend). Calls transitionCard() directly.
+//
+// Per-card errors are logged and swallowed so one unavailable Jira transition
+// does not abort the whole batch. transitionCardFn is injectable for tests.
+export async function autoTransitionMergedCards({ state, configPath, loadConfigFn = loadConfig, transitionCardFn = transitionCard }: {
+  state: State;
+  configPath?: string;
+  loadConfigFn?: typeof loadConfig;
+  transitionCardFn?: typeof transitionCard;
+}): Promise<AutoTransitionResult> {
+  const none = { attempted: 0, succeeded: 0, failed: 0 };
+  // Same fail-closed rule as performWrite: the gate is read fresh from disk,
+  // never from a long-lived in-memory config, so flipping writeEnabled or
+  // autoTransitionMerged off stops the very next tick without a restart.
+  let config: Config;
+  try {
+    config = loadConfigFn(configPath);
+  } catch (e) {
+    console.error(`auto-transition: config re-read failed (${(e as Error).message}); skipping`);
+    return none;
+  }
+  if (!config.autoTransitionMerged) return none;
+
+  const gate = checkWriteGate(config);
+  if (gate.blocked) return none;
+
+  const snapshot = state.snapshot;
+  if (!snapshot) return none;
+
+  // Cards flagged merged_not_in_test are always routed to needs_attention
+  // (it is a ROUTING_REASON in classify.ts). Items in attention have already
+  // had acked reasons filtered out by classifyCard, but the spec asks for an
+  // explicit ack check here too — belt-and-braces.
+  const candidates = snapshot.buckets.needs_attention.filter(item =>
+    item.attention.includes('merged_not_in_test') &&
+    // Same project scope check performWrite applies to transitions.
+    item.key.startsWith(`${config.jira.projectKey}-`) &&
+    !(state.cards[item.key]?.ackedReasons ?? []).includes('merged_not_in_test'),
+  );
+
+  let succeeded = 0;
+  let failed = 0;
+  for (const item of candidates) {
+    try {
+      await transitionCardFn(config.jira, item.key, config.jira.statuses.inTest);
+      console.log(`auto-transition: ${item.key} -> ${config.jira.statuses.inTest}`);
+      succeeded++;
+    } catch (e) {
+      console.error(`auto-transition: ${item.key} failed — ${(e as Error).message}`);
+      failed++;
+    }
+  }
+  return { attempted: candidates.length, succeeded, failed };
+}
