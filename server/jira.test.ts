@@ -138,7 +138,26 @@ test('fetchFiledCards follows nextPageToken and maps only the Filed page fields'
   const filed = await fetchFiledCards({ ...cfg, email: 'a@b.c', apiToken: 't' });
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(filed).toEqual([
-    { key: 'PROJ-2', summary: 'Newer', jiraStatus: 'To Do', jiraUrl: 'https://x.atlassian.net/browse/PROJ-2', createdAt: null },
-    { key: 'OTHER-1', summary: 'Older', jiraStatus: 'Done', jiraUrl: 'https://x.atlassian.net/browse/OTHER-1', createdAt: '2026-06-01T00:00:00.000Z' },
+    { key: 'PROJ-2', summary: 'Newer', jiraStatus: 'To Do', jiraUrl: 'https://x.atlassian.net/browse/PROJ-2', createdAt: null, updatedAt: null },
+    { key: 'OTHER-1', summary: 'Older', jiraStatus: 'Done', jiraUrl: 'https://x.atlassian.net/browse/OTHER-1', createdAt: '2026-06-01T00:00:00.000Z', updatedAt: null },
   ]);
+});
+
+test('fetchFiledCards with a stamped previous list queries only the delta and merges by key (#81)', async () => {
+  const previous = [
+    { key: 'PROJ-2', summary: 'Newer', jiraStatus: 'To Do', jiraUrl: 'https://x.atlassian.net/browse/PROJ-2', createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-10T12:00:00.000Z' },
+    { key: 'OTHER-1', summary: 'Older', jiraStatus: 'To Do', jiraUrl: 'https://x.atlassian.net/browse/OTHER-1', createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-02T00:00:00.000Z' },
+  ];
+  const fetchMock = vi.fn((url: string | URL) => {
+    const jql = new URL(String(url)).searchParams.get('jql');
+    expect(jql).toBe(buildFiledJql(cfg, '2026-09-09'));
+    expect(jql).toContain('updated >= "2026-09-09"');
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ issues: [
+      { key: 'PROJ-3', fields: { summary: 'Brand new', status: { name: 'To Do' }, created: '2026-09-11T00:00:00.000+0000', updated: '2026-09-11T00:00:00.000+0000' } },
+      { key: 'OTHER-1', fields: { summary: 'Older', status: { name: 'Done' }, created: '2026-06-01T00:00:00.000+0000', updated: '2026-09-11T01:00:00.000+0000' } },
+    ] }) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const filed = await fetchFiledCards({ ...cfg, email: 'a@b.c', apiToken: 't' }, previous);
+  expect(filed.map(f => [f.key, f.jiraStatus])).toEqual([['PROJ-3', 'To Do'], ['PROJ-2', 'To Do'], ['OTHER-1', 'Done']]);
 });

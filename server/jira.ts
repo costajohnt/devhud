@@ -49,8 +49,11 @@ export function buildJql(cfg: JiraConfig, doneSince?: string): string {
 // Cards this user reported, site-wide rather than project-scoped: a bug filed
 // against another team's project is exactly the kind of card the reporter
 // loses track of. Newest first so the list needs no client-side sort.
-export function buildFiledJql(cfg: JiraConfig): string {
-  return `reporter = "${cfg.accountId}" ORDER BY created DESC`;
+// updatedSince (yyyy-MM-dd) narrows the query to cards touched since the last
+// fetch; the caller merges that delta into the list it already holds (#81).
+export function buildFiledJql(cfg: JiraConfig, updatedSince?: string): string {
+  const clause = updatedSince ? ` AND updated >= "${updatedSince}"` : '';
+  return `reporter = "${cfg.accountId}"${clause} ORDER BY created DESC`;
 }
 
 // yyyy-MM-dd, one day before the newest Done card already stored. undefined
@@ -187,18 +190,32 @@ async function* searchPages(cfg: JiraConfig, auth: string, jql: string, fields: 
 // Every card this user reported, newest first. Not routed through the board
 // pipeline: the reporter list is a read-only reference, so it carries only
 // what the Filed page renders.
-export async function fetchFiledCards(cfg: JiraConfig): Promise<FiledCard[]> {
-  const filed: FiledCard[] = [];
-  for await (const page of searchPages(cfg, basicAuth(cfg), buildFiledJql(cfg), 'summary,status,created')) {
+//
+// `previous` is the last list fetched. When it carries usable updatedAt
+// stamps, only cards updated since (doneWatermark's one-day overlap) are
+// queried and merged over it by key, instead of re-downloading the whole
+// reporter history every refresh. No stamps (first run, or a snapshot from
+// before updatedAt existed) means a full fetch.
+// ponytail: a card deleted or re-reported to someone else lingers until the
+// next full fetch (restart with an empty snapshot); add a periodic full
+// fetch if that ever matters.
+export async function fetchFiledCards(cfg: JiraConfig, previous: FiledCard[] = []): Promise<FiledCard[]> {
+  const since = doneWatermark(previous.map(f => ({ doneAt: f.updatedAt ?? null })));
+  const byKey = new Map<string, FiledCard>(since ? previous.map(f => [f.key, f]) : []);
+  for await (const page of searchPages(cfg, basicAuth(cfg), buildFiledJql(cfg, since), 'summary,status,created,updated')) {
     for (const issue of page) {
-      filed.push({
+      byKey.set(issue.key, {
         key: issue.key,
         summary: issue.fields.summary ?? '',
         jiraStatus: issue.fields.status?.name ?? '',
         jiraUrl: `${cfg.baseUrl}/browse/${issue.key}`,
         createdAt: iso(issue.fields.created),
+        updatedAt: iso(issue.fields.updated),
       });
     }
   }
-  return filed;
+  // A full fetch is already in Jira's created-DESC order; only a merge
+  // needs re-sorting (same comparator as web/src/filed.tsx).
+  const merged = [...byKey.values()];
+  return since ? merged.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')) : merged;
 }

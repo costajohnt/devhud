@@ -331,7 +331,7 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   // Last-known-good is the previous snapshot's list (the only place it lives).
   let filed: FiledCard[];
   try {
-    filed = await fetchFiledCards(config.jira);
+    filed = await fetchFiledCards(config.jira, state.snapshot?.filed);
   } catch (e) {
     errors.jira = [errors.jira, `filed cards: ${(e as Error).message}`].filter(Boolean).join('; ');
     filed = state.snapshot?.filed ?? [];

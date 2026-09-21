@@ -234,6 +234,9 @@ export interface FiledCard {
   jiraStatus: string;
   jiraUrl: string;
   createdAt: string | null;
+  // Feeds the next fetch's watermark (jira.ts fetchFiledCards). Optional:
+  // snapshots persisted before #81 lack it, which just forces one full fetch.
+  updatedAt?: string | null;
 }
 
 export interface ActivityEntry {
