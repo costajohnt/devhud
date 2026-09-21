@@ -8,6 +8,8 @@ export const BUCKET_LABEL: Record<Bucket, string> = {
 
 export interface PrRef { repo: string; number: number; url: string; branch: string;
   state: 'open' | 'merged' | 'closed'; ciStatus: 'passing' | 'failing' | 'pending' | 'unknown';
+  // Failed checks not also failing on the base branch; [] = all pre-existing.
+  ciNewFailures?: string[];
   reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none'; isDraft?: boolean; }
 
 // createdAt is nullable to match the server: classify.ts's githubNewComment

@@ -15,7 +15,7 @@ export const CELEBRATION_RETENTION_DAYS = 90;
 
 const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
-  state: p.state, ciStatus: p.ciStatus, reviewState: p.reviewState, isDraft: p.isDraft,
+  state: p.state, ciStatus: p.ciStatus, ciNewFailures: p.ciNewFailures, reviewState: p.reviewState, isDraft: p.isDraft,
 };
 
 const newestFirst = (a: NewComment, b: NewComment) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '');

@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapPr, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats } from './github.ts';
+import { mapPr, newCiFailures, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats } from './github.ts';
 import type { Pr, GithubConfig } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -315,4 +315,45 @@ test('gh gives up after the retry budget, and a non-throttle 403 is not retried 
   } finally {
     vi.useRealTimers();
   }
+});
+
+// --- #79: CI failures that pre-exist on the base branch ---
+
+const rollup = (checks: Record<string, string>) => ({
+  state: 'FAILURE',
+  contexts: { nodes: Object.entries(checks).map(([name, conclusion]) => ({ name, conclusion })) },
+});
+
+test('newCiFailures: PR red, base green on the same checks -> the PR failures', () => {
+  expect(newCiFailures(rollup({ test: 'FAILURE', lint: 'SUCCESS' }), rollup({ test: 'SUCCESS', lint: 'SUCCESS' }))).toEqual(['test']);
+});
+
+test('newCiFailures: PR red on exactly the checks red on base -> []', () => {
+  expect(newCiFailures(rollup({ test: 'FAILURE' }), rollup({ test: 'FAILURE' }))).toEqual([]);
+});
+
+test('newCiFailures: superset of the base failures -> only the new ones', () => {
+  expect(newCiFailures(rollup({ test: 'FAILURE', lint: 'TIMED_OUT' }), rollup({ test: 'FAILURE', lint: 'SUCCESS' }))).toEqual(['lint']);
+});
+
+test('newCiFailures: legacy commit statuses compare by context', () => {
+  const status = (context: string, state: string) => ({ state: 'FAILURE', contexts: { nodes: [{ context, state }] } });
+  expect(newCiFailures(status('ci/legacy', 'ERROR'), status('ci/legacy', 'FAILURE'))).toEqual([]);
+});
+
+test('newCiFailures: base data unavailable, or no named head failure -> undefined (keep flagging)', () => {
+  expect(newCiFailures(rollup({ test: 'FAILURE' }), null)).toBeUndefined();
+  expect(newCiFailures(rollup({ test: 'FAILURE' }), { state: 'FAILURE' })).toBeUndefined();
+  expect(newCiFailures(rollup({ test: 'SUCCESS' }), rollup({ test: 'FAILURE' }))).toBeUndefined();
+});
+
+test('mapPr sets ciNewFailures only on an open failing PR', () => {
+  const node = (state: string, headState: string) => ({
+    number: 1, url: '', state, createdAt: '', updatedAt: '',
+    commits: { nodes: [{ commit: { statusCheckRollup: { ...rollup({ test: 'FAILURE' }), state: headState } } }] },
+    baseRef: { target: { statusCheckRollup: rollup({ test: 'FAILURE' }) } },
+  });
+  expect(mapPr(node('OPEN', 'FAILURE'), 'o/r').ciNewFailures).toEqual([]);
+  expect('ciNewFailures' in mapPr(node('OPEN', 'SUCCESS'), 'o/r')).toBe(false);
+  expect('ciNewFailures' in mapPr(node('MERGED', 'FAILURE'), 'o/r')).toBe(false);
 });

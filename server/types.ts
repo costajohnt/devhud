@@ -134,6 +134,10 @@ export interface Pr {
   mergedAt: string | null;
   closedAt: string | null;
   ciStatus: CiStatus;
+  // Only set while ciStatus is 'failing': the failed checks that are not also
+  // failing on the base branch. [] = all pre-existing, so not this PR's fault
+  // and not a Needs Attention reason; undefined = unknown, keep flagging (#79).
+  ciNewFailures?: string[];
   reviewState: ReviewState;
   isDraft?: boolean;
   comments: PrComment[];
@@ -174,6 +178,10 @@ export interface PrRef {
   branch: string;
   state: PrState;
   ciStatus: CiStatus;
+  // Only set while ciStatus is 'failing': the failed checks that are not also
+  // failing on the base branch. [] = all pre-existing, so not this PR's fault
+  // and not a Needs Attention reason; undefined = unknown, keep flagging (#79).
+  ciNewFailures?: string[];
   reviewState: ReviewState;
   isDraft?: boolean;
 }

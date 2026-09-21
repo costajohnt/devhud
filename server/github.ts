@@ -17,8 +17,15 @@ interface GqlPr {
   closedAt?: string | null;
   labels?: { nodes?: ({ name?: string | null } | null)[] | null } | null;
   reviewRequests?: { totalCount?: number | null } | null;
-  commits?: { nodes?: ({ commit?: { statusCheckRollup?: { state?: string | null } | null } | null } | null)[] | null } | null;
+  commits?: { nodes?: ({ commit?: { statusCheckRollup?: GqlRollup | null } | null } | null)[] | null } | null;
+  // Tip of the base branch; null once that branch is deleted.
+  baseRef?: { target?: { statusCheckRollup?: GqlRollup | null } | null } | null;
 }
+
+// A check run reports name + conclusion, a legacy commit status reports
+// context + state; both live in the same rollup.
+interface GqlCheck { name?: string | null; conclusion?: string | null; context?: string | null; state?: string | null }
+interface GqlRollup { state?: string | null; contexts?: { nodes?: (GqlCheck | null)[] | null } | null }
 
 interface RawReview {
   state: string;
@@ -49,10 +56,39 @@ export function ciFromRollup(state: string | null | undefined): CiStatus {
   }
 }
 
+const FAILED = ['FAILURE', 'ERROR', 'TIMED_OUT', 'STARTUP_FAILURE'];
+
+// Names of the failed checks in a rollup; undefined when the rollup (or its
+// contexts) did not come back, which is not the same as "nothing failed".
+function failedChecks(rollup: GqlRollup | null | undefined): string[] | undefined {
+  const nodes = rollup?.contexts?.nodes;
+  if (!nodes) return undefined;
+  return nodes.flatMap(c => {
+    const name = c?.name ?? c?.context;
+    return name && FAILED.includes(c?.conclusion ?? c?.state ?? '') ? [name] : [];
+  });
+}
+
+// The PR's failed checks minus the ones already failing on its base branch
+// (#79): [] means every failure is pre-existing, so the PR did not break CI.
+// undefined means "cannot tell" and callers keep flagging: base data missing
+// (branch deleted), or no failed check among the first 50 contexts to compare
+// by name even though the rollup says failing.
+// ponytail: compares against the base branch tip, not the merge-base commit;
+// fetch the merge-base's checks if a since-fixed base keeps hiding nothing.
+export function newCiFailures(head: GqlRollup | null | undefined, base: GqlRollup | null | undefined): string[] | undefined {
+  const headFailed = failedChecks(head);
+  const baseFailed = failedChecks(base);
+  if (!headFailed?.length || !baseFailed) return undefined;
+  return headFailed.filter(n => !baseFailed.includes(n));
+}
+
 export function mapPr(node: GqlPr, repo: string): Pr {
   const hasDraftLabel = (node.labels?.nodes ?? []).some(l => l?.name?.toLowerCase() === 'draft');
   const state: Pr['state'] = node.state === 'MERGED' ? 'merged' : node.state === 'OPEN' ? 'open' : 'closed';
-  const rollup = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state;
+  const headRollup = node.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+  const rollup = headRollup?.state;
+  const ciStatus = state === 'open' ? ciFromRollup(rollup) : 'unknown';
   return {
     repo,
     number: node.number,
@@ -66,7 +102,8 @@ export function mapPr(node: GqlPr, repo: string): Pr {
     mergedAt: node.mergedAt ?? null,
     closedAt: node.closedAt ?? null,
     // A closed PR's checks are history, not status: keep the pre-#72 'unknown'.
-    ciStatus: state === 'open' ? ciFromRollup(rollup) : 'unknown',
+    ciStatus,
+    ...(ciStatus === 'failing' ? { ciNewFailures: newCiFailures(headRollup, node.baseRef?.target?.statusCheckRollup) } : {}),
     // Pending review requests are visible at discovery; approvals and change
     // requests need the reviews list, which enrichPr fetches for linked PRs.
     reviewState: (node.reviewRequests?.totalCount ?? 0) > 0 ? 'review_required' : 'none',
@@ -255,10 +292,18 @@ const PR_SEARCH = `query($q: String!) {
         number url title body headRefName state isDraft createdAt updatedAt mergedAt closedAt
         labels(first: 10) { nodes { name } }
         reviewRequests(first: 1) { totalCount }
-        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state ...Checks } } } }
+        baseRef { target { ... on Commit { statusCheckRollup { ...Checks } } } }
       }
     }
   }
+}`;
+
+// Per-check results ride along on the discovery query (one more connection
+// per PR, no extra request), so base-branch failures need no cache (#79).
+const PR_SEARCH_QUERY = `${PR_SEARCH}
+fragment Checks on StatusCheckRollup {
+  contexts(first: 50) { nodes { ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
 }`;
 
 interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
@@ -278,7 +323,7 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
       // sort:updated-desc in the query string: GraphQL search has no sort
       // argument and defaults to best match, which would break the "author's
       // 50 most recently updated" window once the author has more PRs than fit.
-      const data = await graphql<PrSearchData>(PR_SEARCH, { q: `is:pr author:${cfg.username} repo:${full} sort:updated-desc` }, cfg.token);
+      const data = await graphql<PrSearchData>(PR_SEARCH_QUERY, { q: `is:pr author:${cfg.username} repo:${full} sort:updated-desc` }, cfg.token);
       for (const node of data.search?.nodes ?? []) {
         // A search typed ISSUE can hand back an Issue node, which the
         // PullRequest fragment leaves empty.

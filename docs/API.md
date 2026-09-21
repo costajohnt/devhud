@@ -190,7 +190,9 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 `PrRef` (a trimmed view of the linked PR, `null` if the card has no linked PR):
 
 ```
-{ repo: string, number: number, url: string, branch: string, state: 'open' | 'merged' | 'closed', ciStatus: 'passing' | 'failing' | 'pending' | 'unknown', reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none' }
+{ repo: string, number: number, url: string, branch: string, state: 'open' | 'merged' | 'closed', ciStatus: 'passing' | 'failing' | 'pending' | 'unknown', reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none', ciNewFailures?: string[] }
+
+`ciNewFailures` is present only while `ciStatus` is `'failing'`: the failed checks that are not also failing on the PR's base branch. `[]` means every failure is pre-existing on the base, so the card gets no `ci_failing` reason; absent means the comparison was not possible and the card is flagged as before.
 ```
 
 ### TodoItem

@@ -445,3 +445,18 @@ test('the #53 draft exception does not fire on a non-review status', () => {
   const c = card({ status: 'In Test', description: 'QA instructions: click it', fixVersions: ['1.0'] });
   expect(classifyCard({ ...base, card: c, pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('self_review');
 });
+
+// #79: red CI that is just as red on the base branch is not this card's problem.
+test('failing CI with no new failures vs the base branch does not route to needs_attention', () => {
+  const r = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing', ciNewFailures: [] }), cs: cs() });
+  expect(r.attention).not.toContain('ci_failing');
+  expect(r.bucket).not.toBe('needs_attention');
+});
+
+test('failing CI with new or unknown failures still routes to needs_attention', () => {
+  for (const ciNewFailures of [['lint'], undefined]) {
+    const r = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing', ciNewFailures }), cs: cs() });
+    expect(r.attention).toContain('ci_failing');
+    expect(r.bucket).toBe('needs_attention');
+  }
+});

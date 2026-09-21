@@ -59,7 +59,9 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   const attention: string[] = [];
   const newComments: NewComment[] = [];
 
-  if (pr?.ciStatus === 'failing' && pr.state === 'open') attention.push('ci_failing');
+  // Red CI that is red on the base branch too is not this card's problem;
+  // ciNewFailures is [] only when every failed check also fails there (#79).
+  if (pr?.ciStatus === 'failing' && pr.state === 'open' && pr.ciNewFailures?.length !== 0) attention.push('ci_failing');
 
   for (const c of pr?.comments ?? []) {
     if (c.author !== username && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {

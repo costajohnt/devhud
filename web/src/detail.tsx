@@ -38,7 +38,11 @@ function nextAction(item: Item): string {
   const n = item.newComments.length;
   // PR fact, not attention flag — an acked card with red CI still needs the
   // build fixed, even though it no longer sits in Needs Attention.
-  if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') return 'CI is failing — fix the build';
+  if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') {
+    const fresh = item.pr.ciNewFailures;
+    if (fresh?.length === 0) return 'CI is failing, but only on checks already red on the base branch';
+    return fresh ? `CI is failing — fix ${fresh.join(', ')}` : 'CI is failing — fix the build';
+  }
   if (n > 0) return `Respond to ${n} new comment${n > 1 ? 's' : ''}`;
   if (a.includes('merged_not_in_test')) return 'PR merged — move the card to QA / In Test';
   if (a.includes('missing_qa_instructions') && a.includes('missing_fix_version')) {
