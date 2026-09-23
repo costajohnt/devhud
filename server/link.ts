@@ -20,9 +20,8 @@ export function linkPrsToCards(cards: Card[], prs: Pr[], _projectKey?: string): 
   for (const c of cards) {
     const matches = prs.filter(p => prMatchesCard(p, c));
     if (!matches.length) continue;
-    matches.sort((a, b) =>
-      (a.state === 'open' ? 0 : 1) - (b.state === 'open' ? 0 : 1) ||
-      (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+    const rank = (p: Pr) => p.state === 'open' ? 0 : p.state === 'merged' ? 1 : 2;
+    matches.sort((a, b) => rank(a) - rank(b) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
     map.set(c.key, matches[0]!);
   }
   return map;

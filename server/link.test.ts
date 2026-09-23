@@ -34,6 +34,13 @@ test('prefers open PR over merged when both match', () => {
   expect(m.get('PROJ-5')!.number).toBe(2);
 });
 
+test('prefers merged PR over newer closed-unmerged PR', () => {
+  const merged = pr({ number: 10, url: 'u10', branch: 'PROJ-7-a', state: 'merged', updatedAt: '2026-08-01T00:00:00Z' });
+  const closed = pr({ number: 11, url: 'u11', branch: 'PROJ-7-a', state: 'closed', updatedAt: '2026-09-01T00:00:00Z' });
+  const m = linkPrsToCards([card('PROJ-7')], [closed, merged], 'PROJ');
+  expect(m.get('PROJ-7')!.number).toBe(10);
+});
+
 test('card key with regex metacharacters does not throw and does not false-match', () => {
   expect(() => linkPrsToCards([card('PROJ(1')], [pr({ branch: 'proj-12-fix-thing' })], 'PROJ')).not.toThrow();
   const m = linkPrsToCards([card('PROJ(1')], [pr({ branch: 'proj-12-fix-thing' })], 'PROJ');
