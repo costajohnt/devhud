@@ -347,6 +347,30 @@ test('newCiFailures: base data unavailable, or no named head failure -> undefine
   expect(newCiFailures(rollup({ test: 'SUCCESS' }), rollup({ test: 'FAILURE' }))).toBeUndefined();
 });
 
+// #86: base rollup incomplete — suppress rather than assert new failures
+
+test('newCiFailures: base has in-progress CheckRun (conclusion null) -> undefined', () => {
+  const inProgressBase = {
+    state: 'PENDING',
+    contexts: { nodes: [{ name: 'test', conclusion: null as string | null }] },
+  };
+  expect(newCiFailures(rollup({ test: 'FAILURE' }), inProgressBase)).toBeUndefined();
+});
+
+test('newCiFailures: base has pending StatusContext -> undefined', () => {
+  const pendingBase = {
+    state: 'PENDING',
+    contexts: { nodes: [{ context: 'ci/status', state: 'pending' }] },
+  };
+  const headStatus = { state: 'FAILURE', contexts: { nodes: [{ context: 'ci/status', state: 'ERROR' }] } };
+  expect(newCiFailures(headStatus, pendingBase)).toBeUndefined();
+});
+
+test('newCiFailures: failing head check absent from base rollup entirely -> undefined', () => {
+  // base ran different checks; head failure has no base verdict yet
+  expect(newCiFailures(rollup({ 'new-check': 'FAILURE' }), rollup({ 'other-check': 'SUCCESS' }))).toBeUndefined();
+});
+
 test('mapPr sets ciNewFailures only on an open failing PR', () => {
   const node = (state: string, headState: string) => ({
     number: 1, url: '', state, createdAt: '', updatedAt: '',

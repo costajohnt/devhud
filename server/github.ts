@@ -69,17 +69,50 @@ function failedChecks(rollup: GqlRollup | null | undefined): string[] | undefine
   });
 }
 
+// Returns true if the rollup contains any check that has not yet produced a
+// verdict: a CheckRun whose conclusion is null (running/queued/waiting), or a
+// commit status still in the pending state. An incomplete rollup cannot be
+// treated as "green" because zero failures just means "not done yet".
+function rollupHasPending(rollup: GqlRollup | null | undefined): boolean {
+  const nodes = rollup?.contexts?.nodes;
+  if (!nodes) return false;
+  return nodes.some(c => {
+    if (!c) return false;
+    // CheckRun: conclusion is null while the run is in progress or queued.
+    if (c.name != null && c.conclusion == null) return true;
+    // StatusContext: pending state.
+    if (c.context != null && (c.state === 'pending' || c.state === 'PENDING')) return true;
+    return false;
+  });
+}
+
 // The PR's failed checks minus the ones already failing on its base branch
 // (#79): [] means every failure is pre-existing, so the PR did not break CI.
 // undefined means "cannot tell" and callers keep flagging: base data missing
-// (branch deleted), or no failed check among the first 50 contexts to compare
-// by name even though the rollup says failing.
+// (branch deleted), base rollup still running (#86), or a failing head check
+// absent from the base rollup entirely (no verdict yet on base).
 // ponytail: compares against the base branch tip, not the merge-base commit;
 // fetch the merge-base's checks if a since-fixed base keeps hiding nothing.
 export function newCiFailures(head: GqlRollup | null | undefined, base: GqlRollup | null | undefined): string[] | undefined {
   const headFailed = failedChecks(head);
   const baseFailed = failedChecks(base);
   if (!headFailed?.length || !baseFailed) return undefined;
+
+  // Base is still running: rollup is incomplete, so zero base failures does
+  // not mean the base is green. Suppress rather than assert (#86).
+  if (rollupHasPending(base)) return undefined;
+
+  // If a failing head check is absent from the base rollup entirely, the base
+  // has produced no verdict for that check yet — treat as unknown (#86).
+  const baseNodes = base?.contexts?.nodes;
+  const baseNames = new Set(
+    (baseNodes ?? []).flatMap(c => {
+      const n = c?.name ?? c?.context;
+      return n ? [n] : [];
+    })
+  );
+  if (headFailed.some(n => !baseNames.has(n))) return undefined;
+
   return headFailed.filter(n => !baseFailed.includes(n));
 }
 
