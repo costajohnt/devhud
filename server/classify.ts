@@ -70,8 +70,16 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   }
   if (newComments.length) attention.push('new_pr_comments');
 
+  // The developer's own latest tracker comment is an implicit watermark
+  // alongside the explicit ack: replying is the resolution of "somebody is
+  // waiting on you", so third-party comments older than that reply no longer
+  // count as new. A comment that lands after the reply flags again (#85).
+  let seenJira = cs.lastSeenJira;
+  for (const c of card.comments ?? []) {
+    if (c.authorId === card.myAccountId && c.createdAt && (!seenJira || c.createdAt > seenJira)) seenJira = c.createdAt;
+  }
   const jiraNew = (card.comments ?? []).filter(c =>
-    c.authorId !== card.myAccountId && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenJira));
+    c.authorId !== card.myAccountId && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, seenJira));
   if (jiraNew.length) {
     attention.push('new_jira_comments');
     newComments.push(...jiraNew.map(jiraNewComment));
@@ -152,9 +160,9 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   // Safe against the failure the ROUTING_REASONS comment records, where the
   // missing-QA rule emptied QA Ready on the day it shipped: that reason was
   // persistently true, so the column stayed empty. new_jira_comments is not a
-  // STATE_REASON and so is not ack-governed — the lastSeen watermark clears it
-  // as soon as the developer reads the comment, and the card falls straight
-  // back to QA Ready.
+  // STATE_REASON and so is not ack-governed — an explicit ack/move (which
+  // advance lastSeenJira) or the developer's own reply on the tracker (#85)
+  // clears it, and the card falls straight back to QA Ready.
   else if (sameStatus(card.status, statuses.inTest)) {
     bucket = visible.includes('new_jira_comments') ? 'needs_attention' : 'qa_ready';
   }
