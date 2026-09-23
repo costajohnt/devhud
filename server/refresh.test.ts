@@ -30,7 +30,7 @@ const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'o/r', number: 1, url: 'https:/
 
 test('buckets a linked open card', () => {
   const p = buildSnapshot({ cards: [card()], prs: [pr()], state: emptyState(), config, errors: {} });
-  expect(p.buckets.self_review[0]).toMatchObject({ key: 'PROJ-1', pr: { number: 1 } });
+  expect(p.buckets.waiting_review[0]).toMatchObject({ key: 'PROJ-1', pr: { number: 1 } });
   expect(p.todo).toEqual([]);
 });
 
@@ -347,7 +347,7 @@ test('item comments merge both sources, newest first, capped at 10', () => {
   });
   const snap = buildSnapshot({ cards: [c], prs: [p1], state: emptyState(), config, errors: {} });
   // Unread comments are a badge, not a route: the card sits in its status
-  // bucket (self_review here) and carries the comments.
+  // bucket (waiting_review here) and carries the comments.
   const item = Object.values(snap.buckets).flat()[0]!;
   expect(item.comments.map(x => x.source)).toEqual(['jira', 'github', 'jira']);
   expect(item.comments[0]!.body).toBe('new jira');
@@ -362,7 +362,7 @@ test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead 
   state.lastPrs = [pr()];
   const payload = await refresh({ config, state });
   expect(payload.errors.github).toContain('o/r: 500 boom');
-  expect(payload.buckets.self_review[0]?.pr?.number).toBe(1);
+  expect(payload.buckets.waiting_review[0]?.pr?.number).toBe(1);
 });
 
 test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart', async () => {
@@ -595,7 +595,7 @@ test('an enrichment recorded in the same second as the PR\'s updatedAt is re-enr
   });
   const first = await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
-  expect(first.buckets.self_review[0]?.comments.map(c => c.body)).toEqual(['stale', 'same-second']);
+  expect(first.buckets.waiting_review[0]?.comments.map(c => c.body)).toEqual(['stale', 'same-second']);
   expect(state.lastPrs?.[0]?.enrichConfirmed).toBe(true);
 
   // Confirmed for this updatedAt: the next refresh reuses it and carries the
@@ -603,7 +603,7 @@ test('an enrichment recorded in the same second as the PR\'s updatedAt is re-enr
   vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [] });
   const second = await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
-  expect(second.buckets.self_review[0]?.comments).toHaveLength(2);
+  expect(second.buckets.waiting_review[0]?.comments).toHaveLength(2);
   expect(state.lastPrs?.[0]?.enrichedAt).toBe('2026-07-02T00:00:30Z');
   expect(state.lastPrs?.[0]?.enrichConfirmed).toBe(true);
 
@@ -662,7 +662,7 @@ test('a GitHub throttle collapses into one calm banner, keeping any real failure
   const payload = await refresh({ config, state });
   expect(payload.errors.github).toBe('GitHub throttled this refresh (rate limit) — showing last known data.');
   // The fallback still runs: the throttled repo's PRs stay on the board.
-  expect(payload.buckets.self_review[0]?.pr?.number).toBe(1);
+  expect(payload.buckets.waiting_review[0]?.pr?.number).toBe(1);
 
   vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: [
     'o/r: GitHub 403 /repos/o/r: { "message": "You have exceeded a secondary rate limit." }',

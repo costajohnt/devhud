@@ -161,15 +161,12 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   // Checked before the approved branch below: a draft PR cannot be merged as
   // it stands, so it must not read as Mergeable however its reviews landed.
   else if (draftOpen) bucket = 'waiting_review';
-  else if (pr?.state === 'open') {
-    if (pr.reviewState === 'approved') {
-      bucket = 'mergeable';
-    } else if (isInReview(card.status, statuses) || pr.reviewState !== 'none') {
-      bucket = 'waiting_review';
-    } else {
-      bucket = 'self_review';
-    }
-  }
+  // A non-draft open PR is out for peer review whatever its review count:
+  // the draft label (draftOpen above) is the only thing that routes an open
+  // PR to Self Review Needed. Before #90 a PR with reviewState 'none' and a
+  // non-review Jira status fell back to self_review, so clearing the Draft
+  // label changed nothing until a reviewer posted or the card transitioned.
+  else if (pr?.state === 'open') bucket = pr.reviewState === 'approved' ? 'mergeable' : 'waiting_review';
   // A Code Review status routes here even with no open PR. Previously this
   // check lived only inside the branch above, so moving a card to Code Review
   // before its PR existed (or while the board had not linked one yet) left it
