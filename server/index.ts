@@ -82,8 +82,10 @@ function guardMutation(req: IncomingMessage): { status: number; error: string } 
 // `refreshFn` defaults to the real refresh() and exists so tests can drive
 // the scheduled loop (short interval + stub) without network or module
 // mocking — same convention as performWrite's refreshFn.
-export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh }: {
+// `autoTransitionFn` is injectable for the same reason (M5 ordering tests).
+export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh, autoTransitionFn = autoTransitionMergedCards }: {
   config: Config; statePath: string; webDist: string; configPath?: string; refreshFn?: typeof refresh;
+  autoTransitionFn?: typeof autoTransitionMergedCards;
 }): http.Server {
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
@@ -287,29 +289,34 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   let closed = false;
   const tick = async () => {
     try {
-      const snapshot = await refreshFn({ config, state });
+      let snapshot = await refreshFn({ config, state });
+      // Auto-transition merged cards if configured, BEFORE the save and the
+      // broadcast (M5): broadcasting first showed a just-moved card in Needs
+      // Attention (and notified hidden tabs about it) for a whole interval.
+      // Direct transitionCard() calls (not performWrite) avoid one refresh
+      // per card; instead, if anything moved, one more refresh picks up the
+      // new statuses so the save and broadcast below reflect them. Per-card
+      // errors are caught inside the function; this try-catch guards against
+      // unexpected throws so the tick still saves and broadcasts.
+      try {
+        const auto = await autoTransitionFn({ state, configPath });
+        if (auto.succeeded > 0) snapshot = await refreshFn({ config, state });
+      } catch (e) {
+        console.error('auto-transition batch failed unexpectedly:', e);
+      }
       // Save failure isolated from the broadcast: refresh() already updated
       // the in-memory snapshot (which /api/data serves), so skipping the
       // broadcast would leave every tab permanently stale over a disk-full/
       // permissions problem that repeats each tick. Unlike /api/action's
       // save-then-broadcast rule this is not a user mutation that could
       // silently revert — it re-fetches identically on the next tick.
+      // The save also persists the auto-transition ledger.
       try {
         saveState(statePath, state);
       } catch (e) {
         console.error('scheduled refresh saved nothing (memory is fresh, disk is stale):', e);
       }
       broadcast(snapshot);
-      // Auto-transition merged cards if configured. Direct transitionCard()
-      // call (not performWrite) to avoid a re-entrant refresh and doubled API
-      // spend. Per-card errors are caught and logged inside the function;
-      // this outer try-catch guards against unexpected throws from the function
-      // itself so the tick loop stays alive regardless.
-      try {
-        await autoTransitionMergedCards({ state, configPath });
-      } catch (e) {
-        console.error('auto-transition batch failed unexpectedly:', e);
-      }
     } catch (e) {
       // Keep the loop alive: a transient Jira/GitHub outage shouldn't kill
       // live updates for the rest of the process lifetime. Full error object

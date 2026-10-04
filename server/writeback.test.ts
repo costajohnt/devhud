@@ -1,10 +1,10 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr, autoTransitionMergedCards } from './writeback.ts';
+import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr, autoTransitionMergedCards, recordPostedComment, POSTED_COMMENT_IDS_MAX } from './writeback.ts';
 import { emptyState, emptySnapshot } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Config, JiraConfig, GithubConfig, State, Item } from './types.ts';
+import type { Config, JiraConfig, GithubConfig, State, Item, PrRef } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -379,6 +379,10 @@ const baseAutoConfig: Config = {
   ignoreAuthors: [],
 };
 
+const mergedRef = (key: string, number = 1): PrRef => ({
+  repo: 'o/r', number, url: `https://gh/o/r/pull/${number}`, branch: `${key}-x`, state: 'merged', ciStatus: 'passing', reviewState: 'approved',
+});
+
 // Build a minimal State with one card in the needs_attention bucket with
 // merged_not_in_test in its attention list.
 function stateWithMergedCard(key: string, ackedReasons?: string[]): State {
@@ -394,7 +398,7 @@ function stateWithMergedCard(key: string, ackedReasons?: string[]): State {
     attention: ['merged_not_in_test'],
     newComments: [],
     comments: [],
-    pr: null,
+    pr: mergedRef(key),
     createdAt: null,
     updatedAt: null,
     daysSinceActivity: null,
@@ -466,7 +470,7 @@ test('autoTransitionMergedCards: transition throwing is caught, other cards stil
     attention: ['merged_not_in_test'],
     newComments: [],
     comments: [],
-    pr: null,
+    pr: mergedRef('PROJ-2'),
     createdAt: null,
     updatedAt: null,
     daysSinceActivity: null,
@@ -509,4 +513,145 @@ test('autoTransitionMergedCards: card outside the configured project is skipped'
   const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
   expect(transitionCardFn).not.toHaveBeenCalled();
   expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+});
+
+// --- H1 safety rules ---
+
+const silence = () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+  return () => { log.mockRestore(); err.mockRestore(); };
+};
+
+test('autoTransitionMergedCards: degraded snapshot (Jira or GitHub error) skips the whole batch', async () => {
+  for (const errors of [{ jira: 'Jira 503', github: null }, { jira: null, github: 'GitHub 502' }]) {
+    const state = stateWithMergedCard('PROJ-1');
+    state.snapshot!.errors = errors;
+    const transitionCardFn = vi.fn();
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+    expect(transitionCardFn).not.toHaveBeenCalled();
+    expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+  }
+});
+
+test('autoTransitionMergedCards: a To Do card is never transitioned', async () => {
+  // Item status name alone.
+  const byName = stateWithMergedCard('PROJ-1');
+  byName.snapshot!.buckets.needs_attention[0]!.jiraStatus = 'To Do';
+  // Status from lastCards: To Do category under another name.
+  const byCategory = stateWithMergedCard('PROJ-1');
+  byCategory.lastCards = [{ key: 'PROJ-1', summary: '', status: 'In Progress', statusCategory: 'new', description: '', url: '', createdAt: null, updatedAt: null, myAccountId: 'id', comments: [] }];
+  for (const state of [byName, byCategory]) {
+    const transitionCardFn = vi.fn();
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+    expect(transitionCardFn).not.toHaveBeenCalled();
+    expect(result.attempted).toBe(0);
+  }
+});
+
+test('autoTransitionMergedCards: In Test and post-In-Test statuses are never transitioned', async () => {
+  for (const status of ['In Test', 'Ready for Release', 'QA Passed']) {
+    const state = stateWithMergedCard('PROJ-1');
+    state.snapshot!.buckets.needs_attention[0]!.jiraStatus = status;
+    const transitionCardFn = vi.fn();
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+    expect(transitionCardFn).not.toHaveBeenCalled();
+  }
+});
+
+test('autoTransitionMergedCards: review status is allowed', async () => {
+  const restore = silence();
+  try {
+    const state = stateWithMergedCard('PROJ-1');
+    state.snapshot!.buckets.needs_attention[0]!.jiraStatus = 'Code Review';
+    const transitionCardFn = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+    expect(result).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+  } finally { restore(); }
+});
+
+test('autoTransitionMergedCards: fires at most once per (card, merged PR), success or failure', async () => {
+  const restore = silence();
+  try {
+    const state = stateWithMergedCard('PROJ-1');
+    const ok = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok, now: () => '2026-10-04T00:00:00Z' });
+    expect(state.autoTransitioned!['PROJ-1@o/r#1']).toEqual({ at: '2026-10-04T00:00:00Z', ok: true });
+    // Same flag still present next tick (e.g. QA rejected back): no second fire.
+    const again = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok });
+    expect(ok).toHaveBeenCalledOnce();
+    expect(again.attempted).toBe(0);
+
+    // A failure is recorded and not retried on the next tick.
+    const state2 = stateWithMergedCard('PROJ-2');
+    const fail = vi.fn().mockRejectedValue(new Error('no transition to "In Test" available'));
+    const r1 = await autoTransitionMergedCards({ state: state2, loadConfigFn: () => baseAutoConfig, transitionCardFn: fail });
+    expect(r1).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(state2.autoTransitioned!['PROJ-2@o/r#1']).toMatchObject({ ok: false, error: expect.stringContaining('no transition') });
+    await autoTransitionMergedCards({ state: state2, loadConfigFn: () => baseAutoConfig, transitionCardFn: fail });
+    expect(fail).toHaveBeenCalledOnce();
+
+    // A different merged PR on the same card is a new event.
+    state.snapshot!.buckets.needs_attention[0]!.pr = mergedRef('PROJ-1', 7);
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok });
+    expect(ok).toHaveBeenCalledTimes(2);
+  } finally { restore(); }
+});
+
+test('autoTransitionMergedCards: QA-rejected card (end-to-end through buildSnapshot) is not re-transitioned', async () => {
+  const restore = silence();
+  try {
+    const { buildSnapshot } = await import('./refresh.ts');
+    const state = emptyState();
+    const cfg = { ...baseAutoConfig, github: { ...baseAutoConfig.github, repos: ['o/r'] } };
+    const card = (status: string) => ({ key: 'PROJ-1', summary: 'S', status, statusCategory: 'indeterminate' as const, description: '', url: '', createdAt: null, updatedAt: null, myAccountId: 'id', comments: [] });
+    const prs = [{ repo: 'o/r', number: 1, url: 'https://gh/o/r/pull/1', title: '', body: '', branch: 'PROJ-1-x', state: 'merged' as const, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', mergedAt: '2026-01-02T00:00:00Z', closedAt: null, ciStatus: 'passing' as const, reviewState: 'approved' as const, comments: [] }];
+    const tick = async (status: string) => {
+      state.lastCards = [card(status)];
+      state.snapshot = buildSnapshot({ cards: state.lastCards, prs, state, config: cfg, errors: {} });
+    };
+    // Card In Test (moved by hand), then QA rejects back to In Progress.
+    await tick('In Test');
+    await tick('In Progress');
+    expect(state.snapshot!.buckets.needs_attention).toHaveLength(0);
+    const transitionCardFn = vi.fn();
+    await autoTransitionMergedCards({ state, loadConfigFn: () => cfg, transitionCardFn });
+    expect(transitionCardFn).not.toHaveBeenCalled();
+  } finally { restore(); }
+});
+
+// --- L3: comment ids posted by write-back ---
+
+test('commentCard returns the created comment id from Jira\'s response', async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ id: '10042' }) })));
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  expect(await commentCard(cfg, 'PROJ-1', 'hi')).toEqual({ commentId: '10042' });
+  // A non-JSON body is not an error: the comment was still created.
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.reject(new SyntaxError('bad')) })));
+  expect(await commentCard(cfg, 'PROJ-1', 'hi')).toEqual({});
+});
+
+test('performWrite records the posted comment id in state before the post-write refresh', async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ id: '555' }) })));
+  const state = emptyState();
+  let seenInRefresh: string[] | undefined;
+  const result = await performWrite({
+    config: baseAutoConfig, state, type: 'comment', key: 'PROJ-1', body: 'automated note',
+    loadConfigFn: stubLoadConfig(baseAutoConfig),
+    refreshFn: (async ({ state: s }: { state: State }) => { seenInRefresh = [...(s.postedCommentIds ?? [])]; return s.snapshot; }) as never,
+  }) as LooseWrite;
+  expect(result.ok).toBe(true);
+  expect(state.postedCommentIds).toEqual(['555']);
+  expect(seenInRefresh).toEqual(['555']);
+  expect(result).not.toHaveProperty('commentId');
+});
+
+test('recordPostedComment keeps a bounded, deduped list', () => {
+  const state = emptyState();
+  for (let i = 0; i < POSTED_COMMENT_IDS_MAX + 5; i++) recordPostedComment(state, String(i));
+  recordPostedComment(state, '10');
+  expect(state.postedCommentIds).toHaveLength(POSTED_COMMENT_IDS_MAX);
+  expect(state.postedCommentIds!.at(-1)).toBe('10');
+  expect(state.postedCommentIds!.filter(x => x === '10')).toHaveLength(1);
+  expect(state.postedCommentIds).not.toContain('0');
 });

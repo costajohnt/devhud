@@ -48,8 +48,14 @@ export interface ClassifyResult {
   newComments: NewComment[];
 }
 
-export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors = [], prDegraded = false }: {
+export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors = [], prDegraded = false, postedCommentIds = [], now = new Date().toISOString() }: {
   card: Card; pr: Pr | null; cs: CardState; statuses: JiraStatuses; username: string; ignoreAuthors?: string[];
+  // Ids of Jira comments the dashboard's own write-back posted (State.
+  // postedCommentIds). They carry the user's accountId but are not a reply
+  // the user typed, so they must not advance the own-reply watermark (L3).
+  postedCommentIds?: readonly string[];
+  // Injectable clock for the reachedTestAt stamp below.
+  now?: string;
   // True when this refresh's PR data is degraded (GitHub fetch or enrichment
   // errors). Both state-based reasons derive from PR data, so pruning acks
   // against a degraded view would wipe them and bounce the card back into
@@ -74,8 +80,12 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   // alongside the explicit ack: replying is the resolution of "somebody is
   // waiting on you", so third-party comments older than that reply no longer
   // count as new. A comment that lands after the reply flags again (#85).
+  // Comments posted by write-back (MCP/CLI/dashboard) are excluded: an
+  // agent's automated "PR updated" note must not silently answer QA (L3).
+  const posted = new Set(postedCommentIds);
   let seenJira = cs.lastSeenJira;
   for (const c of card.comments ?? []) {
+    if (c.id && posted.has(c.id)) continue;
     if (c.authorId === card.myAccountId && c.createdAt && (!seenJira || c.createdAt > seenJira)) seenJira = c.createdAt;
   }
   const jiraNew = (card.comments ?? []).filter(c =>
@@ -85,7 +95,17 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
     newComments.push(...jiraNew.map(jiraNewComment));
   }
 
-  if (pr?.state === 'merged' && !sameStatus(card.status, statuses.inTest) && !sameStatus(card.status, statuses.done)) {
+  // Stamp before the merged rule reads it. Done cards never reach
+  // classifyCard (buildSnapshot routes them off-board), so buildSnapshot
+  // stamps those itself via markReachedTest.
+  if (sameStatus(card.status, statuses.inTest) || isDone(card, statuses)) markReachedTest(cs, now);
+
+  // Flag only a card that is still before QA for this merge: in a pre-test
+  // status (In Progress / review — never To Do, never a post-In-Test status
+  // like "Ready for Release"), and not seen In Test or Done since the PR
+  // merged. The second check is what stops a QA rejection back to In
+  // Progress from re-flagging (and auto-transitioning) on the old merge (H1).
+  if (pr?.state === 'merged' && isPreTest(card, statuses) && !reachedTestSinceMerge(cs, pr)) {
     attention.push('merged_not_in_test');
   }
 
@@ -233,3 +253,31 @@ export const isTodo = (card: Card, statuses: JiraStatuses): boolean =>
 // category but is an abandonment, not a completion — see isCanceled).
 export const isDone = (card: Card, statuses: JiraStatuses): boolean =>
   !isCanceled(card, statuses) && (card.statusCategory === 'done' || sameStatus(card.status, statuses.done));
+
+// Pre-test statuses: the configured In Progress status (default 'In
+// Progress') and the review status(es) (isInReview). This is a NAME
+// allowlist, deliberately not "the In Progress category": Jira files In
+// Test itself and post-test statuses such as "Ready for Release" / "QA
+// Passed" under the same 'indeterminate' category, so the category cannot
+// tell before-QA from after-QA. The category is still used to veto: a status
+// filed under To Do ('new') or Done never counts, whatever its name. Projects
+// with renamed statuses set jira.statuses.inProgress / review.
+// Used by both the merged_not_in_test rule and autoTransitionMergedCards so
+// the flag and the write can't disagree.
+export const isPreTest = (card: Pick<Card, 'status' | 'statusCategory'>, statuses: JiraStatuses): boolean => {
+  if (card.statusCategory === 'new' || card.statusCategory === 'done') return false;
+  if (sameStatus(card.status, statuses.todo) || sameStatus(card.status, statuses.inTest) || sameStatus(card.status, statuses.done)) return false;
+  return sameStatus(card.status, statuses.inProgress ?? 'In Progress') || isInReview(card.status, statuses);
+};
+
+export const markReachedTest = (cs: CardState, now: string): void => {
+  if (!cs.reachedTestAt || Date.parse(now) > Date.parse(cs.reachedTestAt)) cs.reachedTestAt = now;
+};
+
+// True when the card was seen In Test/Done at or after this PR merged. A
+// merged PR with no mergedAt (shouldn't happen) is treated as reached when
+// the card has ever reached test — the safe direction for an automated write.
+export const reachedTestSinceMerge = (cs: CardState, pr: Pick<Pr, 'mergedAt'>): boolean =>
+  // Date.parse, not string order: GitHub's "…:00Z" and toISOString's
+  // "…:00.000Z" don't sort correctly against each other as strings.
+  !!cs.reachedTestAt && (!pr.mergedAt || !(Date.parse(cs.reachedTestAt) < Date.parse(pr.mergedAt)));

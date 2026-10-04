@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { classifyCard, isTodo, isDone, isCanceled, isBlocked, sameStatus } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled, isBlocked, sameStatus, isPreTest } from './classify.ts';
 import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 
 const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
@@ -485,4 +485,76 @@ test('failing CI with new or unknown failures still routes to needs_attention', 
     expect(r.attention).toContain('ci_failing');
     expect(r.bucket).toBe('needs_attention');
   }
+});
+
+// --- H1: merged_not_in_test only for pre-test cards not yet through QA ---
+
+test('merged_not_in_test: a To Do card with a merged PR is not flagged (H1)', () => {
+  const m = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z' });
+  expect(classifyCard({ ...base, card: card({ status: 'To Do' }), pr: m, cs: cs() }).attention).not.toContain('merged_not_in_test');
+  // To Do category under another name ('Assigned') is vetoed too.
+  expect(classifyCard({ ...base, card: card({ status: 'Assigned', statusCategory: 'new' }), pr: m, cs: cs() }).attention).not.toContain('merged_not_in_test');
+});
+
+test('merged_not_in_test: a post-In-Test status is not flagged (H1)', () => {
+  const m = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z' });
+  for (const status of ['Ready for Release', 'QA Passed']) {
+    expect(classifyCard({ ...base, card: card({ status, statusCategory: 'indeterminate' }), pr: m, cs: cs() }).attention).not.toContain('merged_not_in_test');
+  }
+});
+
+test('merged_not_in_test: review statuses and a configured inProgress name are flagged', () => {
+  const m = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z' });
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: m, cs: cs() }).attention).toContain('merged_not_in_test');
+  const custom = { ...statuses, inProgress: 'Development' };
+  expect(classifyCard({ ...base, statuses: custom, card: card({ status: 'Development' }), pr: m, cs: cs() }).attention).toContain('merged_not_in_test');
+});
+
+test('merged_not_in_test: a QA-rejected card is not re-flagged on the merge it already shipped (H1)', () => {
+  const m = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z' });
+  const c = cs();
+  // Seen In Test after the merge: classify stamps reachedTestAt.
+  classifyCard({ ...base, card: card({ status: 'In Test' }), pr: m, cs: c, now: '2026-07-03T00:00:00Z' });
+  expect(c.reachedTestAt).toBe('2026-07-03T00:00:00Z');
+  // QA rejects back to In Progress: no re-flag.
+  const back = classifyCard({ ...base, card: card(), pr: m, cs: c, now: '2026-07-04T00:00:00Z' });
+  expect(back.attention).not.toContain('merged_not_in_test');
+  // A new merge after the rejection flags again.
+  const m2 = pr({ state: 'merged', number: 2, mergedAt: '2026-07-05T00:00:00Z' });
+  expect(classifyCard({ ...base, card: card(), pr: m2, cs: c, now: '2026-07-05T01:00:00Z' }).attention).toContain('merged_not_in_test');
+});
+
+test('reachedTestSinceMerge compares instants, not strings (GitHub Z vs .000Z)', () => {
+  const m = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z' });
+  // Same instant in toISOString form: reached, so not flagged.
+  const c = cs({ reachedTestAt: '2026-07-02T00:00:00.000Z' });
+  expect(classifyCard({ ...base, card: card(), pr: m, cs: c, now: '2026-07-01T00:00:00.000Z' }).attention).not.toContain('merged_not_in_test');
+});
+
+test('isPreTest: name allowlist with category veto', () => {
+  expect(isPreTest({ status: 'In Progress', statusCategory: 'indeterminate' }, statuses)).toBe(true);
+  expect(isPreTest({ status: 'In Review' }, statuses)).toBe(true);
+  expect(isPreTest({ status: 'In Progress', statusCategory: 'new' }, statuses)).toBe(false);
+  expect(isPreTest({ status: 'In Progress', statusCategory: 'done' }, statuses)).toBe(false);
+  expect(isPreTest({ status: 'In Test' }, statuses)).toBe(false);
+  expect(isPreTest({ status: 'To Do' }, statuses)).toBe(false);
+  expect(isPreTest({ status: 'Ready for Release', statusCategory: 'indeterminate' }, statuses)).toBe(false);
+});
+
+// --- L3: write-back comments don't count as the user's own reply ---
+
+test('own-reply watermark ignores comments posted by write-back (L3)', () => {
+  const comments = [
+    { id: '1', author: 'QA', authorId: 'qa', body: 'how do I test this?', createdAt: '2026-07-02T00:00:00Z' },
+    { id: '2', author: 'Me', authorId: 'me', body: 'PR updated (automated)', createdAt: '2026-07-03T00:00:00Z' },
+  ];
+  // Without the id recorded, the automated post reads as a reply.
+  expect(classifyCard({ ...base, card: card({ comments }), pr: null, cs: cs() }).attention).not.toContain('new_jira_comments');
+  // Recorded as a write-back post: QA's question is still waiting.
+  const r = classifyCard({ ...base, card: card({ comments }), pr: null, cs: cs(), postedCommentIds: ['2'] });
+  expect(r.attention).toContain('new_jira_comments');
+  expect(r.newComments.map(c => c.body)).toEqual(['how do I test this?']);
+  // A genuine reply (not recorded) still clears it.
+  const withReply = [...comments, { id: '3', author: 'Me', authorId: 'me', body: 'click X', createdAt: '2026-07-04T00:00:00Z' }];
+  expect(classifyCard({ ...base, card: card({ comments: withReply }), pr: null, cs: cs(), postedCommentIds: ['2'] }).attention).not.toContain('new_jira_comments');
 });

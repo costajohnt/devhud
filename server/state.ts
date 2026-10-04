@@ -10,7 +10,7 @@ export function emptyState(): State {
   // to an inherited accessor like Object.prototype.__proto__ in the first
   // place — cardState()'s `??=` sees a real missing key and assigns
   // normally, no matter what string reaches it.
-  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {} };
+  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {}, autoTransitioned: {}, postedCommentIds: [] };
 }
 
 // JSON.parse always produces normal-prototype objects, so the `cards` field
@@ -80,12 +80,24 @@ function migrateSnapshot(state: State): State {
   return state;
 }
 
+// Fields added for the auto-transition safety work (H1/L3). Hand-editable
+// file, so anything of the wrong shape resets to the empty default rather
+// than throwing inside the tick.
+function migrateWritebackLedgers(state: State): State {
+  const at = state.autoTransitioned;
+  state.autoTransitioned = at && typeof at === 'object' && !Array.isArray(at) ? at : {};
+  state.postedCommentIds = Array.isArray(state.postedCommentIds)
+    ? state.postedCommentIds.filter((x): x is string => typeof x === 'string')
+    : [];
+  return state;
+}
+
 // A missing file is the normal first-run case (no warn). An existing but
 // unparseable file is a corruption signal: warn and fall back to the
 // rotating .bak written by saveState, rather than silently losing overrides.
 export function loadState(path: string): State {
   const hydrate = (json: string): State =>
-    withNullProtoCards(migrateSnapshot(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(json) }))));
+    withNullProtoCards(migrateWritebackLedgers(migrateSnapshot(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(json) })))));
   const fromBak = (): State | null => {
     try { return hydrate(readFileSync(path + '.bak', 'utf8')); }
     catch { return null; }

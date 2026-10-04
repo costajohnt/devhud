@@ -12,6 +12,7 @@
 // role for ack/move.
 import { refresh } from './refresh.ts';
 import { loadConfig } from './config.ts';
+import { isPreTest } from './classify.ts';
 import type { Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
 
 interface JiraTransition {
@@ -85,7 +86,11 @@ export async function transitionCard(cfg: JiraConfig, key: string, targetStatusN
   return { transitionedTo: transition.to?.name ?? '' };
 }
 
-export async function commentCard(cfg: JiraConfig, key: string, body: string): Promise<Record<string, never>> {
+// Resolves with the new comment's id when Jira's response carries one (it
+// does: POST /issue/{key}/comment returns the created comment), so
+// performWrite can record it in State.postedCommentIds (L3). A response body
+// that isn't JSON is not an error — the comment was created either way.
+export async function commentCard(cfg: JiraConfig, key: string, body: string): Promise<{ commentId?: string }> {
   // See transitionCard: belt-and-braces encodeURIComponent, key is already
   // validated by performWrite before reaching this function.
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, cfg.baseUrl);
@@ -96,7 +101,19 @@ export async function commentCard(cfg: JiraConfig, key: string, body: string): P
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return {};
+  let id: unknown;
+  try { id = ((await res.json()) as { id?: unknown } | null)?.id; } catch { id = undefined; }
+  return id != null && id !== '' ? { commentId: String(id) } : {};
+}
+
+// Bound on State.postedCommentIds: only recent comments can still sit in a
+// card's fetched comment list, so older ids are dead weight.
+export const POSTED_COMMENT_IDS_MAX = 200;
+
+export function recordPostedComment(state: State, id: string): void {
+  const ids = (state.postedCommentIds ?? []).filter(x => x !== id);
+  ids.push(id);
+  state.postedCommentIds = ids.slice(-POSTED_COMMENT_IDS_MAX);
 }
 
 export async function commentPr(cfg: GithubConfig, repo: string, number: number, body: string): Promise<Record<string, never>> {
@@ -246,8 +263,17 @@ export async function performWrite({
   let result: { transitionedTo?: string };
   try {
     if (type === 'transition') result = await transitionCard(liveConfig.jira, key!, status);
-    else if (type === 'comment') result = await commentCard(liveConfig.jira, key!, body!);
-    else result = await commentPr(liveConfig.github, repo!, number!, body!);
+    else if (type === 'comment') {
+      // Record the id before the post-write refresh below so that refresh
+      // already excludes it from the own-reply watermark (L3). Every write
+      // path persists `state` afterwards: the server saves its in-memory
+      // state, and CLI/MCP direct mode (ops.ts opWrite) saves the state it
+      // loaded from disk. Best-effort: if that save is blocked the id is
+      // lost and the comment counts as the user's own reply, as before.
+      const { commentId } = await commentCard(liveConfig.jira, key!, body!);
+      if (commentId) recordPostedComment(state, commentId);
+      result = {};
+    } else result = await commentPr(liveConfig.github, repo!, number!, body!);
   } catch (e) {
     return { error: (e as Error).message, status: 502 };
   }
@@ -277,20 +303,41 @@ export interface AutoTransitionResult {
   failed: number;
 }
 
-// After each tick completes, find all cards flagged merged_not_in_test that
-// are not acked and transition them to the In Test status. Called from the
-// tick function in index.ts, after refreshFn() returns.
+// Bound on State.autoTransitioned. One entry per (card, merged PR) ever
+// auto-fired; oldest dropped first. 500 is years of merges for one developer.
+const AUTO_TRANSITIONED_MAX = 500;
+
+export const autoTransitionId = (key: string, pr: { repo: string; number: number }): string => `${key}@${pr.repo}#${pr.number}`;
+
+// After each tick's refresh, move cards flagged merged_not_in_test to the In
+// Test status. Called from the tick in index.ts before it broadcasts.
 //
 // Does NOT call performWrite() (which triggers a re-entrant refresh and
-// doubles API spend). Calls transitionCard() directly.
+// doubles API spend). Calls transitionCard() directly; the tick re-runs the
+// refresh itself when anything succeeded.
+//
+// Safety rules (H1), all on top of the config/write gates:
+//  - The whole batch is skipped when the snapshot is degraded (errors.jira or
+//    errors.github): on a Jira outage refresh falls back to lastCards, and a
+//    stale "In Progress" may already be Done in Jira.
+//  - Only cards whose current status is pre-test (isPreTest in classify.ts:
+//    the configured In Progress/review names, never a To Do- or Done-category
+//    status, never In Test or anything after it). The status is read from
+//    state.lastCards (which carries statusCategory) when the card is there,
+//    else from the snapshot item's jiraStatus name alone.
+//  - At most once per (card, merged PR): every attempt — success or failure —
+//    is recorded in state.autoTransitioned and never retried, so a workflow
+//    with no In Test transition logs one error, not one every tick. The
+//    caller persists state.
 //
 // Per-card errors are logged and swallowed so one unavailable Jira transition
-// does not abort the whole batch. transitionCardFn is injectable for tests.
-export async function autoTransitionMergedCards({ state, configPath, loadConfigFn = loadConfig, transitionCardFn = transitionCard }: {
+// does not abort the whole batch. transitionCardFn/now are injectable for tests.
+export async function autoTransitionMergedCards({ state, configPath, loadConfigFn = loadConfig, transitionCardFn = transitionCard, now = () => new Date().toISOString() }: {
   state: State;
   configPath?: string;
   loadConfigFn?: typeof loadConfig;
   transitionCardFn?: typeof transitionCard;
+  now?: () => string;
 }): Promise<AutoTransitionResult> {
   const none = { attempted: 0, succeeded: 0, failed: 0 };
   // Same fail-closed rule as performWrite: the gate is read fresh from disk,
@@ -310,29 +357,47 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
 
   const snapshot = state.snapshot;
   if (!snapshot) return none;
+  if (snapshot.errors?.jira || snapshot.errors?.github) return none;
+
+  const statuses = config.jira.statuses;
+  const lastCards = new Map((state.lastCards ?? []).map(c => [c.key, c]));
+  const ledger = (state.autoTransitioned ??= {});
 
   // Cards flagged merged_not_in_test are always routed to needs_attention
   // (it is a ROUTING_REASON in classify.ts). Items in attention have already
   // had acked reasons filtered out by classifyCard, but the spec asks for an
   // explicit ack check here too — belt-and-braces.
-  const candidates = snapshot.buckets.needs_attention.filter(item =>
-    item.attention.includes('merged_not_in_test') &&
+  const candidates = snapshot.buckets.needs_attention.filter(item => {
+    if (!item.attention.includes('merged_not_in_test')) return false;
     // Same project scope check performWrite applies to transitions.
-    item.key.startsWith(`${config.jira.projectKey}-`) &&
-    !(state.cards[item.key]?.ackedReasons ?? []).includes('merged_not_in_test'),
-  );
+    if (!item.key.startsWith(`${config.jira.projectKey}-`)) return false;
+    if ((state.cards[item.key]?.ackedReasons ?? []).includes('merged_not_in_test')) return false;
+    if (!item.pr || item.pr.state !== 'merged') return false;
+    if (ledger[autoTransitionId(item.key, item.pr)]) return false;
+    const card = lastCards.get(item.key);
+    return isPreTest(card ?? { status: item.jiraStatus }, statuses);
+  });
 
   let succeeded = 0;
   let failed = 0;
   for (const item of candidates) {
+    const id = autoTransitionId(item.key, item.pr!);
     try {
-      await transitionCardFn(config.jira, item.key, config.jira.statuses.inTest);
-      console.log(`auto-transition: ${item.key} -> ${config.jira.statuses.inTest}`);
+      await transitionCardFn(config.jira, item.key, statuses.inTest);
+      console.log(`auto-transition: ${item.key} -> ${statuses.inTest}`);
+      ledger[id] = { at: now(), ok: true };
       succeeded++;
     } catch (e) {
-      console.error(`auto-transition: ${item.key} failed — ${(e as Error).message}`);
+      const message = (e as Error).message;
+      console.error(`auto-transition: ${item.key} failed — ${message} (not retried for ${item.pr!.repo}#${item.pr!.number})`);
+      ledger[id] = { at: now(), ok: false, error: message.slice(0, 200) };
       failed++;
     }
+  }
+  const ids = Object.keys(ledger);
+  if (ids.length > AUTO_TRANSITIONED_MAX) {
+    ids.sort((a, b) => ledger[a]!.at.localeCompare(ledger[b]!.at));
+    for (const old of ids.slice(0, ids.length - AUTO_TRANSITIONED_MAX)) delete ledger[old];
   }
   return { attempted: candidates.length, succeeded, failed };
 }

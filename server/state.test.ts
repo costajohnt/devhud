@@ -227,3 +227,20 @@ test('a genuinely first-run load stays silent and empty', () => {
     warn.mockRestore();
   }
 });
+
+test('loadState defaults the write-back ledgers for pre-existing or hand-mangled state files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-'));
+  const p = join(dir, 'state.json');
+  writeFileSync(p, JSON.stringify({ cards: {}, celebrated: [] }));
+  const old = loadState(p);
+  expect(old.autoTransitioned).toEqual({});
+  expect(old.postedCommentIds).toEqual([]);
+  writeFileSync(p, JSON.stringify({ cards: {}, celebrated: [], autoTransitioned: ['junk'], postedCommentIds: 'nope' }));
+  const bad = loadState(p);
+  expect(bad.autoTransitioned).toEqual({});
+  expect(bad.postedCommentIds).toEqual([]);
+  writeFileSync(p, JSON.stringify({ cards: {}, celebrated: [], autoTransitioned: { 'P-1@o/r#1': { at: 'x', ok: true } }, postedCommentIds: ['1', 2] }));
+  const good = loadState(p);
+  expect(good.autoTransitioned).toEqual({ 'P-1@o/r#1': { at: 'x', ok: true } });
+  expect(good.postedCommentIds).toEqual(['1']);
+});

@@ -523,7 +523,7 @@ test('GET /api/events rejects a spoofed Host header', async () => {
 // injected refreshFn — the loop itself (tick → broadcast, error recovery,
 // no-op suppression) is otherwise unreachable from tests: the default
 // interval is 120s and the real refresh() needs network.
-async function startLoopServer(refreshFn: (args: { state: unknown }) => Promise<Snapshot>): Promise<{ server: http.Server; base: string }> {
+async function startLoopServer(refreshFn: (args: { state: unknown }) => Promise<Snapshot>, autoTransitionFn?: (args: { state: unknown }) => Promise<{ attempted: number; succeeded: number; failed: number }>): Promise<{ server: http.Server; base: string }> {
   const dir = mkdtempSync(join(tmpdir(), 'jd-loop-'));
   const loopStatePath = join(dir, 'state.json');
   const webDist = join(dir, 'dist');
@@ -535,6 +535,7 @@ async function startLoopServer(refreshFn: (args: { state: unknown }) => Promise<
   const loopServer = createServer({
     config: makeConfig({ refreshIntervalSeconds: 1 }), statePath: loopStatePath, webDist,
     refreshFn: refreshFn as never,
+    ...(autoTransitionFn ? { autoTransitionFn: autoTransitionFn as never } : {}),
   });
   await new Promise<void>(r => loopServer.listen(0, () => r()));
   return { server: loopServer, base: `http://127.0.0.1:${(loopServer.address() as AddressInfo).port}` };
@@ -587,6 +588,65 @@ test('scheduled loop suppresses broadcasts when only updatedAt changed', async (
     const second = await events.next();
     expect(second.updatedAt).toBe('t3');
     expect(second.doneTotal).toBe(9);
+    events.close();
+  } finally {
+    await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));
+  }
+});
+
+// M5: auto-transition runs before the broadcast, and a successful transition
+// re-runs the refresh so the first broadcast already shows the moved card.
+test('scheduled loop auto-transitions before broadcasting and re-refreshes on success (M5)', async () => {
+  const order: string[] = [];
+  let calls = 0;
+  const { server: loopServer, base: loopBase } = await startLoopServer(async ({ state: s }) => {
+    calls++;
+    order.push(`refresh${calls}`);
+    // First refresh still shows the card in Needs Attention; the re-refresh
+    // after the transition sees it In Test.
+    const snap = calls === 1
+      ? makeSnapshot({ updatedAt: 't1', buckets: { ...makeSnapshot().buckets, needs_attention: [needsAttentionItem({ attention: ['merged_not_in_test'] })] } })
+      : makeSnapshot({ updatedAt: `t${calls}`, buckets: { ...makeSnapshot().buckets, qa_ready: [needsAttentionItem({ bucket: 'qa_ready', attention: [] })] } });
+    (s as { snapshot: Snapshot }).snapshot = snap;
+    return snap;
+  }, async () => {
+    order.push('auto');
+    return order.filter(o => o === 'auto').length === 1 ? { attempted: 1, succeeded: 1, failed: 0 } : { attempted: 0, succeeded: 0, failed: 0 };
+  });
+  try {
+    const events = await openEvents(loopBase);
+    await events.next(); // connect replay
+    const first = await events.next();
+    expect(order.slice(0, 3)).toEqual(['refresh1', 'auto', 'refresh2']);
+    expect(first.updatedAt).toBe('t2');
+    expect(first.buckets.needs_attention).toHaveLength(0);
+    expect(first.buckets.qa_ready).toHaveLength(1);
+    events.close();
+  } finally {
+    await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));
+  }
+});
+
+test('scheduled loop does not re-refresh when no auto-transition succeeded (M5)', async () => {
+  const order: string[] = [];
+  let calls = 0;
+  const { server: loopServer, base: loopBase } = await startLoopServer(async ({ state: s }) => {
+    calls++;
+    order.push(`refresh${calls}`);
+    const snap = makeSnapshot({ updatedAt: `t${calls}`, doneTotal: calls });
+    (s as { snapshot: Snapshot }).snapshot = snap;
+    return snap;
+  }, async () => {
+    order.push('auto');
+    return { attempted: 1, succeeded: 0, failed: 1 };
+  });
+  try {
+    const events = await openEvents(loopBase);
+    await events.next();
+    const first = await events.next();
+    expect(first.updatedAt).toBe('t1');
+    // Broadcast came straight after the failed batch: no second refresh.
+    expect(order).toEqual(['refresh1', 'auto']);
     events.close();
   } finally {
     await new Promise<void>((res, rej) => loopServer.close((e) => e ? rej(e) : res()));

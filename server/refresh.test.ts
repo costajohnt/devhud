@@ -486,9 +486,36 @@ test('routing off-board (Done) forgets acked reasons so a reopened card re-trigg
   state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['merged_not_in_test'] };
   buildSnapshot({ cards: [card({ status: 'Done' })], prs, state, config, errors: {} });
   expect(state.cards['PROJ-1']!.ackedReasons).toBeNull();
-  // reopened: merged_not_in_test is a fresh event again
+  // reopened on the SAME merge: the card already went through QA for it, so
+  // this is a rejection, not a forgotten move — no re-flag (H1).
   const p = buildSnapshot({ cards: [card()], prs, state, config, errors: {} });
-  expect(p.buckets.needs_attention[0]!.attention).toContain('merged_not_in_test');
+  expect(Object.values(p.buckets).flat()[0]!.attention).not.toContain('merged_not_in_test');
+  // A NEW merge after the card was last seen Done is a fresh event again and,
+  // with the ack forgotten, re-triggers. (Future date: reachedTestAt is the
+  // wall clock of the Done refresh above.)
+  const later = [pr({ branch: 'PROJ-1-y', number: 2, state: 'merged', mergedAt: '2999-01-01T00:00:00Z' })];
+  const p2 = buildSnapshot({ cards: [card()], prs: later, state, config, errors: {} });
+  expect(p2.buckets.needs_attention[0]!.attention).toContain('merged_not_in_test');
+});
+
+test('buildSnapshot stamps reachedTestAt for a Done card (H1)', () => {
+  const state = emptyState();
+  buildSnapshot({ cards: [card({ status: 'Done' })], prs: [], state, config, errors: {} });
+  expect(state.cards['PROJ-1']!.reachedTestAt).toBeTruthy();
+});
+
+test('buildSnapshot excludes write-back comment ids from the own-reply watermark (L3)', () => {
+  const state = emptyState();
+  state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: '2026-07-01T00:00:00Z', override: null, overrideAt: null };
+  const comments = [
+    { id: '10', author: 'QA', authorId: 'qa', body: 'question?', createdAt: '2026-07-02T00:00:00Z' },
+    { id: '11', author: 'Me', authorId: 'me', body: 'automated: PR updated', createdAt: '2026-07-03T00:00:00Z' },
+  ];
+  const before = buildSnapshot({ cards: [card({ comments })], prs: [], state, config, errors: {} });
+  expect(Object.values(before.buckets).flat()[0]!.attention).not.toContain('new_jira_comments');
+  state.postedCommentIds = ['11'];
+  const after = buildSnapshot({ cards: [card({ comments })], prs: [], state, config, errors: {} });
+  expect(Object.values(after.buckets).flat()[0]!.attention).toContain('new_jira_comments');
 });
 
 test('a GitHub error marks PR data degraded so acks are not pruned', () => {

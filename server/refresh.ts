@@ -1,6 +1,6 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
-import { classifyCard, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
+import { classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard } from './types.ts';
@@ -117,6 +117,10 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // Jira Done category below — a done card is celebrated once and drops off
     // the active board.
     if (isDone(card, statuses)) {
+      // Done counts as "went through QA" for merged_not_in_test (H1): a card
+      // QA or a reopen sends back to In Progress must not be re-flagged on
+      // the merge it already shipped with.
+      markReachedTest(cs, new Date().toISOString());
       // Only our own cards enter the permanent ledger. The JQL already filters
       // by assignee, but it didn't always: a fetch-layer bug wrote 25 other
       // people's cards here in a single refresh, and an append-only ledger has
@@ -136,7 +140,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // can't tell whether its PR vanished or simply belongs to a failed repo.
     const prDegraded = degraded === 'all'
       || (degraded !== null && (pr ? degraded.has(pr.repo) : degraded.size > 0));
-    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, ignoreAuthors, prDegraded });
+    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, ignoreAuthors, prDegraded, postedCommentIds: state.postedCommentIds ?? [] });
     const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,

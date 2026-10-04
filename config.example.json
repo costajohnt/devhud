@@ -10,6 +10,7 @@
       "inTest": "In Test",
       "done": "Done",
       "canceled": "Canceled",
+      "inProgress": "In Progress",
       "review": "Code Review",
       "blocked": "Blocked"
     }

@@ -91,6 +91,7 @@ function statusCategory(key: string | undefined): Card['statusCategory'] {
 }
 
 interface RawJiraComment {
+  id?: string;
   author?: { displayName?: string; accountId?: string };
   body?: AdfNode;
   created?: string;
@@ -111,6 +112,7 @@ export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
     myAccountId: cfg.accountId,
     assigneeId: f.assignee?.accountId,
     comments: (f.comment?.comments ?? []).map((c): JiraComment => ({
+      ...(c.id ? { id: String(c.id) } : {}),
       author: c.author?.displayName ?? '',
       authorId: c.author?.accountId ?? '',
       body: adfToText(c.body).trim(),
@@ -133,6 +135,7 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
   if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json() as { comments?: RawJiraComment[] };
   return (data.comments ?? []).map((c): JiraComment => ({
+    ...(c.id ? { id: String(c.id) } : {}),
     author: c.author?.displayName ?? '',
     authorId: c.author?.accountId ?? '',
     body: adfToText(c.body).trim(),

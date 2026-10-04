@@ -24,6 +24,11 @@ export interface JiraStatuses {
   // the developer. Optional so existing { todo, inTest, done } config/test
   // fixtures keep working; defaults to 'Blocked' in loadConfig.
   blocked?: string;
+  // Status name for active development. Together with review it forms the
+  // "pre-test" allowlist: the only statuses merged_not_in_test may flag and
+  // auto-transition may move from (see isPreTest in classify.ts). Optional;
+  // defaults to 'In Progress'.
+  inProgress?: string;
 }
 
 // Jira status categories: every status rolls up to one of these three. Used
@@ -75,13 +80,18 @@ export interface Config {
   // Test or Done) are automatically transitioned to the In Test status after
   // each tick. Off by default so no existing deployment changes behavior.
   // Acked cards are never auto-transitioned; per-card errors are logged and
-  // the batch continues. Requires writeEnabled: true.
+  // the batch continues. Requires writeEnabled: true. Skipped entirely on a
+  // degraded refresh, only moves pre-test statuses (isPreTest), and fires at
+  // most once per (card, merged PR) — see autoTransitionMergedCards.
   autoTransitionMerged?: boolean;
 }
 
 // --- Jira cards ---
 
 export interface JiraComment {
+  // Jira comment id. Optional: fixtures and pre-existing lastCards lack it.
+  // Used to recognise comments the dashboard posted itself (State.postedCommentIds).
+  id?: string;
   author: string;
   authorId?: string;
   body: string;
@@ -334,6 +344,21 @@ export interface CardState {
   // spot a status transition and release a stale pin (#53). Optional: absent
   // in pre-existing state files.
   lastStatus?: string | null;
+  // Last refresh at which the card was seen In Test or in Done (ISO time).
+  // merged_not_in_test is suppressed when this is at or after the PR's
+  // mergedAt: the card already went through QA for that merge, so being back
+  // in In Progress means QA rejected it, not that it was never moved (H1).
+  // Optional: absent in pre-existing state files.
+  reachedTestAt?: string | null;
+}
+
+// One auto-transition attempt, keyed in State.autoTransitioned by
+// `${cardKey}@${repo}#${number}` so a given merged PR fires at most once per
+// card, success or failure (failures are not retried).
+export interface AutoTransitionRecord {
+  at: string;
+  ok: boolean;
+  error?: string;
 }
 
 export interface CelebratedEntry {
@@ -363,6 +388,14 @@ export interface State {
   lastCards: Card[] | null;
   lastPrs: Pr[] | null;
   prLog: Record<string, PrLogEntry>;
+  // Auto-transition ledger (see AutoTransitionRecord). Optional: absent in
+  // pre-existing state files; loadState defaults it to {}.
+  autoTransitioned?: Record<string, AutoTransitionRecord>;
+  // Ids of Jira comments posted through write-back (performWrite), newest
+  // last, capped at POSTED_COMMENT_IDS_MAX. classify excludes them from the
+  // own-reply watermark so an automated post does not read as the user
+  // answering a question (L3). Optional; loadState defaults it to [].
+  postedCommentIds?: string[];
 }
 
 // --- Action / write-back results ---
