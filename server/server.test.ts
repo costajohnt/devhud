@@ -1,5 +1,6 @@
 import { test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createServer, bundleStatus } from './index.ts';
+import { createServer, bundleStatus, readBody, BodyTooLarge, MAX_BODY_BYTES } from './index.ts';
+import { PassThrough } from 'node:stream';
 import { saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
@@ -195,11 +196,11 @@ test('sequential POSTs both persist (no lost update)', async () => {
 // visible board rather than a 400.
 test('POST /api/action on an unknown key is a no-op that still succeeds', async () => {
   const res = await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type: 'ack', key: 'DOES-NOT-EXIST' }) });
+    body: JSON.stringify({ type: 'ack', key: 'NOPE-404' }) });
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ ok: true, bucket: null });
   const { loadState: loadStateFn } = await import('./state.ts');
-  expect(loadStateFn(statePath).cards['DOES-NOT-EXIST']!.lastSeenJira).not.toBeNull();
+  expect(loadStateFn(statePath).cards['NOPE-404']!.lastSeenJira).not.toBeNull();
 });
 
 test('POST /api/action with an unrecognized type returns 400', async () => {
@@ -375,7 +376,7 @@ test('POST /api/* with correct Content-Type and Host passes the guard (reaches n
   // 415/403), proving the guard itself isn't what's blocking them.
   const actionRes = await fetch(`${base}/api/action`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type: 'ack', key: 'GUARD-TEST' }),
+    body: JSON.stringify({ type: 'ack', key: 'GUARD-1' }),
   });
   expect(actionRes.status).toBe(200);
 
@@ -824,4 +825,32 @@ test('bundleStatus stays quiet when there is no source tree to compare against',
   writeFileSync(join(root, 'dist', 'index.html'), '<!doctype html>');
 
   expect(bundleStatus(join(root, 'does-not-exist'), join(root, 'dist'))).toBeNull();
+});
+
+test('readBody decodes a multi-byte UTF-8 character split across two writes', async () => {
+  const bytes = Buffer.from(JSON.stringify({ body: 'caf\u00e9 \u{1F600} \u201cq\u201d' }), 'utf8');
+  // Split inside the 4-byte emoji so neither half is valid UTF-8 on its own.
+  const cut = bytes.indexOf(Buffer.from('\u{1F600}', 'utf8')) + 2;
+  const stream = new PassThrough();
+  const p = readBody(stream);
+  stream.write(bytes.subarray(0, cut));
+  await new Promise((r) => setTimeout(r, 5));
+  stream.end(bytes.subarray(cut));
+  expect(await p).toEqual({ body: 'caf\u00e9 \u{1F600} \u201cq\u201d' });
+});
+
+test('readBody caps on bytes, not UTF-16 units', async () => {
+  // 3-byte chars: under the cap in .length, over it in bytes.
+  const n = Math.floor(MAX_BODY_BYTES / 3) + 10;
+  const big = JSON.stringify({ s: '\u20ac'.repeat(n) });
+  expect(big.length).toBeLessThan(MAX_BODY_BYTES);
+  const stream = new PassThrough();
+  const p = readBody(stream);
+  stream.end(Buffer.from(big, 'utf8'));
+  await expect(p).rejects.toBeInstanceOf(BodyTooLarge);
+
+  const ok = new PassThrough();
+  const q = readBody(ok);
+  ok.end(Buffer.from(JSON.stringify({ s: '\u20ac'.repeat(1000) }), 'utf8'));
+  expect(await q).toEqual({ s: '\u20ac'.repeat(1000) });
 });

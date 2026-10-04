@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { State, CelebratedEntry, Snapshot } from './types.ts';
 
@@ -123,6 +123,19 @@ export function loadState(path: string): State {
   }
 }
 
+// state.json, its .bak and server.pid hold Jira summaries and comments (or
+// point at them), so they are owner-only. Written to a sibling temp file and
+// renamed into place: readers never see a half-written file, and the target
+// takes the temp file's 0600 mode even when an older 0644 copy exists
+// (writeFileSync's `mode` only applies when it creates the file, so a stale
+// temp file left by a crash is chmodded too).
+export function writeFilePrivate(path: string, data: string): void {
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, data, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, path);
+}
+
 // Only copy the current file into .bak when it actually parses as JSON.
 // Backing up a corrupt current file would overwrite a still-good .bak with
 // garbage, destroying the one fallback loadState relies on.
@@ -140,11 +153,9 @@ export function saveState(path: string, state: State): void {
     // state.json present at every instant: during the .bak write and the tmp
     // write the original is untouched, and the swap itself is one atomic
     // rename. A torn .bak costs nothing — state.json is still good.
-    if (valid) writeFileSync(path + '.bak', current);
+    if (valid) writeFilePrivate(path + '.bak', current);
   }
-  const tmp = path + '.tmp';
-  writeFileSync(tmp, JSON.stringify(state, null, 2));
-  renameSync(tmp, path);
+  writeFilePrivate(path, JSON.stringify(state, null, 2));
 }
 
 // Placeholder shape for GET /api/data (and the CLI's direct-mode `status`)

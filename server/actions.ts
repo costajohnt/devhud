@@ -1,5 +1,6 @@
 import { cardState } from './state.ts';
 import { STATE_REASONS, isInReview, sameStatus } from './classify.ts';
+import { KEY_RE } from './writeback.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
 export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
@@ -79,6 +80,14 @@ export function applyAction({ state, config, type, key, bucket }: {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
     return { error: `key "${key}" is not allowed`, status: 400 };
   }
+  // Everything else is validated before cardState() too: it creates a
+  // state.cards entry on first touch, so a bad type, bucket or a key that is
+  // not a Jira key would otherwise grow state.json without limit.
+  if (!KEY_RE.test(key)) return { error: 'key must be a Jira issue key like PROJ-123', status: 400 };
+  if (type !== 'ack' && type !== 'move' && type !== 'unpin') return { error: 'unknown action type', status: 400 };
+  if (type === 'move' && (!bucket || !BUCKETS.includes(bucket as Bucket))) {
+    return { error: `bucket must be one of ${BUCKETS.join(', ')}`, status: 400 };
+  }
   const cs = cardState(state, key);
   const snap = state.snapshot;
   const findItem = (): { from: Bucket; i: number; item: Item } | null => {
@@ -117,7 +126,6 @@ export function applyAction({ state, config, type, key, bucket }: {
   }
 
   if (type === 'move') {
-    if (!bucket || !BUCKETS.includes(bucket as Bucket)) return { error: `bucket must be one of ${BUCKETS.join(', ')}`, status: 400 };
     const target = bucket as Bucket;
     cs.override = target;
     cs.overrideAt = new Date().toISOString();

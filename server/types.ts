@@ -373,6 +373,12 @@ export interface CelebratedEntry {
   at: string | null;
 }
 
+export interface FiledMeta {
+  fullFetchAt: string;
+  accountId: string;
+  baseUrl: string | null;
+}
+
 export interface State {
   cards: Record<string, CardState>;
   // Legacy: PR-merge celebration ids from older state files. No longer written;
@@ -390,6 +396,12 @@ export interface State {
   // a fetch window. Optional: absent in pre-existing state files, which seed
   // it on the next refresh.
   doneLedger?: DoneCard[];
+  // Provenance of snapshot.filed (refresh.ts filedFetchPlan): when the last
+  // full reporter fetch ran and for which Jira account and site. The list is
+  // otherwise fetched incrementally, which can never drop a deleted, moved or
+  // re-reported card, so a stale stamp or a changed account/site forces a
+  // full refetch. Optional: absent in older state files (forces one).
+  filedMeta?: FiledMeta;
   lastRefreshAt: string | null;
   snapshot: Snapshot | null;
   lastCards: Card[] | null;

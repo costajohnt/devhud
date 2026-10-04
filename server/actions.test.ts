@@ -86,12 +86,12 @@ test('unknown action type errors', () => {
 
 test('ack/move on a key not present in the current snapshot is a no-op that still succeeds', () => {
   const state = stateWithItem();
-  const ack = applyAction({ state, config, type: 'ack', key: 'GHOST' });
+  const ack = applyAction({ state, config, type: 'ack', key: 'GHOST-1' });
   expect(ack).toEqual({ ok: true, bucket: null });
-  const move = applyAction({ state, config, type: 'move', key: 'GHOST', bucket: 'in_qa' });
+  const move = applyAction({ state, config, type: 'move', key: 'GHOST-1', bucket: 'in_qa' });
   expect(move).toEqual({ ok: true, bucket: null });
   // Horizon/override still recorded even though there's nothing to move.
-  expect(cardState(state, 'GHOST').lastSeenPr).not.toBeNull();
+  expect(cardState(state, 'GHOST-1').lastSeenPr).not.toBeNull();
 });
 
 test('applyAction works with no snapshot yet (state.snapshot is null)', () => {
@@ -298,4 +298,21 @@ test('classifierDest sends a draft PR in a review status to waiting_review (#53)
     pr: { repo: 'o/r', number: 1, url: 'u', branch: 'b', state: 'open' as const, ciStatus: 'passing' as const, reviewState: 'approved' as const, isDraft: true } };
   expect(classifierDest(item, config)).toBe('waiting_review');
   expect(classifierDest({ ...item, jiraStatus: 'In Progress' }, config)).toBe('self_review');
+});
+
+test('applyAction validates type, key format and bucket before creating any state entry (L4)', () => {
+  const state = stateWithItem();
+  const cases: Array<[string, unknown, string | undefined, string]> = [
+    ['ack', 'not a key', undefined, 'key must be a Jira issue key like PROJ-123'],
+    ['ack', 'PROJ-1/../x', undefined, 'key must be a Jira issue key like PROJ-123'],
+    ['ack', 'PROJ', undefined, 'key must be a Jira issue key like PROJ-123'],
+    ['delete', 'PROJ-7', undefined, 'unknown action type'],
+    ['', 'PROJ-7', undefined, 'unknown action type'],
+    ['move', 'PROJ-7', 'nowhere', `bucket must be one of ${BUCKETS.join(', ')}`],
+    ['move', 'PROJ-7', undefined, `bucket must be one of ${BUCKETS.join(', ')}`],
+  ];
+  for (const [type, key, bucket, error] of cases) {
+    expect(applyAction({ state, config, type, key, bucket })).toEqual({ error, status: 400 });
+  }
+  expect(Object.keys(state.cards)).toEqual([]);
 });

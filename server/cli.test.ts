@@ -1,5 +1,5 @@
-import { test, expect, beforeAll, afterAll } from 'vitest';
-import { run, formatStatus, probeServer } from './cli.ts';
+import { test, expect, beforeAll, afterAll, vi } from 'vitest';
+import { run, formatStatus, probeServer, parseCli, qualifyRepo } from './cli.ts';
 import { createServer } from './index.ts';
 import { loadState, saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -149,9 +149,9 @@ test('move --json in direct mode reports the resulting bucket', async () => {
 
 test('ack on an unknown key is a no-op that still exits 0', async () => {
   const statePath = tempStatePath();
-  const { code, out } = await run(['ack', 'GHOST'], { config, statePath });
+  const { code, out } = await run(['ack', 'GHOST-1'], { config, statePath });
   expect(code).toBe(0);
-  expect(out).toBe('GHOST: not currently on the board');
+  expect(out).toBe('GHOST-1: not currently on the board');
 });
 
 test('move with an invalid bucket exits 1 with the server-side error', async () => {
@@ -386,4 +386,51 @@ test('unpin on an unpinned card says so instead of claiming a move', async () =>
   const { code, out } = await run(['unpin', 'P-3'], { config, statePath });
   expect(code).toBe(0);
   expect(out).toBe('P-3: was not pinned (in in_progress)');
+});
+
+test('parseCli: free-text write commands keep their text verbatim, including option-looking words (L5)', () => {
+  expect(parseCli(['comment', 'PROJ-1', 'run', 'it', 'with', '--json', 'and', '-x'])).toEqual({
+    values: { json: false, help: false }, cmd: 'comment', rest: ['PROJ-1', 'run it with --json and -x'] });
+  // The documented trailing --json is still the flag...
+  expect(parseCli(['comment', 'PROJ-1', 'looks', 'good', '--json'])).toEqual({
+    values: { json: true, help: false }, cmd: 'comment', rest: ['PROJ-1', 'looks good'] });
+  // ...unless the text follows "--", after which nothing is interpreted.
+  expect(parseCli(['comment', 'PROJ-1', '--', 'pass', '--json'])).toEqual({
+    values: { json: false, help: false }, cmd: 'comment', rest: ['PROJ-1', 'pass --json'] });
+  expect(parseCli(['comment', '--', 'PROJ-1', '-v', '--json'])).toEqual({
+    values: { json: false, help: false }, cmd: 'comment', rest: ['PROJ-1', '-v --json'] });
+  // Flags before the KEY, globally or after the command.
+  expect(parseCli(['--json', 'pr-comment', 'webapp#12', '-x'])).toEqual({
+    values: { json: true, help: false }, cmd: 'pr-comment', rest: ['webapp#12', '-x'] });
+  expect(parseCli(['transition', '--json', 'PROJ-1', 'In', 'Review'])).toEqual({
+    values: { json: true, help: false }, cmd: 'transition', rest: ['PROJ-1', 'In Review'] });
+  expect(parseCli(['comment', 'PROJ-1'])).toMatchObject({ cmd: 'comment', rest: ['PROJ-1'] });
+  expect(parseCli(['comment', '--help'])).toMatchObject({ values: { help: true }, rest: [] });
+  // Unknown options before the KEY are still rejected, as for every command.
+  expect(() => parseCli(['comment', '-x', 'PROJ-1', 'hi'])).toThrow();
+  // Other commands keep strict parsing over the whole argv.
+  expect(parseCli(['ack', 'PROJ-1', '--json'])).toEqual({ values: { json: true, help: false }, cmd: 'ack', rest: ['PROJ-1'] });
+  expect(() => parseCli(['ack', 'PROJ-1', '-x'])).toThrow();
+});
+
+test('qualifyRepo prefixes bare names with the org and leaves qualified ones alone (L5)', () => {
+  expect(qualifyRepo('webapp', 'acme')).toBe('acme/webapp');
+  expect(qualifyRepo('other/svc', 'acme')).toBe('other/svc');
+});
+
+test('pr-comment with a bare repo name sends the org-qualified repo and the verbatim body (L5)', async () => {
+  // A stubbed fetch answers the probe, so the write goes "via server" and the
+  // exact /api/write payload can be inspected.
+  const sent: unknown[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: { body?: string }) => {
+    if (String(url).endsWith('/api/write') && init?.body) sent.push(JSON.parse(init.body));
+    return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  }));
+  try {
+    const { code } = await run(['pr-comment', 'webapp#12', 'use', '--force', 'not', '-x', '--json'], { config, statePath: tempStatePath() });
+    expect(code).toBe(0);
+    expect(sent).toEqual([{ type: 'pr_comment', repo: 'o/webapp', number: 12, body: 'use --force not -x' }]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

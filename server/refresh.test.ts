@@ -1,7 +1,7 @@
 import { test, expect, vi } from 'vitest';
-import { buildSnapshot, refresh, CELEBRATION_RETENTION_DAYS } from './refresh.ts';
+import { buildSnapshot, refresh, CELEBRATION_RETENTION_DAYS, filedFetchPlan } from './refresh.ts';
 import { emptyState } from './state.ts';
-import type { Config, Card, Pr } from './types.ts';
+import type { Config, Card, Pr, FiledMeta } from './types.ts';
 
 vi.mock('./jira.ts', () => ({
   fetchJiraCards: vi.fn(() => Promise.reject(new Error('jira down'))),
@@ -759,4 +759,61 @@ test('a GitHub throttle collapses into one calm banner, keeping any real failure
   expect(both.errors.github).toContain('GitHub throttled this refresh');
   expect(both.errors.github).toContain('404');
   expect(both.errors.github).not.toContain('secondary rate limit');
+});
+
+test('filedFetchPlan: delta inside the window, full when stale, unstamped, or the account/site changed (M6)', () => {
+  const now = Date.parse('2026-10-04T12:00:00Z');
+  const cached = [{ key: 'OTHER-1', summary: '', jiraStatus: 'To Do', jiraUrl: '', createdAt: null, updatedAt: '2026-10-04T00:00:00Z' }];
+  const jira = { accountId: 'me', baseUrl: 'https://a.atlassian.net' };
+  const stamp = (o: Partial<FiledMeta> = {}): FiledMeta => ({ fullFetchAt: '2026-10-04T00:00:00Z', accountId: 'me', baseUrl: 'https://a.atlassian.net', ...o });
+
+  expect(filedFetchPlan(stamp(), jira, cached, now)).toMatchObject({ full: false, sameScope: true, previous: cached });
+  // Unstamped (first run / pre-stamp state file): full, but the old list is still a fallback.
+  expect(filedFetchPlan(undefined, jira, cached, now)).toMatchObject({ full: true, sameScope: true, previous: [] });
+  // Stale stamp, or one from the future / garbage.
+  expect(filedFetchPlan(stamp({ fullFetchAt: '2026-10-03T11:59:59Z' }), jira, cached, now)).toMatchObject({ full: true, sameScope: true, previous: [] });
+  expect(filedFetchPlan(stamp({ fullFetchAt: '2026-10-05T00:00:00Z' }), jira, cached, now).full).toBe(true);
+  expect(filedFetchPlan(stamp({ fullFetchAt: 'nope' }), jira, cached, now).full).toBe(true);
+  // Account or site changed: full, and the cached list is not a valid fallback.
+  expect(filedFetchPlan(stamp({ accountId: 'someone-else' }), jira, cached, now)).toMatchObject({ full: true, sameScope: false, previous: [] });
+  expect(filedFetchPlan(stamp({ baseUrl: 'https://b.atlassian.net' }), jira, cached, now)).toMatchObject({ full: true, sameScope: false });
+  expect(filedFetchPlan(stamp(), jira, cached, now).meta).toEqual({ fullFetchAt: new Date(now).toISOString(), accountId: 'me', baseUrl: 'https://a.atlassian.net' });
+});
+
+test('refresh() Filed fetch: full and stamped on first run, delta within 24h, full again after, and an account change drops the old list (M6)', async () => {
+  const { fetchFiledCards } = await import('./jira.ts');
+  const fetchMock = vi.mocked(fetchFiledCards);
+  const old = [{ key: 'OTHER-1', summary: 'Old', jiraStatus: 'To Do', jiraUrl: '', createdAt: null, updatedAt: '2026-10-01T00:00:00Z' }];
+  const state = emptyState();
+  vi.useFakeTimers({ now: Date.parse('2026-10-04T00:00:00Z'), toFake: ['Date'] });
+  try {
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(old);
+    await refresh({ config, state });
+    expect(fetchMock.mock.calls[0]![1]).toEqual([]);
+    expect(state.filedMeta).toEqual({ fullFetchAt: '2026-10-04T00:00:00.000Z', accountId: 'me', baseUrl: null });
+
+    vi.setSystemTime(Date.parse('2026-10-04T12:00:00Z'));
+    fetchMock.mockResolvedValueOnce(old);
+    await refresh({ config, state });
+    expect(fetchMock.mock.calls[1]![1]).toEqual(old);
+    expect(state.filedMeta!.fullFetchAt).toBe('2026-10-04T00:00:00.000Z');
+
+    vi.setSystemTime(Date.parse('2026-10-05T00:00:01Z'));
+    fetchMock.mockResolvedValueOnce([]);
+    const payload = await refresh({ config, state });
+    expect(fetchMock.mock.calls[2]![1]).toEqual([]);
+    expect(payload.filed).toEqual([]); // the deleted card is gone
+    expect(state.filedMeta!.fullFetchAt).toBe('2026-10-05T00:00:01.000Z');
+
+    // Account switch with a failing fetch: the old account's list is not reused.
+    state.snapshot!.filed = old;
+    fetchMock.mockRejectedValueOnce(new Error('boom'));
+    const switched = await refresh({ config: { ...config, jira: { ...config.jira, accountId: 'other' } }, state });
+    expect(fetchMock.mock.calls[3]![1]).toEqual([]);
+    expect(switched.filed).toEqual([]);
+    expect(state.filedMeta!.accountId).toBe('me');
+  } finally {
+    vi.useRealTimers();
+  }
 });

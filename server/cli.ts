@@ -33,13 +33,18 @@ Usage:
   simon-dash unpin <KEY> [--json]          Release a pin, returning the card to the classifier
   simon-dash transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status
   simon-dash comment <KEY> <text...> [--json]       Comment on a Jira card
-  simon-dash pr-comment <repo#num> <text...> [--json]  Comment on a GitHub PR
+  simon-dash pr-comment <repo#num> <text...> [--json]  Comment on a GitHub PR (bare repo names get github.org)
   simon-dash serve                         Run the dashboard server in the foreground
   simon-dash open                          Open the dashboard in your browser
   simon-dash --help                        Show this help
 
 If a simon-dash server is already running on the configured port, commands
 go through its HTTP API; otherwise they operate directly on data/state.json.
+
+For transition/comment/pr-comment the text is taken verbatim from everything
+after the KEY/ref; put flags before the KEY, or use "--" before text that
+should be posted exactly as typed (a lone trailing --json is otherwise read
+as the flag).
 
 transition/comment/pr-comment are write-back: they mutate real Jira/GitHub
 data. Gated by writeEnabled in config.json (refuses otherwise) and always a
@@ -65,6 +70,55 @@ export function formatStatus(payload: Snapshot): string {
   return lines.join('\n');
 }
 
+const CLI_OPTIONS = { json: { type: 'boolean', default: false }, help: { type: 'boolean', default: false } } as const;
+const FREE_TEXT_CMDS = new Set(['transition', 'comment', 'pr-comment']);
+
+// Splits argv into flags, the command and its arguments. Most commands get
+// strict parseArgs over the whole argv. The write commands whose last
+// argument is free text (comment bodies, status names) do not: their text is
+// the raw argv after the KEY/ref, so a comment containing "--json" or "-x" is
+// posted verbatim instead of being stripped or rejected as an unknown option.
+// For those commands, flags go before the KEY (`simon-dash --json comment
+// KEY text` or `comment --json KEY text`); a single trailing `--json` is
+// still read as the flag (the documented form) unless the text is preceded
+// by `--`, after which nothing is interpreted. Returned `rest` for them is
+// [KEY, text] with the text already joined.
+export function parseCli(argv: string[]): { values: { json: boolean; help: boolean }; cmd: string | undefined; rest: string[] } {
+  const cmdIdx = argv.findIndex(a => !a.startsWith('-'));
+  const cmd = cmdIdx >= 0 ? argv[cmdIdx] : undefined;
+  if (cmd === undefined || !FREE_TEXT_CMDS.has(cmd) || argv.slice(0, cmdIdx).includes('--')) {
+    const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: CLI_OPTIONS });
+    const [c, ...rest] = positionals;
+    return { values, cmd: c, rest };
+  }
+  const flags = argv.slice(0, cmdIdx);
+  let i = cmdIdx + 1;
+  let literal = false;
+  for (; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === '--') { literal = true; i++; break; }
+    if (!a.startsWith('-')) break;
+    flags.push(a);
+  }
+  const key = argv[i];
+  let text = argv.slice(i + 1);
+  if (!literal && text[0] === '--') { literal = true; text = text.slice(1); }
+  if (!literal && text.length && text[text.length - 1] === '--json') { flags.push('--json'); text = text.slice(0, -1); }
+  // Strict over the flags alone: an unknown option before the KEY is still
+  // an error, as it is for every other command.
+  const { values } = parseArgs({ args: flags, allowPositionals: false, options: CLI_OPTIONS });
+  const joined = text.join(' ');
+  return { values, cmd, rest: key === undefined ? [] : joined ? [key, joined] : [key] };
+}
+
+// "webapp#12" -> "<org>/webapp", the same normalization fetchPrs (github.ts)
+// and performWrite's repos[] scope check apply to bare config.repos entries,
+// so a ref copied from config.repos works as-is. Already-qualified refs pass
+// through untouched.
+export function qualifyRepo(repo: string, org: string): string {
+  return repo.includes('/') ? repo : `${org}/${repo}`;
+}
+
 export interface CliResult {
   code: number;
   out: string;
@@ -77,12 +131,7 @@ export interface CliResult {
 export async function run(argv: string[], { config, statePath, configPath }: {
   config: Config; statePath: string; configPath?: string;
 }): Promise<CliResult> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: { json: { type: 'boolean', default: false }, help: { type: 'boolean', default: false } },
-  });
-  const [cmd, ...rest] = positionals;
+  const { values, cmd, rest } = parseCli(argv);
 
   if (values.help) return { code: 0, out: HELP, err: '' };
   if (!cmd) return { code: 1, out: HELP, err: '' };
@@ -159,7 +208,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       if (!m || !body) {
         return { code: 1, out: '', err: [err, 'usage: simon-dash pr-comment <repo#num> <text...>'].join('\n') };
       }
-      repoRef = m[1];
+      repoRef = qualifyRepo(m[1]!, config.github.org);
       number = Number(m[2]);
     } else {
       key = rest[0];

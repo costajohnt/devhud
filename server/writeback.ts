@@ -149,7 +149,7 @@ const WRITE_TYPES = ['transition', 'comment', 'pr_comment'];
 // letter, a dash, then digits (e.g. "PROJ-123"). Rejects anything that
 // could smuggle a path segment (e.g. "PROJ-1/../x") into the URL built in
 // transitionCard/commentCard below.
-const KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+export const KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 // "org/repo" — word chars, dots, and dashes only, exactly one slash.
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 

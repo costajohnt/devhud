@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded, writePidFile } from './transport.ts';
 import { emptyState, loadState } from './state.ts';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, statSync, existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { join, dirname } from 'node:path';
@@ -81,4 +81,13 @@ test('saveStateGuarded refuses when a server.pid appears after an initial check 
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: 1, startedAt: 'x' }));
 
   expect(() => saveStateGuarded(statePath, state)).toThrow(splitBrainError(process.pid));
+});
+
+test.skipIf(process.platform === 'win32')('writePidFile replaces the file atomically with an owner-only one (L6)', () => {
+  const pidPath = join(dirname(tempStatePath()), 'server.pid');
+  writeFileSync(pidPath, 'stale', { mode: 0o644 });
+  writePidFile(pidPath, 4321);
+  expect(statSync(pidPath).mode & 0o777).toBe(0o600);
+  expect(existsSync(pidPath + '.tmp')).toBe(false);
+  expect(JSON.parse(readFileSync(pidPath, 'utf8'))).toMatchObject({ pid: process.pid, port: 4321 });
 });

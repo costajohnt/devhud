@@ -199,9 +199,11 @@ async function* searchPages(cfg: JiraConfig, auth: string, jql: string, fields: 
 // queried and merged over it by key, instead of re-downloading the whole
 // reporter history every refresh. No stamps (first run, or a snapshot from
 // before updatedAt existed) means a full fetch.
-// ponytail: a card deleted or re-reported to someone else lingers until the
-// next full fetch (restart with an empty snapshot); add a periodic full
-// fetch if that ever matters.
+// A delta can only add or update rows: a card deleted, moved to another
+// project or re-reported to someone else never shows up in it, so it would
+// linger forever (`previous` is persisted in state.json across restarts).
+// The caller (refresh.ts filedFetchPlan) passes an empty `previous` to force
+// a full fetch periodically and whenever the Jira account or site changes.
 export async function fetchFiledCards(cfg: JiraConfig, previous: FiledCard[] = []): Promise<FiledCard[]> {
   const since = doneWatermark(previous.map(f => ({ doneAt: f.updatedAt ?? null })));
   const byKey = new Map<string, FiledCard>(since ? previous.map(f => [f.key, f]) : []);

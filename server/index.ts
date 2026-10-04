@@ -21,14 +21,23 @@ const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javasc
 
 export class BodyTooLarge extends Error {}
 
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  let s = '';
+export const MAX_BODY_BYTES = 1_000_000;
+
+// Collect raw Buffers and decode once: `s += chunk` decodes each chunk on its
+// own, so a multi-byte UTF-8 character split across a chunk boundary turns
+// into U+FFFD, and a string-length cap counts UTF-16 units, not bytes.
+export async function readBody(req: AsyncIterable<Buffer | string>): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let total = 0;
   for await (const c of req) {
-    s += c;
+    const buf = typeof c === 'string' ? Buffer.from(c, 'utf8') : c;
+    total += buf.length;
     // Real bodies here are tiny JSON; without a ceiling any local process
     // could balloon the heap with one giant POST.
-    if (s.length > 1_000_000) throw new BodyTooLarge('body too large');
+    if (total > MAX_BODY_BYTES) throw new BodyTooLarge('body too large');
+    chunks.push(buf);
   }
+  const s = Buffer.concat(chunks).toString('utf8');
   return JSON.parse(s || '{}') as Record<string, unknown>;
 }
 

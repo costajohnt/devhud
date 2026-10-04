@@ -1,8 +1,8 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { listRuns, readRun, type ExecFn } from './simon.ts';
+import { listRuns, readRun, STATUS_CACHE_MS, type ExecFn } from './simon.ts';
 import type { Config } from './types.ts';
 
 function baseConfig(simonRoot?: string): Config {
@@ -118,4 +118,53 @@ test('unparsable last-event timestamp classifies as stale, not in_flight', async
     JSON.stringify({ event: 'phase_start', phase: 'plan' }) + '\n'); // no ts at all
   const payload = await listRuns(baseConfig(root), execFails);
   expect(payload.runs[0]!.class).toBe('stale');
+});
+
+test('listRuns caches `simon status --json` briefly and coalesces concurrent calls (L7)', async () => {
+  const root = makeRoot();
+  writeFileSync(join(root, 'state', 'runs', '2026-08-01T100000Z-PROJ-1.jsonl'), FINISHED);
+  let spawns = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  const execCounting = (async () => {
+    spawns++;
+    await gate;
+    return { stdout: JSON.stringify({ items: [{ key: 'PROJ-1', class: 'needs_you' }] }), stderr: '' };
+  }) as unknown as ExecFn;
+  vi.useFakeTimers({ now: Date.parse('2026-10-04T00:00:00Z'), toFake: ['Date'] });
+  try {
+    const concurrent = [listRuns(baseConfig(root), execCounting), listRuns(baseConfig(root), execCounting), listRuns(baseConfig(root), execCounting)];
+    release();
+    for (const p of await Promise.all(concurrent)) expect(p.runs[0]!.class).toBe('needs_you');
+    expect(spawns).toBe(1);
+
+    vi.setSystemTime(Date.now() + STATUS_CACHE_MS - 1);
+    await listRuns(baseConfig(root), execCounting);
+    expect(spawns).toBe(1);
+
+    // A different simon root is a different report.
+    const other = makeRoot();
+    await listRuns(baseConfig(other), execCounting);
+    expect(spawns).toBe(2);
+
+    vi.setSystemTime(Date.now() + 2);
+    await listRuns(baseConfig(root), execCounting);
+    expect(spawns).toBe(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('a failed status call is cached too and still falls back per request (L7)', async () => {
+  const root = makeRoot();
+  writeFileSync(join(root, 'state', 'runs', '2026-08-01T100000Z-PROJ-1.jsonl'), FINISHED);
+  let spawns = 0;
+  const execBoom = (() => { spawns++; return Promise.reject(new Error('spawn simon ENOENT')); }) as unknown as ExecFn;
+  const a = await listRuns(baseConfig(root), execBoom);
+  const b = await listRuns(baseConfig(root), execBoom);
+  expect(spawns).toBe(1);
+  for (const p of [a, b]) {
+    expect(p.statusError).toContain('ENOENT');
+    expect(p.runs[0]!.class).toBe('shipped');
+  }
 });

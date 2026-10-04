@@ -99,11 +99,35 @@ async function statusClasses(cfg: NonNullable<Config['simon']>, execFn: ExecFn):
   return map;
 }
 
+// GET /api/simon/runs is polled by every open /simon tab; without a cache
+// each request spawned its own `simon status --json`. Results (failures
+// included, so a missing binary isn't re-spawned per request either) are
+// reused for STATUS_CACHE_MS, and calls that arrive while one is in flight
+// share it. Keyed per exec function (tests inject their own) and per
+// bin+root, so a config change is never served another setup's report.
+export const STATUS_CACHE_MS = 5000;
+const statusCache = new WeakMap<ExecFn, Map<string, { at: number; promise: Promise<Map<string, string>> }>>();
+
+function cachedStatusClasses(cfg: NonNullable<Config['simon']>, execFn: ExecFn): Promise<Map<string, string>> {
+  let byCfg = statusCache.get(execFn);
+  if (!byCfg) statusCache.set(execFn, byCfg = new Map());
+  const k = JSON.stringify([cfg.bin, cfg.root]);
+  const now = Date.now();
+  const hit = byCfg.get(k);
+  if (hit && now - hit.at >= 0 && now - hit.at < STATUS_CACHE_MS) return hit.promise;
+  const promise = statusClasses(cfg, execFn);
+  // Rejections are observed by the caller; this keeps a cached rejection from
+  // being reported as unhandled when nobody awaits it.
+  promise.catch(() => {});
+  byCfg.set(k, { at: now, promise });
+  return promise;
+}
+
 export async function listRuns(config: Config, execFn: ExecFn = execFile): Promise<SimonRunsPayload> {
   if (!config.simon) return { configured: false, runs: [] };
   // Kick off the subprocess before the ledger scan: the two are independent,
   // so the exec round trip (up to its 5s timeout) overlaps the file reads.
-  const classesPromise = statusClasses(config.simon, execFn);
+  const classesPromise = cachedStatusClasses(config.simon, execFn);
   // A rejection that lands while we're still scanning must not become an
   // unhandled rejection; the real error is picked up at the await below.
   classesPromise.catch(() => {});

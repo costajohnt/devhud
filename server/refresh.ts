@@ -3,7 +3,7 @@ import { linkPrsToCards, unlinked } from './link.ts';
 import { classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
-import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard } from './types.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta } from './types.ts';
 
 const DAY = 86400000;
 
@@ -309,6 +309,28 @@ export function refresh(opts: { config: Config; state: State; quiet?: boolean })
   return p;
 }
 
+// The incremental Filed fetch never drops rows, so do a full one at least
+// this often to shed deleted, moved and re-reported cards.
+export const FILED_FULL_FETCH_MS = 24 * 60 * 60 * 1000;
+
+// Whether this refresh's Filed fetch should be a delta over `cached` or a
+// full refetch. Full when there is no provenance stamp (first run, or a
+// state file from before the stamp), when the stamp is older than
+// FILED_FULL_FETCH_MS (or unparseable / in the future), or when the cached
+// list belongs to a different Jira account or site (`sameScope` false: the
+// cached list is then not a valid fallback either). `meta` is the stamp to
+// store once a full fetch succeeds.
+export function filedFetchPlan(prior: FiledMeta | undefined, jira: { accountId: string; baseUrl?: string },
+  cached: FiledCard[], now = Date.now()): { full: boolean; sameScope: boolean; previous: FiledCard[]; meta: FiledMeta } {
+  const meta: FiledMeta = { fullFetchAt: new Date(now).toISOString(), accountId: jira.accountId, baseUrl: jira.baseUrl ?? null };
+  // No stamp means unknown provenance: refetch in full, but keep the cached
+  // list as last-known-good if that fetch fails (pre-stamp state files).
+  const sameScope = !prior || (prior.accountId === meta.accountId && (prior.baseUrl ?? null) === meta.baseUrl);
+  const age = prior ? now - Date.parse(prior.fullFetchAt) : NaN;
+  const full = !prior || !sameScope || !(age >= 0 && age < FILED_FULL_FETCH_MS);
+  return { full, sameScope, previous: full ? [] : cached, meta };
+}
+
 // On a source failure, reuse that source's last-known-good data instead of
 // blanking the board — a transient Jira/GitHub outage shouldn't wipe out
 // everything the user was tracking.
@@ -350,12 +372,17 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   // The filed list is a second Jira query with its own failure: it must not
   // take the board down with it, and the board's failure must not blank it.
   // Last-known-good is the previous snapshot's list (the only place it lives).
+  // filedFetchPlan decides between a delta over the cached list and a full
+  // refetch (periodic, or after an account/site change).
   let filed: FiledCard[];
+  const plan = filedFetchPlan(state.filedMeta, config.jira, state.snapshot?.filed ?? []);
   try {
-    filed = await fetchFiledCards(config.jira, state.snapshot?.filed);
+    filed = await fetchFiledCards(config.jira, plan.previous);
+    if (plan.full) state.filedMeta = plan.meta;
   } catch (e) {
     errors.jira = [errors.jira, `filed cards: ${(e as Error).message}`].filter(Boolean).join('; ');
-    filed = state.snapshot?.filed ?? [];
+    // Another account's or site's list is not last-known-good for this one.
+    filed = plan.sameScope ? state.snapshot?.filed ?? [] : [];
   }
   // Collected rather than concatenated as we go, so the compose step below can
   // tell a throttle apart from a real failure and keep both legible (#69).

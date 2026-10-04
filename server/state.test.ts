@@ -1,7 +1,7 @@
 import { test, expect, vi } from 'vitest';
 import { loadState, saveState, cardState, emptyState, emptySnapshot } from './state.ts';
 import { buildSnapshot } from './refresh.ts';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Config } from './types.ts';
@@ -243,4 +243,23 @@ test('loadState defaults the write-back ledgers for pre-existing or hand-mangled
   const good = loadState(p);
   expect(good.autoTransitioned).toEqual({ 'P-1@o/r#1': { at: 'x', ok: true } });
   expect(good.postedCommentIds).toEqual(['1']);
+});
+
+test.skipIf(process.platform === 'win32')('saveState writes state.json and .bak owner-only, tightening existing 0644 files (L6)', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'jd-mode-')), 'state.json');
+  const mode = (f: string) => statSync(f).mode & 0o777;
+  // Pre-existing world-readable files, plus a stale temp file from a crash.
+  writeFileSync(path, JSON.stringify(emptyState()), { mode: 0o644 });
+  writeFileSync(path + '.bak', JSON.stringify(emptyState()), { mode: 0o644 });
+  writeFileSync(path + '.tmp', 'junk', { mode: 0o644 });
+  saveState(path, emptyState());
+  expect(mode(path)).toBe(0o600);
+  expect(mode(path + '.bak')).toBe(0o600);
+  expect(existsSync(path + '.tmp')).toBe(false);
+  // Fresh directory: created owner-only too.
+  const fresh = join(mkdtempSync(join(tmpdir(), 'jd-mode-')), 'state.json');
+  saveState(fresh, emptyState());
+  saveState(fresh, emptyState());
+  expect(mode(fresh)).toBe(0o600);
+  expect(mode(fresh + '.bak')).toBe(0o600);
 });
