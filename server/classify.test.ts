@@ -479,6 +479,17 @@ test('failing CI with no new failures vs the base branch does not route to needs
   expect(r.bucket).not.toBe('needs_attention');
 });
 
+// #86 / H2: unknown because the base branch's CI is still running is not a
+// reason to flag; unknown for any other reason still is.
+test('failing CI with unknown failures while the base CI is still running does not route to needs_attention', () => {
+  const r = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing', ciBasePending: true }), cs: cs() });
+  expect(r.attention).not.toContain('ci_failing');
+  expect(r.bucket).toBe('waiting_review');
+  // A known verdict (carried over by refresh) wins over the pending marker.
+  const carried = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing', ciBasePending: true, ciNewFailures: ['lint'] }), cs: cs() });
+  expect(carried.attention).toContain('ci_failing');
+});
+
 test('failing CI with new or unknown failures still routes to needs_attention', () => {
   for (const ciNewFailures of [['lint'], undefined]) {
     const r = classifyCard({ ...base, card: card(), pr: pr({ ciStatus: 'failing', ciNewFailures }), cs: cs() });

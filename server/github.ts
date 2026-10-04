@@ -86,24 +86,32 @@ function rollupHasPending(rollup: GqlRollup | null | undefined): boolean {
   });
 }
 
-// The PR's failed checks minus the ones already failing on its base branch
-// (#79): [] means every failure is pre-existing, so the PR did not break CI.
-// undefined means "cannot tell" and callers keep flagging: base data missing
-// (branch deleted), base rollup still running (#86), or a failing head check
-// absent from the base rollup entirely (no verdict yet on base).
+// What the base branch says about the PR's failed checks (#79, #86).
+// newFailures: the PR's failed checks minus the ones already failing on its
+// base branch; [] means every failure is pre-existing, so the PR did not
+// break CI. undefined means "cannot tell". basePending separates the two
+// kinds of "cannot tell":
+// - basePending: the base rollup is still running, so its verdict is not in
+//   yet. Callers must not flag on this (#86): refresh carries the previous
+//   verdict over, and classify suppresses when there is none.
+// - otherwise: base data is missing (branch deleted, contexts not returned)
+//   or a failing head check never ran on a finished base. Callers keep
+//   flagging, as before #89.
 // ponytail: compares against the base branch tip, not the merge-base commit;
 // fetch the merge-base's checks if a since-fixed base keeps hiding nothing.
-export function newCiFailures(head: GqlRollup | null | undefined, base: GqlRollup | null | undefined): string[] | undefined {
+export function ciBaseVerdict(head: GqlRollup | null | undefined, base: GqlRollup | null | undefined): { newFailures?: string[]; basePending: boolean } {
   const headFailed = failedChecks(head);
   const baseFailed = failedChecks(base);
-  if (!headFailed?.length || !baseFailed) return undefined;
+  if (!headFailed?.length || !baseFailed) return { basePending: false };
 
   // Base is still running: rollup is incomplete, so zero base failures does
-  // not mean the base is green. Suppress rather than assert (#86).
-  if (rollupHasPending(base)) return undefined;
+  // not mean the base is green. Suppress rather than assert (#86). The
+  // rollup's own state counts too: a check queued on base may not have a
+  // context node yet.
+  if (rollupHasPending(base) || ciFromRollup(base?.state) === 'pending') return { basePending: true };
 
-  // If a failing head check is absent from the base rollup entirely, the base
-  // has produced no verdict for that check yet — treat as unknown (#86).
+  // If a failing head check is absent from a finished base rollup, there is
+  // no base verdict for it to compare against: unknown, keep flagging.
   const baseNodes = base?.contexts?.nodes;
   const baseNames = new Set(
     (baseNodes ?? []).flatMap(c => {
@@ -111,9 +119,13 @@ export function newCiFailures(head: GqlRollup | null | undefined, base: GqlRollu
       return n ? [n] : [];
     })
   );
-  if (headFailed.some(n => !baseNames.has(n))) return undefined;
+  if (headFailed.some(n => !baseNames.has(n))) return { basePending: false };
 
-  return headFailed.filter(n => !baseFailed.includes(n));
+  return { newFailures: headFailed.filter(n => !baseFailed.includes(n)), basePending: false };
+}
+
+export function newCiFailures(head: GqlRollup | null | undefined, base: GqlRollup | null | undefined): string[] | undefined {
+  return ciBaseVerdict(head, base).newFailures;
 }
 
 export function mapPr(node: GqlPr, repo: string): Pr {
@@ -122,6 +134,7 @@ export function mapPr(node: GqlPr, repo: string): Pr {
   const headRollup = node.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const rollup = headRollup?.state;
   const ciStatus = state === 'open' ? ciFromRollup(rollup) : 'unknown';
+  const verdict = ciStatus === 'failing' ? ciBaseVerdict(headRollup, node.baseRef?.target?.statusCheckRollup) : null;
   return {
     repo,
     number: node.number,
@@ -136,7 +149,8 @@ export function mapPr(node: GqlPr, repo: string): Pr {
     closedAt: node.closedAt ?? null,
     // A closed PR's checks are history, not status: keep the pre-#72 'unknown'.
     ciStatus,
-    ...(ciStatus === 'failing' ? { ciNewFailures: newCiFailures(headRollup, node.baseRef?.target?.statusCheckRollup) } : {}),
+    ...(verdict ? { ciNewFailures: verdict.newFailures } : {}),
+    ...(verdict?.basePending ? { ciBasePending: true } : {}),
     // Pending review requests are visible at discovery; approvals and change
     // requests need the reviews list, which enrichPr fetches for linked PRs.
     reviewState: (node.reviewRequests?.totalCount ?? 0) > 0 ? 'review_required' : 'none',
@@ -177,7 +191,9 @@ export interface GithubRequestStats {
 const freshStats = (): GithubRequestStats =>
   ({ requests: 0, byFamily: {}, notModified: 0, retries: 0, rateLimitRemaining: { rest: null, graphql: null } });
 let stats = freshStats();
-export function resetGithubStats(): void { stats = freshStats(); }
+// refresh() calls this at entry, so it also opens a fresh throttle wait budget
+// for the sweep (see THROTTLE_BUDGET_MS).
+export function resetGithubStats(): void { stats = freshStats(); throttleBudgetMs = THROTTLE_BUDGET_MS; }
 export function githubStats(): GithubRequestStats {
   return { ...stats, byFamily: { ...stats.byFamily }, rateLimitRemaining: { ...stats.rateLimitRemaining } };
 }
@@ -196,7 +212,7 @@ export function formatGithubStats(s: GithubRequestStats = githubStats()): string
 // linked; a long-lived server needs the size cap below.
 // ponytail: bulk-drop at the cap (one re-paid sweep), LRU if it ever matters.
 const ETAG_CACHE_MAX = 500;
-const etagCache = new Map<string, { etag: string; body: unknown }>();
+const etagCache = new Map<string, { etag: string; body: unknown; link: string | null }>();
 
 // GitHub's *secondary* rate limit is rate-shaped, not quota-shaped: it fires on
 // bursts and on many requests against one endpoint family in a short window, and
@@ -210,6 +226,29 @@ const THROTTLE_RETRIES = 3;
 // hour away, and a refresh that blocks that long is worse than a degraded one
 // that falls back to last-known-good data and retries on the next tick.
 const MAX_THROTTLE_WAIT_MS = 60_000;
+// The per-wait cap alone still let one sweep block for minutes: every request
+// could wait the cap three times over. This is the total backoff one refresh
+// (one resetGithubStats) may spend across all its requests, parallel waits
+// counted separately; past it, a throttled request fails at once and the
+// refresh degrades to last-known-good data.
+const THROTTLE_BUDGET_MS = 90_000;
+let throttleBudgetMs = THROTTLE_BUDGET_MS;
+// When a response shows the primary limit exhausted with its reset further
+// off than one capped wait, no backoff can help: until that reset, every
+// request against the same budget (REST and GraphQL are separate) fails
+// without touching the network. Module-level, so it spans refreshes.
+const rateLimitedUntil: Record<'rest' | 'graphql', number> = { rest: 0, graphql: 0 };
+export function resetGithubRateLimit(): void { rateLimitedUntil.rest = 0; rateLimitedUntil.graphql = 0; }
+
+// The x-ratelimit-reset (epoch ms) of a primary-limit-exhausted throttle
+// whose reset is too far away to wait for, else null.
+function exhaustedUntil(res: { status: number; headers?: { get(name: string): string | null } }, now: number): number | null {
+  if (res.status !== 403 && res.status !== 429) return null;
+  if (res.headers?.get('x-ratelimit-remaining') !== '0') return null;
+  const reset = Number(res.headers?.get('x-ratelimit-reset'));
+  if (!Number.isFinite(reset)) return null;
+  return reset * 1000 - now > MAX_THROTTLE_WAIT_MS ? reset * 1000 : null;
+}
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -255,7 +294,12 @@ export const isThrottleMessage = (msg: string | undefined): boolean =>
 // the response for the caller to read (a 304 is a success here, not an error).
 async function send(family: GithubRequestFamily, path: string, token: string,
   init: { method?: 'POST'; body?: string; headers?: Record<string, string> } = {}): Promise<Response> {
+  const bucket = family === 'graphql' ? 'graphql' : 'rest';
   for (let attempt = 0; ; attempt++) {
+    // Message names the rate limit, so isThrottleMessage still recognises it.
+    if (Date.now() < rateLimitedUntil[bucket]) {
+      throw new Error(`GitHub API rate limit exceeded until ${new Date(rateLimitedUntil[bucket]).toISOString()} (${bucket}); not sent: ${path}`);
+    }
     stats.requests++;
     stats.byFamily[family] = (stats.byFamily[family] ?? 0) + 1;
     if (attempt > 0) stats.retries++;
@@ -268,11 +312,14 @@ async function send(family: GithubRequestFamily, path: string, token: string,
     // Optional chain: test stubs (and any minimal fetch shim) may return a
     // response without a headers object.
     const remaining = Number(res.headers?.get('x-ratelimit-remaining'));
-    if (Number.isFinite(remaining)) stats.rateLimitRemaining[family === 'graphql' ? 'graphql' : 'rest'] = remaining;
+    if (Number.isFinite(remaining)) stats.rateLimitRemaining[bucket] = remaining;
     if (res.ok || res.status === 304) return res;
     const text = await res.text();
-    const wait = attempt < THROTTLE_RETRIES ? throttleWaitMs(res, text, attempt) : null;
-    if (wait !== null) {
+    const until = exhaustedUntil(res, Date.now());
+    if (until !== null) rateLimitedUntil[bucket] = Math.max(rateLimitedUntil[bucket], until);
+    const wait = attempt < THROTTLE_RETRIES && until === null ? throttleWaitMs(res, text, attempt) : null;
+    if (wait !== null && wait <= throttleBudgetMs) {
+      throttleBudgetMs -= wait;
       await sleep(wait);
       continue;
     }
@@ -280,22 +327,55 @@ async function send(family: GithubRequestFamily, path: string, token: string,
   }
 }
 
-// REST GET through the ETag cache.
-async function gh<T>(family: GithubRequestFamily, path: string, token: string): Promise<T> {
+// REST GET through the ETag cache, with the response's Link header (cached
+// alongside the body, since a 304 carries no pagination of its own).
+async function ghPage<T>(family: GithubRequestFamily, path: string, token: string): Promise<{ body: T; link: string | null }> {
   const cached = etagCache.get(path);
   const res = await send(family, path, token, cached ? { headers: { 'If-None-Match': cached.etag } } : {});
   if (res.status === 304) {
     if (!cached) throw new Error(`GitHub 304 ${path}: no cached body`);
     stats.notModified++;
-    return cached.body as T;
+    return { body: cached.body as T, link: cached.link };
   }
   const body = await res.json() as T;
+  const link = res.headers?.get('link') ?? null;
   const etag = res.headers?.get('etag');
   if (etag) {
     if (etagCache.size >= ETAG_CACHE_MAX) etagCache.clear();
-    etagCache.set(path, { etag, body });
+    etagCache.set(path, { etag, body, link });
   }
-  return body;
+  return { body, link };
+}
+
+async function gh<T>(family: GithubRequestFamily, path: string, token: string): Promise<T> {
+  return (await ghPage<T>(family, path, token)).body;
+}
+
+// The page number of a Link header's rel="last" entry, or null when there is
+// only one page (GitHub omits rel="last" on the last page itself).
+export function lastPageFromLink(link: string | null | undefined): number | null {
+  for (const part of (link ?? '').split(',')) {
+    const m = part.match(/<([^>]+)>\s*;\s*rel="last"/);
+    if (!m) continue;
+    const page = Number(new URL(m[1]!, 'https://api.github.com').searchParams.get('page'));
+    return Number.isInteger(page) && page > 0 ? page : null;
+  }
+  return null;
+}
+
+// The issue-comments endpoint lists oldest first and ignores sort/direction,
+// so a thread over 100 comments (bot-heavy PRs) would hand back only the
+// oldest page and miss the newest human comments. Fetch page 1 (which says
+// how many pages there are), then the last page and the one before it, so
+// the newest 100-200 comments are always in hand. Costs one request up to
+// 100 comments, two up to 200, three beyond.
+async function newestIssueComments(path: string, token: string): Promise<RawComment[]> {
+  const first = await ghPage<RawComment[]>('issue_comments', `${path}?per_page=100`, token);
+  const last = lastPageFromLink(first.link);
+  if (!last || last < 2) return first.body;
+  const pages = last === 2 ? [2] : [last - 1, last];
+  const rest = await Promise.all(pages.map(n => gh<RawComment[]>('issue_comments', `${path}?per_page=100&page=${n}`, token)));
+  return [...(last === 2 ? first.body : []), ...rest.flat()];
 }
 
 interface GqlResponse<T> { data?: T | null; errors?: { message?: string }[] }
@@ -326,7 +406,7 @@ const PR_SEARCH = `query($q: String!) {
         labels(first: 10) { nodes { name } }
         reviewRequests(first: 1) { totalCount }
         commits(last: 1) { nodes { commit { statusCheckRollup { state ...Checks } } } }
-        baseRef { target { ... on Commit { statusCheckRollup { ...Checks } } } }
+        baseRef { target { ... on Commit { statusCheckRollup { state ...Checks } } } }
       }
     }
   }
@@ -376,11 +456,13 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
 export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [owner, repo] = pr.repo.split('/');
   const base = `/repos/${owner}/${repo}`;
-  // sort=created&direction=desc so a >100-comment thread keeps the newest
-  // comments (the ones that matter for attention) instead of silently
-  // truncating to the oldest page. The reviews endpoint is left as-is.
+  // Review comments take sort=created&direction=desc so a >100-comment thread
+  // keeps the newest comments (the ones that matter for attention) instead of
+  // silently truncating to the oldest page. Issue comments ignore those
+  // parameters, so newestIssueComments pages to the end instead. The reviews
+  // endpoint is left as-is.
   const [issueComments, reviewComments, reviews] = await Promise.all([
-    gh<RawComment[]>('issue_comments', `${base}/issues/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
+    newestIssueComments(`${base}/issues/${pr.number}/comments`, cfg.token),
     gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
     gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
   ]);

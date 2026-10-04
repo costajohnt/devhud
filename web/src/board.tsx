@@ -15,9 +15,10 @@ function pill(item: Item): { text: string; cls: string } | null {
   // Driven by the PR fact, not the attention flag: acknowledging mutes the
   // needs_attention nag, but red CI is still red and must stay visible.
   if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') {
-    return item.pr.ciNewFailures?.length === 0
-      ? { text: 'CI red on base', cls: 'pill pill--muted' }
-      : { text: 'CI Failing', cls: 'pill pill--red' };
+    const fresh = item.pr.ciNewFailures;
+    if (fresh?.length === 0) return { text: 'CI red on base', cls: 'pill pill--muted' };
+    if (!fresh && item.pr.ciBasePending) return { text: 'CI red, base running', cls: 'pill pill--muted' };
+    return { text: 'CI Failing', cls: 'pill pill--red' };
   }
   const n = item.newComments.length;
   if (n) return { text: `${n} new comment${n > 1 ? 's' : ''}`, cls: 'pill pill--red' };

@@ -10,6 +10,8 @@ export interface PrRef { repo: string; number: number; url: string; branch: stri
   state: 'open' | 'merged' | 'closed'; ciStatus: 'passing' | 'failing' | 'pending' | 'unknown';
   // Failed checks not also failing on the base branch; [] = all pre-existing.
   ciNewFailures?: string[];
+  // Base branch CI still running, so ciNewFailures may be unknown (#86).
+  ciBasePending?: boolean;
   reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none'; isDraft?: boolean; }
 
 // createdAt is nullable to match the server: classify.ts's githubNewComment

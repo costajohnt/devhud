@@ -110,7 +110,7 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
   const changed = githubStats();
   expect(changed.requests).toBe(REPOS.length + 3);
   expect(gh.calls.filter(c => c.startsWith('/repos/'))).toEqual([
-    '/repos/example-org/beta/issues/1/comments?per_page=100&sort=created&direction=desc',
+    '/repos/example-org/beta/issues/1/comments?per_page=100',
     '/repos/example-org/beta/pulls/1/comments?per_page=100&sort=created&direction=desc',
     '/repos/example-org/beta/pulls/1/reviews?per_page=100',
   ]);

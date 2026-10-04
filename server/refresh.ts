@@ -15,7 +15,8 @@ export const CELEBRATION_RETENTION_DAYS = 90;
 
 const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
-  state: p.state, ciStatus: p.ciStatus, ciNewFailures: p.ciNewFailures, reviewState: p.reviewState, isDraft: p.isDraft,
+  state: p.state, ciStatus: p.ciStatus, ciNewFailures: p.ciNewFailures,
+  ...(p.ciBasePending ? { ciBasePending: true } : {}), reviewState: p.reviewState, isDraft: p.isDraft,
 };
 
 const newestFirst = (a: NewComment, b: NewComment) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
@@ -260,6 +261,22 @@ function enrichmentUnconfirmed(last: Pr): boolean {
   return Date.parse(last.updatedAt) >= Date.parse(last.enrichedAt) - UNCONFIRMED_ENRICHMENT_MS;
 }
 
+// While the base branch's CI is still running, discovery cannot say whether a
+// failing PR's red checks are its own (#86). Keep the previous refresh's
+// verdict for the same PR rather than flipping the card into Needs Attention
+// for the length of the base run; with no earlier verdict, ciBasePending
+// alone makes classify hold off. Only a known verdict is carried: an earlier
+// unknown has nothing to add.
+// ponytail: carries across a push to the PR too (no head SHA on Pr); the
+// next refresh after the base finishes corrects it.
+export function carryOverCiVerdicts(prs: Pr[], previous: Map<string, Pr>): void {
+  for (const p of prs) {
+    if (!p.ciBasePending || p.ciNewFailures) continue;
+    const last = previous.get(`${p.repo}#${p.number}`);
+    if (last?.state === 'open' && last.ciStatus === 'failing' && last.ciNewFailures) p.ciNewFailures = last.ciNewFailures;
+  }
+}
+
 // Concurrent refreshes (two browser tabs, the CLI, a writeback's post-write
 // refresh, the server's own timer) are serialized per State, and every caller
 // that arrives while one is in flight shares a single follow-up (#72). That
@@ -346,6 +363,8 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   try {
     const gh = await fetchPrs(config.github);
     prs = gh.prs;
+    const previous = new Map((state.lastPrs ?? []).map(p => [`${p.repo}#${p.number}`, p]));
+    carryOverCiVerdicts(prs, previous);
     // fetchPrs isolates per-repo failures into "org/repo: msg" strings so one
     // bad repo doesn't blank the others; splice that repo's last-known-good
     // PRs back in from state.lastPrs so it doesn't vanish from the board.
@@ -382,7 +401,6 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     // result, which carries no flag) reopens the question. A last-known PR
     // with no enrichedAt at all (state written before the stamp existed)
     // takes the same one-time re-fetch.
-    const previous = new Map((state.lastPrs ?? []).map(p => [`${p.repo}#${p.number}`, p]));
     const toEnrich: Pr[] = [];
     for (const p of new Set(linked.values())) {
       const last = previous.get(`${p.repo}#${p.number}`);
@@ -416,19 +434,26 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     }
     const failed = results.filter(r => r.status === 'rejected');
     if (failed.length) githubErrors.push(...failed.map(f => (f as PromiseRejectedResult).reason?.message).filter((m): m is string => !!m));
-    // Replace any PR whose enrichment rejected with its last-known-good
-    // counterpart (matched by repo+number) so a transient detail-fetch
-    // failure doesn't strip review/comment data the board already had. The
-    // counterpart keeps its older updatedAt, so the next refresh re-enriches
-    // it rather than reusing it.
+    // A PR whose enrichment rejected keeps its fresh discovery object (state,
+    // CI, draft flag, base comparison all come from discovery and are
+    // current) and takes only the enrichment-derived fields from its
+    // last-known-good counterpart (matched by repo+number), so a transient
+    // detail-fetch failure neither strips review/comment data the board
+    // already had nor freezes a merged PR as open. enrichConfirmed stays
+    // unset and the copied enrichedAt predates the fresh updatedAt (or sits
+    // within the same-second window of it), so the next refresh re-enriches
+    // instead of reusing.
     results.forEach((r, i) => {
       if (r.status !== 'rejected') return;
       const pr = toEnrich[i]!;
       degradedPrRepos.add(pr.repo);
-      const fallback = (state.lastPrs ?? []).find(lp => lp.repo === pr.repo && lp.number === pr.number);
+      delete pr.enrichConfirmed;
+      const fallback = previous.get(`${pr.repo}#${pr.number}`);
       if (!fallback) return;
-      const idx = prs.indexOf(pr);
-      if (idx >= 0) prs[idx] = fallback;
+      pr.comments = fallback.comments;
+      if (pr.reviewState !== 'review_required') pr.reviewState = fallback.reviewState;
+      if (fallback.enriched) pr.enriched = true; else delete pr.enriched;
+      if (fallback.enrichedAt) pr.enrichedAt = fallback.enrichedAt; else delete pr.enrichedAt;
     });
     githubOk = true;
   } catch (e) {

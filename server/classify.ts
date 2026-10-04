@@ -42,6 +42,12 @@ export const ROUTING_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_
 export const hasQaInstructions = (description: string): boolean =>
   /(qa|test)\s+instructions/i.test(description);
 
+// Whether a failing PR's red CI counts against it: some failed check is not
+// also failing on the base branch, or that is unknown for a reason other than
+// "the base branch's CI is still running".
+export const ciFailureIsNew = (pr: Pick<Pr, 'ciNewFailures' | 'ciBasePending'>): boolean =>
+  pr.ciNewFailures ? pr.ciNewFailures.length > 0 : !pr.ciBasePending;
+
 export interface ClassifyResult {
   bucket: Bucket;
   attention: string[];
@@ -67,7 +73,9 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
 
   // Red CI that is red on the base branch too is not this card's problem;
   // ciNewFailures is [] only when every failed check also fails there (#79).
-  if (pr?.ciStatus === 'failing' && pr.state === 'open' && pr.ciNewFailures?.length !== 0) attention.push('ci_failing');
+  // Unknown flags too, except while the base branch's own CI is still running
+  // and there is no earlier verdict to go on (#86).
+  if (pr?.ciStatus === 'failing' && pr.state === 'open' && ciFailureIsNew(pr)) attention.push('ci_failing');
 
   for (const c of pr?.comments ?? []) {
     if (c.author !== username && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {

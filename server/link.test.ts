@@ -27,6 +27,21 @@ test('links by card URL in PR body and PR URL in card description', () => {
   expect(m2.get('PROJ-4')).toBeDefined();
 });
 
+// L1 (audit 2026-10-04): the URL checks were plain substring matches.
+test('URL matches stop at a digit boundary: /pull/1 is not /pull/12, /browse/PROJ-1 is not PROJ-12', () => {
+  const pr12 = pr({ number: 12, url: 'https://github.com/org/r/pull/12' });
+  // Card PROJ-1 names PR #12 in its description; PR #1 must not ride along.
+  const byDesc = linkPrsToCards([card('PROJ-1', 'see https://github.com/org/r/pull/12')], [pr(), pr12]);
+  expect(byDesc.get('PROJ-1')?.number).toBe(12);
+  expect(linkPrsToCards([card('PROJ-1', 'see https://github.com/org/r/pull/12')], [pr()]).size).toBe(0);
+  // A trailing path or punctuation after the URL still matches.
+  expect(linkPrsToCards([card('PROJ-1', 'https://github.com/org/r/pull/1/files.')], [pr()]).size).toBe(1);
+  // PR body links PROJ-12 only.
+  const body = pr({ body: 'Fixes https://x.atlassian.net/browse/PROJ-12' });
+  expect(linkPrsToCards([card('PROJ-1')], [body]).size).toBe(0);
+  expect(linkPrsToCards([card('PROJ-12')], [body]).get('PROJ-12')).toBe(body);
+});
+
 test('prefers open PR over merged when both match', () => {
   const open = pr({ number: 2, url: 'u2', branch: 'PROJ-5-b', state: 'open' });
   const merged = pr({ number: 3, url: 'u3', branch: 'PROJ-5-a', state: 'merged' });

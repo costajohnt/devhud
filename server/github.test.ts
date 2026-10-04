@@ -1,6 +1,7 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapPr, newCiFailures, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats } from './github.ts';
-import type { Pr, GithubConfig } from './types.ts';
+import { mapPr, newCiFailures, ciBaseVerdict, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats, resetGithubRateLimit, lastPageFromLink } from './github.ts';
+import { classifyCard } from './classify.ts';
+import type { Pr, GithubConfig, Card, CardState } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -103,6 +104,55 @@ test('enrichPr merges issue comments, review comments, and review bodies into on
   expect(fetchMock).toHaveBeenCalledTimes(3);
   expect(result.reviewState).toBe('approved');
   expect(result.enriched).toBe(true);
+});
+
+test('lastPageFromLink reads rel="last", and none means a single page', () => {
+  expect(lastPageFromLink('<https://api.github.com/repositories/1/issues/5/comments?per_page=100&page=2>; rel="next", <https://api.github.com/repositories/1/issues/5/comments?per_page=100&page=4>; rel="last"')).toBe(4);
+  expect(lastPageFromLink('<https://api.github.com/x?page=1>; rel="prev", <https://api.github.com/x?page=1>; rel="first"')).toBeNull();
+  expect(lastPageFromLink(null)).toBeNull();
+});
+
+// L2 (audit 2026-10-04): issue comments ignore sort/direction, so >100
+// comments used to return only the oldest 100.
+test('enrichPr fetches the newest issue comments on a thread longer than one page', async () => {
+  const pages: Record<string, { body: unknown[]; link?: string }> = {};
+  const comment = (n: number) => ({ user: { login: n === 350 ? 'human' : 'bot' }, body: `c${n}`, created_at: new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString() });
+  const page = (n: number) => Array.from({ length: n === 4 ? 50 : 100 }, (_, i) => comment((n - 1) * 100 + i + 1));
+  const lastLink = '<https://api.github.com/repositories/9/issues/5/comments?per_page=100&page=4>; rel="last"';
+  pages['/repos/lp-org/lp-repo/issues/5/comments?per_page=100'] = { body: page(1), link: lastLink };
+  pages['/repos/lp-org/lp-repo/issues/5/comments?per_page=100&page=3'] = { body: page(3) };
+  pages['/repos/lp-org/lp-repo/issues/5/comments?per_page=100&page=4'] = { body: page(4) };
+  const fetchMock = vi.fn((url: string | URL) => {
+    const path = String(url).replace('https://api.github.com', '');
+    const hit = pages[path];
+    const body = hit?.body ?? [];
+    return Promise.resolve({ ok: true, status: 200, headers: headers(hit?.link ? { link: hit.link } : {}), json: () => Promise.resolve(body) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  resetGithubStats();
+  const pr = await enrichPr(basePr({ repo: 'lp-org/lp-repo', number: 5 }), { token: 't', org: 'lp-org', repos: [], username: 'me' });
+  // Pages 3 and 4: the newest 150 of 350, including the newest human comment.
+  expect(pr.comments).toHaveLength(150);
+  expect(pr.comments.at(-1)).toMatchObject({ author: 'human', body: 'c350' });
+  expect(pr.comments[0]?.body).toBe('c201');
+  expect(githubStats().byFamily.issue_comments).toBe(3);
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/issues/5/comments') && String(u).includes('sort='))).toBe(false);
+});
+
+test('enrichPr keeps both pages of a two-page issue-comment thread, at one extra request', async () => {
+  const comment = (n: number) => ({ user: { login: 'u' }, body: `c${n}`, created_at: new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString() });
+  const fetchMock = vi.fn((url: string | URL) => {
+    const u = String(url);
+    const body = u.endsWith('/issues/6/comments?per_page=100') ? Array.from({ length: 100 }, (_, i) => comment(i + 1))
+      : u.endsWith('/issues/6/comments?per_page=100&page=2') ? [comment(101)] : [];
+    const link = u.endsWith('/issues/6/comments?per_page=100') ? '<https://api.github.com/x?per_page=100&page=2>; rel="next", <https://api.github.com/x?per_page=100&page=2>; rel="last"' : null;
+    return Promise.resolve({ ok: true, status: 200, headers: headers(link ? { link } : {}), json: () => Promise.resolve(body) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  resetGithubStats();
+  const pr = await enrichPr(basePr({ repo: 'lp-org/lp-two', number: 6 }), { token: 't', org: 'lp-org', repos: [], username: 'me' });
+  expect(pr.comments).toHaveLength(101);
+  expect(githubStats().byFamily.issue_comments).toBe(2);
 });
 
 test('enrichPr keeps a pending review request ahead of an older approval', async () => {
@@ -317,6 +367,99 @@ test('gh gives up after the retry budget, and a non-throttle 403 is not retried 
   }
 });
 
+// M2 (audit 2026-10-04): the per-wait cap alone let an exhausted primary
+// limit block fetchPrs over 3 repos for 9 simulated minutes.
+test('an exhausted primary limit with a far reset fails this and later requests fast, without waiting', async () => {
+  vi.useFakeTimers();
+  try {
+    const exhausted = vi.fn(() => Promise.resolve({
+      ok: false, status: 403,
+      headers: headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 3600) }),
+      text: () => Promise.resolve('{ "message": "API rate limit exceeded for user." }'),
+    }));
+    vi.stubGlobal('fetch', exhausted);
+    resetGithubStats();
+    const start = Date.now();
+    const pending = fetchPrs({ token: 't', org: 'o', repos: ['rl-a', 'rl-b', 'rl-c'], username: 'me' });
+    await vi.runAllTimersAsync();
+    const { errors } = await pending;
+    // One request reached GitHub; the other repos failed without a fetch.
+    expect(exhausted).toHaveBeenCalledTimes(1);
+    expect(Date.now() - start).toBe(0);
+    expect(errors).toHaveLength(3);
+    expect(errors.every(e => isThrottleMessage(e))).toBe(true);
+    // The marker outlives the refresh until the reset passes...
+    resetGithubStats();
+    const later = await fetchPrs({ token: 't', org: 'o', repos: ['rl-a'], username: 'me' });
+    expect(later.errors[0]).toMatch(/rate limit exceeded until/);
+    expect(exhausted).toHaveBeenCalledTimes(1);
+  } finally {
+    resetGithubRateLimit();
+    vi.useRealTimers();
+  }
+});
+
+test('the GraphQL rate-limit marker does not block REST, and clears once the reset passes', async () => {
+  vi.useFakeTimers();
+  try {
+    const reset = Math.floor(Date.now() / 1000) + 600;
+    let graphqlCalls = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
+      if (String(url).endsWith('/graphql')) {
+        graphqlCalls++;
+        return Promise.resolve({ ok: false, status: 403, headers: headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) }),
+          text: () => Promise.resolve('{ "message": "API rate limit exceeded" }') });
+      }
+      return Promise.resolve({ ok: true, status: 200, headers: headers(), json: () => Promise.resolve([]) });
+    }));
+    resetGithubStats();
+    expect((await fetchPrs({ token: 't', org: 'o', repos: ['gq-a', 'gq-b'], username: 'me' })).errors).toHaveLength(2);
+    expect(graphqlCalls).toBe(1);
+    // REST is a separate budget: enrichment still goes out.
+    const pr = await enrichPr(basePr({ repo: 'o/gq-a', number: 2 }), { token: 't', org: 'o', repos: [], username: 'me' });
+    expect(pr.enriched).toBe(true);
+    // Past the reset, GraphQL is tried again.
+    await vi.advanceTimersByTimeAsync(601_000);
+    // (The stub still answers with the old, now-past reset, so this one
+    // backs off briefly rather than failing fast.)
+    const retried = fetchPrs({ token: 't', org: 'o', repos: ['gq-a'], username: 'me' });
+    await vi.runAllTimersAsync();
+    await retried;
+    expect(graphqlCalls).toBeGreaterThan(1);
+  } finally {
+    resetGithubRateLimit();
+    vi.useRealTimers();
+  }
+});
+
+test('total throttle backoff in one refresh is capped by a budget, then requests fail fast', async () => {
+  vi.useFakeTimers();
+  try {
+    // A secondary limit that always asks for the full capped wait.
+    const throttled = vi.fn(() => Promise.resolve(
+      { ok: false, status: 429, headers: headers({ 'retry-after': '60' }), text: () => Promise.resolve(SECONDARY) }));
+    vi.stubGlobal('fetch', throttled);
+    resetGithubStats();
+    const start = Date.now();
+    const pending = fetchPrs({ token: 't', org: 'o', repos: ['budget-a', 'budget-b', 'budget-c'], username: 'me' });
+    await vi.runAllTimersAsync();
+    const { errors } = await pending;
+    expect(errors).toHaveLength(3);
+    // Without the budget: 3 repos x 3 waits x 60s = 9 minutes. With it, one
+    // 60s wait fits in the 90s budget, and every later throttle fails at once.
+    expect(Date.now() - start).toBe(60_000);
+    expect(throttled).toHaveBeenCalledTimes(4);
+    // A new refresh gets a new budget.
+    resetGithubStats();
+    const again = fetchPrs({ token: 't', org: 'o', repos: ['budget-a'], username: 'me' });
+    await vi.runAllTimersAsync();
+    await again;
+    expect(throttled).toHaveBeenCalledTimes(6);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 // --- #79: CI failures that pre-exist on the base branch ---
 
 const rollup = (checks: Record<string, string>) => ({
@@ -369,6 +512,49 @@ test('newCiFailures: base has pending StatusContext -> undefined', () => {
 test('newCiFailures: failing head check absent from base rollup entirely -> undefined', () => {
   // base ran different checks; head failure has no base verdict yet
   expect(newCiFailures(rollup({ 'new-check': 'FAILURE' }), rollup({ 'other-check': 'SUCCESS' }))).toBeUndefined();
+});
+
+test('ciBaseVerdict marks only a still-running base as pending', () => {
+  const running = { state: 'PENDING', contexts: { nodes: [{ name: 'test', conclusion: null as string | null }] } };
+  expect(ciBaseVerdict(rollup({ test: 'FAILURE' }), running)).toEqual({ basePending: true });
+  // The rollup's own PENDING state counts even when the node for the failing
+  // head check has not appeared on base yet.
+  expect(ciBaseVerdict(rollup({ test: 'FAILURE' }), { ...rollup({ lint: 'SUCCESS' }), state: 'PENDING' })).toEqual({ basePending: true });
+  // Missing base data, or a check absent from a finished base: unknown, not pending.
+  expect(ciBaseVerdict(rollup({ test: 'FAILURE' }), null)).toEqual({ basePending: false });
+  expect(ciBaseVerdict(rollup({ 'new-check': 'FAILURE' }), rollup({ other: 'SUCCESS' }))).toEqual({ basePending: false });
+  expect(ciBaseVerdict(rollup({ test: 'FAILURE' }), rollup({ test: 'FAILURE' }))).toEqual({ newFailures: [], basePending: false });
+});
+
+// H2 (audit 2026-10-04): the #89 tests only checked the helper, so the board
+// still flagged a pre-existing failure for the whole base run. End to end:
+const statuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
+const jiraCard: Card = { key: 'PROJ-1', status: 'In Progress', myAccountId: 'me', comments: [], summary: '', description: '', url: '', createdAt: null, updatedAt: null };
+const cardState: CardState = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null };
+const classifyNode = (baseRollup: unknown) => classifyCard({
+  card: jiraCard, cs: cardState, statuses, username: 'me',
+  pr: mapPr(gqlPr({
+    commits: { nodes: [{ commit: { statusCheckRollup: rollup({ test: 'FAILURE' }) } }] },
+    baseRef: { target: { statusCheckRollup: baseRollup as never } },
+  }), 'o/r'),
+});
+
+test('mapPr -> classifyCard: a failure already red on a finished base does not flag', () => {
+  const r = classifyNode(rollup({ test: 'FAILURE' }));
+  expect(r.attention).not.toContain('ci_failing');
+  expect(r.bucket).toBe('waiting_review');
+});
+
+test('mapPr -> classifyCard: a still-running base does not flag', () => {
+  const r = classifyNode({ state: 'PENDING', contexts: { nodes: [{ name: 'test', conclusion: null }] } });
+  expect(r.attention).not.toContain('ci_failing');
+  expect(r.bucket).toBe('waiting_review');
+});
+
+test('mapPr -> classifyCard: a new failure on a finished base, or no base data, still flags', () => {
+  expect(classifyNode(rollup({ test: 'SUCCESS' })).attention).toContain('ci_failing');
+  expect(classifyNode(null).attention).toContain('ci_failing');
+  expect(classifyNode(null).bucket).toBe('needs_attention');
 });
 
 test('mapPr sets ciNewFailures only on an open failing PR', () => {

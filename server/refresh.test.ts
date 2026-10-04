@@ -365,7 +365,7 @@ test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead 
   expect(payload.buckets.waiting_review[0]?.pr?.number).toBe(1);
 });
 
-test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart', async () => {
+test('a PR whose enrichment rejects keeps its fresh discovery fields and takes enrichment from state.lastPrs', async () => {
   const { fetchPrs, enrichPr } = await import('./github.ts');
   const staleGoodPr = pr({ ciStatus: 'passing', reviewState: 'approved' });
   const freshPr = pr({ ciStatus: 'unknown', reviewState: 'none' });
@@ -376,9 +376,69 @@ test('a PR whose enrichment rejects falls back to its state.lastPrs counterpart'
   state.lastPrs = [staleGoodPr];
   const payload = await refresh({ config, state });
   expect(payload.errors.github).toContain('enrich failed');
-  // staleGoodPr has reviewState 'approved', which buckets it into mergeable.
-  expect(payload.buckets.mergeable[0]?.pr?.ciStatus).toBe('passing');
+  // reviewState 'approved' comes from the fallback (enrichment-derived) and
+  // buckets it into mergeable; CI is discovery's and stays fresh.
   expect(payload.buckets.mergeable[0]?.pr?.reviewState).toBe('approved');
+  expect(payload.buckets.mergeable[0]?.pr?.ciStatus).toBe('unknown');
+});
+
+// M1 (audit 2026-10-04): a failed comments call used to swap the whole fresh
+// discovery object for the stale row, freezing a just-merged PR as open/red.
+test('a PR merged since last refresh stays merged when its enrichment rejects', async () => {
+  const { fetchPrs, enrichPr } = await import('./github.ts');
+  const comment = { author: 'rev', body: 'old', createdAt: '2026-07-01T12:00:00Z' };
+  const stale = pr({ state: 'open', ciStatus: 'failing', reviewState: 'approved', comments: [comment],
+    updatedAt: '2026-07-01T12:00:00Z', enriched: true, enrichedAt: '2026-07-01T12:05:00Z', enrichConfirmed: true });
+  const fresh = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z', ciStatus: 'unknown', updatedAt: '2026-07-02T00:00:00Z' });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [fresh], errors: [] });
+  vi.mocked(enrichPr).mockClear();
+  vi.mocked(enrichPr).mockRejectedValueOnce(new Error('GitHub 502 /repos/o/r/issues/1/comments'));
+  const state = emptyState();
+  state.lastCards = [card()];
+  state.lastPrs = [stale];
+  const payload = await refresh({ config, state });
+  const item = Object.values(payload.buckets).flat().find(i => i.key === 'PROJ-1');
+  expect(item?.pr?.state).toBe('merged');
+  expect(item?.attention).toContain('merged_not_in_test');
+  expect(item?.attention).not.toContain('ci_failing');
+  expect(item?.comments.map(c => c.body)).toEqual(['old']);
+  const kept = state.lastPrs?.[0];
+  expect(kept).toMatchObject({ state: 'merged', updatedAt: '2026-07-02T00:00:00Z', reviewState: 'approved', enriched: true });
+  expect(kept?.enrichConfirmed).toBeUndefined();
+
+  // The copied enrichedAt predates the fresh updatedAt, so the next refresh
+  // re-enriches instead of reusing the stale comments.
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ...fresh, comments: [] })], errors: [] });
+  await refresh({ config, state });
+  expect(enrichPr).toHaveBeenCalledTimes(2);
+});
+
+// H2 (audit 2026-10-04): while the base branch's CI runs, discovery cannot
+// compute ciNewFailures; refresh carries the previous verdict over.
+test('a pending base keeps the previous ciNewFailures verdict, so a pre-existing failure stays out of Needs Attention', async () => {
+  const { fetchPrs } = await import('./github.ts');
+  const state = emptyState();
+  state.lastCards = [card()];
+  state.lastPrs = [pr({ ciStatus: 'failing', ciNewFailures: [] })];
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [] });
+  const payload = await refresh({ config, state });
+  const item = Object.values(payload.buckets).flat()[0];
+  expect(item?.pr?.ciNewFailures).toEqual([]);
+  expect(item?.attention).not.toContain('ci_failing');
+  expect(payload.buckets.needs_attention).toHaveLength(0);
+
+  // A previous verdict of real new failures is carried just the same.
+  state.lastPrs = [pr({ ciStatus: 'failing', ciNewFailures: ['lint'] })];
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [] });
+  const red = await refresh({ config, state });
+  expect(red.buckets.needs_attention[0]?.attention).toContain('ci_failing');
+
+  // No previous verdict at all: base pending alone holds off the flag.
+  state.lastPrs = [];
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [] });
+  const none = await refresh({ config, state });
+  expect(none.buckets.needs_attention).toHaveLength(0);
+  expect(Object.values(none.buckets).flat()[0]?.pr).toMatchObject({ ciBasePending: true });
 });
 
 test('demo mode builds populated snapshot without network', async () => {

@@ -146,8 +146,13 @@ export interface Pr {
   ciStatus: CiStatus;
   // Only set while ciStatus is 'failing': the failed checks that are not also
   // failing on the base branch. [] = all pre-existing, so not this PR's fault
-  // and not a Needs Attention reason; undefined = unknown, keep flagging (#79).
+  // and not a Needs Attention reason; undefined = unknown, keep flagging (#79)
+  // unless ciBasePending says why it is unknown.
   ciNewFailures?: string[];
+  // Set while ciStatus is 'failing' and the base branch's CI is still running,
+  // so ciNewFailures could not be computed this refresh. refresh() carries the
+  // previous verdict over; with none to carry, classify does not flag (#86).
+  ciBasePending?: boolean;
   reviewState: ReviewState;
   isDraft?: boolean;
   comments: PrComment[];
@@ -190,8 +195,10 @@ export interface PrRef {
   ciStatus: CiStatus;
   // Only set while ciStatus is 'failing': the failed checks that are not also
   // failing on the base branch. [] = all pre-existing, so not this PR's fault
-  // and not a Needs Attention reason; undefined = unknown, keep flagging (#79).
+  // and not a Needs Attention reason; undefined = unknown, keep flagging (#79)
+  // unless ciBasePending is set (base CI still running, #86).
   ciNewFailures?: string[];
+  ciBasePending?: boolean;
   reviewState: ReviewState;
   isDraft?: boolean;
 }

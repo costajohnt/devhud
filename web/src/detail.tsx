@@ -41,6 +41,7 @@ function nextAction(item: Item): string {
   if (item.pr?.state === 'open' && item.pr.ciStatus === 'failing') {
     const fresh = item.pr.ciNewFailures;
     if (fresh?.length === 0) return 'CI is failing, but only on checks already red on the base branch';
+    if (!fresh && item.pr.ciBasePending) return 'CI is failing — base branch CI is still running, check again when it finishes';
     return fresh ? `CI is failing — fix ${fresh.join(', ')}` : 'CI is failing — fix the build';
   }
   if (n > 0) return `Respond to ${n} new comment${n > 1 ? 's' : ''}`;
