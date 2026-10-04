@@ -5,7 +5,7 @@
   "engines": { "node": ">=22.18" },
   "bin": { "simon-dash-mcp": "./index.ts" },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^3.25.0"
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^4.6.5"
   }
 }

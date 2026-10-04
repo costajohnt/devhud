@@ -8,6 +8,7 @@
     "verbatimModuleSyntax": true,
     "strict": true,
     "noEmit": true,
+    "types": ["node"],
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true

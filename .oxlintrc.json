@@ -9,7 +9,13 @@
     "react/jsx-no-target-blank": ["error", { "allowReferrer": false }],
     "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
     "react/react-in-jsx-scope": "off",
-    "react/no-unknown-property": "off"
+    "react/no-unknown-property": "off",
+    // React Compiler rule: it models refs from React's useRef only, so every
+    // preact/hooks ref.current write (in callbacks and effects) is a false positive.
+    "react/immutability": "off"
   },
+  "overrides": [
+    { "files": ["**/*.test.ts", "**/*.test.tsx"], "rules": { "react/globals": "off" } }
+  ],
   "ignorePatterns": ["node_modules/**", "web/dist/**", "data/**"]
 }

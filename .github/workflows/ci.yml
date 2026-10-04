@@ -27,8 +27,8 @@ jobs:
         # on); testing only the newest release let that claim rot.
         node-version: ['22.18', '26']
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm

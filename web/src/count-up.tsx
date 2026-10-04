@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 function useCountUp(target: number, duration = 800): number {
   const [value, setValue] = useState(0);
+  // Last value handed to setValue, read when a new animation starts. Kept
+  // in step with setValue below rather than assigned during render.
   const valueRef = useRef(0);
-  valueRef.current = value;
   const rafRef = useRef(0);
   const startTimeRef = useRef(0);
   const startValueRef = useRef(0);
@@ -14,11 +15,13 @@ function useCountUp(target: number, duration = 800): number {
     const prefersReducedMotion =
       typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
     if (prefersReducedMotion) {
+      valueRef.current = target;
       setValue(target);
       return;
     }
 
     if (target === 0) {
+      valueRef.current = 0;
       setValue(0);
       return;
     }
@@ -32,6 +35,7 @@ function useCountUp(target: number, duration = 800): number {
       const progress = Math.min(elapsed / duration, 1);
       const eased = 1 - Math.pow(1 - progress, 3);
       const current = Math.round(startValueRef.current + (target - startValueRef.current) * eased);
+      valueRef.current = current;
       setValue(current);
       if (progress < 1) rafRef.current = requestAnimationFrame(step);
     };
