@@ -14,13 +14,18 @@ class StubEventSource {
   static instances: StubEventSource[] = [];
   onmessage: ((ev: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  onopen: (() => void) | null = null;
+  readyState = 0; // CONNECTING
   listeners: Record<string, ((ev: { data: string }) => void) | undefined> = {};
   closed = false;
   constructor(public url: string) {
     StubEventSource.instances.push(this);
   }
   addEventListener(name: string, fn: (ev: { data: string }) => void) { this.listeners[name] = fn; }
-  close() { this.closed = true; }
+  close() { this.closed = true; this.readyState = 2; }
+  // A non-200 response (503 client cap, 403): the browser fires error with
+  // readyState already CLOSED and never retries this instance.
+  failPermanently() { this.readyState = 2; this.onerror?.(); }
   emit(d: unknown) { this.onmessage?.({ data: JSON.stringify(d) }); }
 }
 
@@ -119,4 +124,73 @@ test('a torn SSE frame sets connError instead of throwing, and the next good fra
   expect(hook.connError).toContain('connection lost');
   act(() => { es().emit(snap('t1')); });
   expect(hook.connError).toBeNull();
+});
+
+test('a permanently closed EventSource is reopened with doubling backoff, reset on open', () => {
+  vi.useFakeTimers();
+  try {
+    act(() => { es().failPermanently(); });
+    expect(hook.connError).toBe('connection lost — reconnecting in 2s');
+    expect(StubEventSource.instances).toHaveLength(1);
+
+    act(() => { vi.advanceTimersByTime(1999); });
+    expect(StubEventSource.instances).toHaveLength(1);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(StubEventSource.instances).toHaveLength(2);
+    expect(StubEventSource.instances[1]!.url).toBe('/api/events');
+
+    // Second failure doubles the delay.
+    act(() => { StubEventSource.instances[1]!.failPermanently(); });
+    expect(hook.connError).toBe('connection lost — reconnecting in 4s');
+    act(() => { vi.advanceTimersByTime(4000); });
+    expect(StubEventSource.instances).toHaveLength(3);
+
+    // A successful open resets the backoff, and the next message clears the banner.
+    const third = StubEventSource.instances[2]!;
+    act(() => { third.readyState = 1; third.onopen?.(); third.emit(snap('t1')); });
+    expect(hook.connError).toBeNull();
+    expect(hook.data?.updatedAt).toBe('t1');
+    act(() => { third.failPermanently(); });
+    expect(hook.connError).toBe('connection lost — reconnecting in 2s');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('backoff caps at 60s', () => {
+  vi.useFakeTimers();
+  try {
+    for (let i = 0; i < 8; i++) {
+      act(() => { StubEventSource.instances.at(-1)!.failPermanently(); });
+      act(() => { vi.advanceTimersByTime(60_000); });
+    }
+    act(() => { StubEventSource.instances.at(-1)!.failPermanently(); });
+    expect(hook.connError).toBe('connection lost — reconnecting in 60s');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('unmount during a pending reconnect cancels it', () => {
+  vi.useFakeTimers();
+  try {
+    act(() => { es().failPermanently(); });
+    act(() => { render(null, host); });
+    act(() => { vi.advanceTimersByTime(120_000); });
+    expect(StubEventSource.instances).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('unmount closes a reopened EventSource, not just the first one', () => {
+  vi.useFakeTimers();
+  try {
+    act(() => { es().failPermanently(); });
+    act(() => { vi.advanceTimersByTime(2000); });
+    act(() => { render(null, host); });
+    expect(StubEventSource.instances[1]!.closed).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });

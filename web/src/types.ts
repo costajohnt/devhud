@@ -34,10 +34,12 @@ export interface DashboardData {
   updatedAt: string | null;
   errors: { jira: string | null; github: string | null };
   buckets: Record<Bucket, Item[]>;
-  todo: { key: string; summary: string; jiraUrl: string; createdAt: string }[];
-  blocked: { key: string; summary: string; jiraUrl: string; createdAt: string }[];
+  // createdAt/doneAt are nullable to match server/types.ts (TodoItem,
+  // DoneCard): jira.ts's iso() yields null for an unparseable timestamp.
+  todo: TodoItem[];
+  blocked: TodoItem[];
   unlinkedPrs: { repo: string; number: number; url: string; title: string; state: string }[];
-  doneCards: { key: string; summary: string; jiraStatus: string; jiraUrl: string; pr: PrRef | null; doneAt: string }[];
+  doneCards: { key: string; summary: string; jiraStatus: string; jiraUrl: string; pr: PrRef | null; doneAt: string | null }[];
   doneTotal: number;
   newlyDone: string[];
   recentActivity: { type: 'merged' | 'closed' | 'comment'; label: string; url: string; date: string }[];
@@ -46,6 +48,8 @@ export interface DashboardData {
   // that lacks it, so it is always present).
   filed: FiledCard[];
 }
+
+export interface TodoItem { key: string; summary: string; jiraUrl: string; createdAt: string | null }
 
 export interface FiledCard { key: string; summary: string; jiraStatus: string; jiraUrl: string; createdAt: string | null }
 

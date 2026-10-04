@@ -14,7 +14,7 @@
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.9.0",
-    "typescript": "^5.7.0",
+    "typescript": "^7.0.2",
     "vite": "^6.0.0",
     "@types/canvas-confetti": "^1.6.4"
   }

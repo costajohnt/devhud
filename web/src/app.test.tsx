@@ -94,6 +94,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test('renders and toggles the theme when localStorage access throws (blocked site data)', () => {
+  act(() => { render(null, host); });
+  const blocked = () => { throw new DOMException('blocked', 'SecurityError'); };
+  vi.stubGlobal('localStorage', { getItem: blocked, setItem: blocked, removeItem: blocked });
+  act(() => { render(h(App, null), host); });
+  expect(host.querySelector('.skeleton-wrapper')).not.toBeNull();
+  act(() => { StubEventSource.instances.at(-1)!.emit(snap()); });
+  expect(host.querySelector('.skeleton-wrapper')).toBeNull();
+  const before = document.documentElement.dataset.theme;
+  const toggle = host.querySelector<HTMLElement>('.theme-toggle');
+  expect(toggle).not.toBeNull();
+  act(() => { toggle!.click(); });
+  expect(document.documentElement.dataset.theme).not.toBe(before);
+});
+
 test('renders the loading skeleton before any snapshot arrives', () => {
   expect(host.querySelector('.skeleton-wrapper')).not.toBeNull();
   expect(host.textContent).toContain('Loading…');

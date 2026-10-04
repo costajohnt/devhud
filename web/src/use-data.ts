@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { DashboardData } from './types.js';
 import { applyEvent } from './live-event.js';
 
+// EventSource.CLOSED, spelled out so a stubbed EventSource without the
+// static constants (tests) still compares correctly.
+const ES_CLOSED = 2;
+// Backoff for reopening an EventSource the browser closed permanently.
+const SSE_RETRY_MIN_MS = 2_000;
+const SSE_RETRY_MAX_MS = 60_000;
+
 export function useData() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,40 +94,75 @@ export function useData() {
     // Server pushes the current snapshot on connect and after every
     // refresh/mutation, replacing the old client-side poll timers (which
     // throttled in background tabs). EventSource reconnects on its own
-    // after laptop sleep or a server restart.
-    const es = new EventSource('/api/events');
-    es.onmessage = (ev) => {
-      let d: DashboardData;
-      // A torn frame (server killed mid-write) must not throw inside
-      // onmessage and vanish; surface it like any other connection blip.
-      try {
-        d = JSON.parse(ev.data) as DashboardData;
-      } catch {
-        setConnError('connection lost — retrying');
-        return;
-      }
-      ++requestSeq.current; // supersede any in-flight get()/refresh()
-      setData(d);
-      setLoading(false);
-      setConnError(null);
-      const { fire, next } = applyEvent(lastEventAt.current, d);
-      lastEventAt.current = next;
-      if (fire) onRefreshed.current(d);
-    };
-    // Suppressed server ticks (content unchanged) send only the fresh
-    // updatedAt so the header's "Updated Xm ago" tracks the last successful
-    // check, not the last content change.
-    es.addEventListener('tick', (ev) => {
-      try {
-        const { updatedAt } = JSON.parse((ev as MessageEvent).data) as { updatedAt: string | null };
-        setData(d => d && { ...d, updatedAt });
+    // after a transient network drop — but NOT after a non-200 response
+    // (503 from the server's client cap, 403 from the origin check): then
+    // it closes for good (readyState CLOSED) and we must open a new one
+    // ourselves, with backoff so a full server isn't hammered.
+    let es: EventSource;
+    let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = SSE_RETRY_MIN_MS;
+
+    const connect = () => {
+      // Handlers close over this instance, not the outer es, so a late event
+      // from a replaced source can't act on its successor.
+      const source = new EventSource('/api/events');
+      es = source;
+      source.onopen = () => { retryDelay = SSE_RETRY_MIN_MS; };
+      source.onmessage = (ev) => {
+        let d: DashboardData;
+        // A torn frame (server killed mid-write) must not throw inside
+        // onmessage and vanish; surface it like any other connection blip.
+        try {
+          d = JSON.parse(ev.data) as DashboardData;
+        } catch {
+          setConnError('connection lost — retrying');
+          return;
+        }
+        ++requestSeq.current; // supersede any in-flight get()/refresh()
+        setData(d);
+        setLoading(false);
         setConnError(null);
-      } catch { /* torn frame; the next event corrects it */ }
-    });
-    // Fires on every reconnect attempt too; the banner clears on the next
-    // successful message.
-    es.onerror = () => setConnError('connection lost — retrying');
-    return () => es.close();
+        const { fire, next } = applyEvent(lastEventAt.current, d);
+        lastEventAt.current = next;
+        if (fire) onRefreshed.current(d);
+      };
+      // Suppressed server ticks (content unchanged) send only the fresh
+      // updatedAt so the header's "Updated Xm ago" tracks the last successful
+      // check, not the last content change.
+      source.addEventListener('tick', (ev) => {
+        try {
+          const { updatedAt } = JSON.parse((ev as MessageEvent).data) as { updatedAt: string | null };
+          setData(d => d && { ...d, updatedAt });
+          setConnError(null);
+        } catch { /* torn frame; the next event corrects it */ }
+      });
+      // Fires on every reconnect attempt too; the banner clears on the next
+      // successful message.
+      source.onerror = () => {
+        if (source.readyState !== ES_CLOSED) {
+          setConnError('connection lost — retrying');
+          return;
+        }
+        // The browser gave up on this EventSource; schedule a fresh one.
+        source.close();
+        const delay = retryDelay;
+        retryDelay = Math.min(retryDelay * 2, SSE_RETRY_MAX_MS);
+        setConnError(`connection lost — reconnecting in ${Math.round(delay / 1000)}s`);
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (!disposed) connect();
+        }, delay);
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      es.close();
+    };
   }, []);
 
   const clearActionError = () => setActionError(null);

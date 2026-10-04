@@ -3,13 +3,24 @@ import type { DashboardData } from './types.js';
 
 type SortDir = 'asc' | 'desc';
 
+// A null or unparseable date renders as a dash, not "Invalid Date" or 1/1/1970.
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  const ts = Date.parse(iso);
+  return Number.isNaN(ts) ? '—' : new Date(ts).toLocaleDateString();
+}
+
 // The Done page: work is complete only when its Jira card is marked Done (not
 // merely because a linked PR merged). Rows come from the server's doneCards,
 // which already excludes Canceled and gates on the Jira Done category.
 export function DonePage({ data }: { data: DashboardData }) {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  // doneAt is null when the server couldn't parse the card's timestamp
+  // (jira.ts iso()); such rows sort as the oldest, as filed.tsx does.
   const rows = [...data.doneCards].sort((a, b) =>
-    sortDir === 'desc' ? b.doneAt.localeCompare(a.doneAt) : a.doneAt.localeCompare(b.doneAt));
+    sortDir === 'desc'
+      ? (b.doneAt ?? '').localeCompare(a.doneAt ?? '')
+      : (a.doneAt ?? '').localeCompare(b.doneAt ?? ''));
   const arrow = sortDir === 'asc' ? '▲' : '▼';
 
   return (
@@ -72,7 +83,7 @@ export function DonePage({ data }: { data: DashboardData }) {
                   )}
                 </td>
                 <td>
-                  <span class="merged-table-date">{new Date(m.doneAt).toLocaleDateString()}</span>
+                  <span class="merged-table-date">{formatDate(m.doneAt)}</span>
                 </td>
               </tr>
             ))}

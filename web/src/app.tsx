@@ -8,6 +8,7 @@ import { DonePage } from './done.js';
 import { FiledPage } from './filed.js';
 import { SimonRunsPage, SimonRunPage } from './simon.js';
 import { fireConfetti } from './celebrate.js';
+import { readStorage, writeStorage } from './storage.js';
 import { SkeletonLoader } from './skeleton-loader.js';
 import { LazyChartPanel } from './chart-panel-lazy.js';
 import {
@@ -29,9 +30,9 @@ const NOTIFY_KEY = 'simon-dash-notify';
 // migration from the pre-rename key: read it as a fallback and write it
 // forward under the new key so nobody's saved theme choice resets.
 function getInitialTheme(): string {
-  const stored = localStorage.getItem(THEME_KEY) ?? localStorage.getItem(LEGACY_THEME_KEY);
+  const stored = readStorage(THEME_KEY) ?? readStorage(LEGACY_THEME_KEY);
   if (stored) {
-    if (!localStorage.getItem(THEME_KEY)) localStorage.setItem(THEME_KEY, stored);
+    if (!readStorage(THEME_KEY)) writeStorage(THEME_KEY, stored);
     return stored;
   }
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
@@ -76,7 +77,7 @@ function AppContent() {
   // still says granted — a permission revoked in site settings must not leave
   // the bell showing "on" for a channel that can no longer deliver.
   const [notifyOn, setNotifyOn] = useState(() =>
-    localStorage.getItem(NOTIFY_KEY) === '1' && notificationPermission() === 'granted');
+    readStorage(NOTIFY_KEY) === '1' && notificationPermission() === 'granted');
   const [notifyError, setNotifyError] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -154,7 +155,7 @@ function AppContent() {
     if (!window.matchMedia) return;
     const mq = window.matchMedia('(prefers-color-scheme: light)');
     const handler = (e: MediaQueryListEvent) => {
-      if (localStorage.getItem(THEME_KEY)) return;
+      if (readStorage(THEME_KEY)) return;
       const t = e.matches ? 'light' : 'dark';
       setTheme(t);
       document.documentElement.dataset.theme = t;
@@ -168,7 +169,7 @@ function AppContent() {
   // reflexively block, and a denial is permanent for the origin.
   const flipNotify = async () => {
     if (notifyOn) {
-      localStorage.setItem(NOTIFY_KEY, '0');
+      writeStorage(NOTIFY_KEY, '0');
       setNotifyOn(false);
       return;
     }
@@ -179,14 +180,14 @@ function AppContent() {
         : 'Notification permission was not granted.');
       return;
     }
-    localStorage.setItem(NOTIFY_KEY, '1');
+    writeStorage(NOTIFY_KEY, '1');
     setNotifyOn(true);
   };
 
   const flipTheme = () => {
     const t = theme === 'dark' ? 'light' : 'dark';
     setTheme(t);
-    localStorage.setItem(THEME_KEY, t);
+    writeStorage(THEME_KEY, t);
     document.documentElement.dataset.theme = t;
   };
 
