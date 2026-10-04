@@ -1,6 +1,6 @@
 # API Reference
 
-simon-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Five endpoints under `/api/`, plus static file serving for the SPA.
+simon-dash exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Seven routes under `/api/` (`/api/data`, `/api/events`, `/api/refresh`, `/api/action`, `/api/write`, `/api/simon/runs` and `/api/simon/runs/:id`), plus static file serving for the SPA.
 
 There are two other ways to reach the same board: `server/cli.ts` (a plain-TS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
 
@@ -17,7 +17,7 @@ If the server has never run a refresh (fresh `data/state.json`, no snapshot yet)
   "buckets": { "needs_attention": [], "in_progress": [], "self_review": [], "waiting_review": [], "mergeable": [], "qa_ready": [], "in_qa": [] },
   "todo": [], "blocked": [], "unlinkedPrs": [],
   "doneCards": [], "doneTotal": 0, "newlyDone": [], "recentActivity": [],
-  "prLog": []
+  "prLog": [], "filed": []
 }
 ```
 
@@ -75,7 +75,7 @@ Pins a card to a specific bucket:
 - Also resets the seen horizon (same as `ack`), so comments the classifier already accounted for don't immediately bounce the card back into `needs_attention` on the very next refresh.
 - Splices the card out of its current bucket in the live snapshot and into the target bucket.
 
-The override persists across refreshes: on every `/api/refresh`, `classifyCard` checks `cs.override` and honors it unless a "live" attention trigger fires again (CI failing, a merged-not-in-test card, or a new unseen comment); see Buckets below.
+The override persists across refreshes: on every refresh, `classifyCard` checks `cs.override` and honors it unless something that outranks a pin applies. Two things do. One is an open draft PR on a card that is not in a review status, which routes to `self_review`. The other is a visible **routing** attention reason, which routes to `needs_attention`. The routing reasons are `ROUTING_REASONS` in `classify.ts`: `ci_failing` and `merged_not_in_test`. A new comment does **not** override a pin: `new_pr_comments`/`new_jira_comments` are badge reasons, so they show as a pill on the pinned card and leave it in its bucket. See the classification rules in [ARCHITECTURE.md](ARCHITECTURE.md#classification-rules).
 
 ### `type: "unpin"`
 
@@ -105,7 +105,7 @@ On success, every action type responds `{ "ok": true, "bucket": string | null }`
 
 ## POST /api/write
 
-The only endpoint that mutates Jira or GitHub. Off by default: gated by `writeEnabled` in `config.json` (see server/writeback.ts's `checkWriteGate`). Body is JSON, one of:
+The only endpoint that mutates Jira or GitHub (the one other write path is the opt-in `autoTransitionMerged` tick, see Config notes below). Off by default: gated by `writeEnabled` in `config.json` (see server/writeback.ts's `checkWriteGate`). Body is JSON, one of:
 
 ```json
 { "type": "transition", "key": "PROJ-123", "status": "In Review" }
@@ -131,13 +131,74 @@ On a real success (`writeEnabled: true`, not demo, the write succeeded), the ser
 
 The CLI (`simon-dash transition|comment|pr-comment`) and the MCP write tools (`transition_card`/`comment_card`/`comment_pr`) both go through this same endpoint when a server is running, and through the same `performWrite()` function directly on disk when one isn't — so gate semantics and the post-write refresh can't drift between the three surfaces.
 
+### Config notes
+
+Keys in `config.json` that change what reaches Jira or GitHub, all re-read from disk on every write (fail closed if the read fails):
+
+- `writeEnabled` (default `false`): the master gate described above. Nothing writes while it is `false`.
+- `demo` (default `false`): when `true`, every write is a stub success and nothing is written, regardless of `writeEnabled`.
+- `autoTransitionMerged` (default `false`): opt-in automatic transitions. After each scheduled refresh tick (the server's own loop, not `POST /api/refresh`), `autoTransitionMergedCards()` in `server/writeback.ts` moves cards flagged `merged_not_in_test` to `jira.statuses.inTest`. It does not go through this endpoint: it calls the Jira transition directly so the write doesn't trigger a second refresh. It shares this endpoint's gates. It does nothing unless `writeEnabled` is `true`, refuses in demo mode, and only touches keys inside `jira.projectKey`. It also skips cards whose `merged_not_in_test` reason is acked. Further guards:
+  - It skips the batch when the refresh's data is degraded (`errors.jira` or `errors.github` set).
+  - It only moves a card out of a review or in-progress status (`jira.statuses.inProgress`, default "In Progress", or the review status), never out of To Do or a status past In Test.
+  - It fires at most once per merged PR. Failures are remembered rather than retried every tick.
+  - It never re-flags a card that QA sent back after the card had reached In Test.
+
+  Per-card failures are logged and the batch continues. It never comments and never writes to GitHub.
+
+## GET /api/simon/runs
+
+Lists Simon executor runs. Read-only, served on demand, and outside the snapshot/SSE cycle, so run telemetry never rides along on `/api/events`. Implemented in `server/simon.ts`.
+
+Needs the optional `simon` block in `config.json`:
+
+```json
+"simon": { "root": "/absolute/path/to/simon/scaffold", "bin": "simon" }
+```
+
+`root` must be an absolute path (`loadConfig` rejects a relative one). `bin` is optional and defaults to `simon`. Without the block the response is `{ "configured": false, "runs": [] }`, and the web UI's `/simon` page shows an "unconfigured" card.
+
+When configured, the server reads every `<root>/state/runs/*.jsonl` ledger and returns:
+
+```
+{
+  configured: true,
+  runs: SimonRunSummary[],   // newest first (ids are timestamp-prefixed)
+  statusError?: string       // set when `simon status --json` failed; classes then come from the ledger fallback
+}
+```
+
+`SimonRunSummary`:
+
+```
+{
+  id: string,               // ledger basename minus .jsonl: <UTC-ts>-<KEY>
+  key: string,              // work-item key from run_start (fallback: parsed from id)
+  startedAt: string | null,
+  endedAt: string | null,   // run_end ts, null while in flight
+  outcome: string | null,   // run_end outcome
+  haltedAt: string | null,  // run_end halted_at
+  phase: string | null,     // last phase_start's phase
+  class: string | null,     // attention class (see below)
+  durationS: number | null,
+  lastEventAt: string | null
+}
+```
+
+`class` comes from `<bin> status --json` (run with `SIMON_ROOT=<root>` and a 5s timeout), attached to the newest run per key only. When that command fails, or has nothing for a run, the class falls back to the ledger: a finished run gets its `outcome`, an unfinished one is `in_flight`, or `stale` once its last event is more than 10 minutes old. A missing runs directory is not an error, it returns `runs: []`. Malformed ledger lines and unreadable ledgers are skipped.
+
+## GET /api/simon/runs/:id
+
+Returns one run's parsed ledger: `{ id: string, key: string, events: SimonEvent[] }`, where each event is one JSONL line with at least `ts` and `event` and every other field passed through verbatim. All timeline interpretation happens client-side (`web/src/simon-run-fold.ts`). The web UI's `/simon/<id>` page re-polls this every 1.5s while the run has no `run_end`.
+
+`404 { "error": "run not found" }` when `simon` is not configured, when the id fails `^[A-Za-z0-9._-]+$` (or is malformed percent-encoding such as `%zz`), when the resolved path would leave the runs directory, or when no such ledger exists.
+
 ## Payload shape
 
 The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 
 ```
 {
-  updatedAt: string,               // ISO timestamp of this snapshot
+  updatedAt: string | null,        // ISO timestamp of this snapshot (null only in the first-boot placeholder)
   errors: { jira: string | null, github: string | null },
   buckets: {
     needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], mergeable: Item[], qa_ready: Item[], in_qa: Item[]
@@ -145,8 +206,8 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   todo: TodoItem[],
   blocked: TodoItem[],              // Jira Blocked cards, split out like todo
   unlinkedPrs: UnlinkedPr[],
-  doneCards: DoneCard[],           // cards Jira has marked Done — drives the /done page
-  doneTotal: number,               // doneCards.length — the "Done" counter
+  doneCards: DoneCard[],           // lifetime ledger of cards Jira has marked Done, newest first — drives the /done page
+  doneTotal: number,               // doneCards.length (the lifetime ledger's size) — the "Done" counter
   newlyDone: string[],             // cards that reached Done on this refresh — drives confetti
   recentActivity: ActivityEntry[], // merged/closed/comment activity in the last 7 days
   prLog: PrLogEntry[],
@@ -163,14 +224,17 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   jiraStatus: string,               // raw Jira status name
   jiraUrl: string,
   fixVersions: string[],            // Jira Fix Version names; empty array = none set (flagged in the detail view)
-  bucket: 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'in_qa',
-  attention: string[],              // trigger reasons: 'ci_failing', 'new_pr_comments', 'new_jira_comments', 'merged_not_in_test'
+  bucket: 'needs_attention' | 'in_progress' | 'self_review' | 'waiting_review' | 'mergeable' | 'qa_ready' | 'in_qa',
+  attention: string[],              // visible reasons: 'ci_failing', 'merged_not_in_test' (routing),
+                                    // 'new_pr_comments', 'new_jira_comments', 'missing_qa_instructions', 'missing_fix_version' (badges)
   newComments: Comment[],           // comments newer than the seen horizon, from others (not self)
-  comments: Comment[],              // full comment history, both sources merged, newest first, capped at 10
+  comments: Comment[],              // comment history, last 10 per source, merged newest first
   pr: PrRef | null,
-  createdAt: string,                // Jira card created
-  updatedAt: string,                // Jira card updated
-  daysSinceActivity: number | null  // days since max(card.updatedAt, pr.updatedAt)
+  createdAt: string | null,         // Jira card created (null if Jira's timestamp was unparseable)
+  updatedAt: string | null,         // Jira card updated (same)
+  daysSinceActivity: number | null, // days since max(card.updatedAt, pr.updatedAt)
+  pinned: boolean,                  // a manual pin (cardState.override) is holding the card in this bucket
+  pinnedAt: string | null           // when that pin was set (cardState.overrideAt)
 }
 ```
 
@@ -182,7 +246,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 `Comment`:
 
 ```
-{ source: 'github' | 'jira', author: string, body: string, createdAt: string }
+{ source: 'github' | 'jira', author: string, body: string, createdAt: string | null }
 ```
 
 `body` is truncated to 300 characters at the source (`refresh.ts`/`classify.ts`), not on the client.
@@ -190,18 +254,20 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 `PrRef` (a trimmed view of the linked PR, `null` if the card has no linked PR):
 
 ```
-{ repo: string, number: number, url: string, branch: string, state: 'open' | 'merged' | 'closed', ciStatus: 'passing' | 'failing' | 'pending' | 'unknown', reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none', ciNewFailures?: string[] }
-
-`ciNewFailures` is present only while `ciStatus` is `'failing'`: the failed checks that are not also failing on the PR's base branch. `[]` means every failure is pre-existing on the base, so the card gets no `ci_failing` reason; absent means the comparison was not possible and the card is flagged as before.
+{ repo: string, number: number, url: string, branch: string, state: 'open' | 'merged' | 'closed', ciStatus: 'passing' | 'failing' | 'pending' | 'unknown', reviewState: 'review_required' | 'changes_requested' | 'approved' | 'none', ciNewFailures?: string[], ciBasePending?: boolean, isDraft?: boolean }
 ```
+
+`ciNewFailures` is present only while `ciStatus` is `'failing'`: the failed checks that are not also failing on the PR's base branch. `[]` means every failure is pre-existing on the base, so the card gets no `ci_failing` reason; absent means the comparison was not possible and the card is flagged as before, unless `ciBasePending` is `true`: the base branch's CI is still running, so the verdict is unknown and the card is not flagged (refresh carries over the previous verdict for the same PR when it has one). The board shows such a PR as "CI red, base running".
+
+`isDraft` is `true` for a GitHub draft PR and for a PR carrying a `Draft` label (how Simon marks the PRs it opens). An open draft routes the card to `self_review` unless the card is in a review status, and never to `mergeable`.
 
 ### TodoItem
 
 ```
-{ key: string, summary: string, jiraUrl: string, createdAt: string }
+{ key: string, summary: string, jiraUrl: string, createdAt: string | null }
 ```
 
-Cards whose Jira status is the configured "To Do" status. Split out before bucket classification runs; never appear in `buckets`.
+Cards in Jira's To Do status category (or the configured "To Do" status) with no linked PR. Split out before bucket classification runs; never appear in `buckets`. A To Do card that already has a linked PR stays on the board. `blocked` uses the same shape for cards in the Blocked status, which leave the board whether or not they have a PR.
 
 ### UnlinkedPr
 
@@ -214,10 +280,10 @@ Open PRs that couldn't be matched to any tracked Jira card by branch name, PR ti
 ### DoneCard
 
 ```
-{ key: string, summary: string, jiraStatus: string, jiraUrl: string, pr: PrRef | null, doneAt: string }
+{ key: string, summary: string, jiraStatus: string, jiraUrl: string, pr: PrRef | null, doneAt: string | null }
 ```
 
-Cards Jira has marked complete — status category `done`, excluding Canceled. Drives the `/done` page and the header's Done counter. `doneAt` is the card's last-updated time (when it reached Done); `pr` is the linked PR, if any, as supporting context. Completion follows the **Jira card's Done state**, not a PR merge — a merged-but-not-Done card stays on the active board with its merged PR shown as context.
+Cards Jira has marked complete — status category `done`, excluding Canceled. Drives the `/done` page and the header's Done counter. The list is a lifetime ledger (`state.doneLedger`), not one fetch: see doneTotal below. `doneAt` is the card's last-updated time (when it reached Done); `pr` is the linked PR, if any, as supporting context. Completion follows the **Jira card's Done state**, not a PR merge — a merged-but-not-Done card stays on the active board with its merged PR shown as context.
 
 There is no Merged or Closed page/counter/field. A merged PR surfaces only on its active card (the board's "Merged" pill and the detail panel's "PR merged" chip) and, for merges/closes in the last 7 days, in `recentActivity`.
 
@@ -227,11 +293,11 @@ There is no Merged or Closed page/counter/field. A merged PR surfaces only on it
 { key: string, summary: string, jiraStatus: string, jiraUrl: string, createdAt: string | null }
 ```
 
-Every card whose Jira **reporter** is the configured `accountId`, site-wide (not limited to `projectKey`) and in any status, ordered by `created` descending. A second JQL query per refresh; if it fails, the previous snapshot's list is kept and the failure is appended to `errors.jira`. Drives the "Filed by me" stat card and the `/filed` page.
+Every card whose Jira **reporter** is the configured `accountId`, site-wide (not limited to `projectKey`) and in any status, ordered by `created` descending. A second JQL query per refresh, incremental: it fetches only recently updated cards and merges them into the previous list. A full refetch runs every 24 hours (and immediately when `jira.accountId` or `jira.baseUrl` changes), which drops deleted or moved cards. If the query fails, the previous list is kept (or emptied after an account/site change) and the failure is appended to `errors.jira`. Drives the "Filed by me" stat card and the `/filed` page.
 
 ### doneTotal / newlyDone
 
-`doneTotal` is `doneCards.length` — the number of Done cards in the current fetch window, so the header counter always matches the `/done` list it labels. It is not an all-time total: cards that age out of Jira's fetch window (or stop matching the board's JQL) leave both the list and the count.
+`doneTotal` is `doneCards.length`, so the header counter always matches the `/done` list it labels. Both come from `state.doneLedger`, a lifetime ledger of Done cards, so the count is all-time and does not shrink as cards age. Done cards are fetched incrementally against a watermark: `doneWatermark()` in `jira.ts` takes the newest `doneAt` in the ledger minus one day (date-only, since Jira evaluates a bare date in the user's timezone), and the board's JQL fetches Done cards only from that date on. Each refresh merges what it fetched into the ledger by key (this refresh's row wins) and evicts any card the fetch now shows as not Done, such as one reopened in Jira. An empty ledger, on first run or with a pre-ledger `state.json`, means no lower bound: the first fetch seeds it with every Done card assigned to you.
 
 `newlyDone` is the list of Jira keys that reached Done on *this* refresh only, empty on every refresh after the first celebration. Drives the completion confetti/toast in the UI.
 
@@ -296,7 +362,7 @@ Any request not starting with `/api/` is treated as a static file request agains
 - If the resolved path is a real file, it's served with a `content-type` derived from its extension (`.html`, `.js`, `.css`, `.svg`, `.woff2`, `.png`, `.json`; anything else falls back to `application/octet-stream`).
 - If the path doesn't resolve to a file (a client-side route like `/done`, or any unknown path), the server falls back to serving `index.html` so the SPA router (`preact-iso`, reading `window.location` client-side) can render its own not-found or route view.
 
-`/api/*` paths that don't match `/api/data`, `/api/events`, `/api/refresh`, `/api/action`, or `/api/write` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
+`/api/*` paths that don't match `GET /api/data`, `GET /api/events`, `POST /api/refresh`, `POST /api/action`, `POST /api/write`, `GET /api/simon/runs`, or `GET /api/simon/runs/:id` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
 
 ## Single-instance behavior
 
@@ -304,7 +370,7 @@ The server binds `127.0.0.1:<port>` (loopback only, not reachable from other hos
 
 ## CLI
 
-`server/cli.ts` exposes `status`/`refresh`/`ack`/`move`/`transition`/`comment`/`pr-comment`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — that branch is chosen once per command in `server/ops.ts`, which both the CLI and the MCP server consume, and `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
+`server/cli.ts` exposes `status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — that branch is chosen once per command in `server/ops.ts`, which both the CLI and the MCP server consume, and `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
 
 ## Demo mode
 

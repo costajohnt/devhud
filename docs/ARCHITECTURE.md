@@ -4,19 +4,20 @@
 
 ### Server (`server/`, TypeScript, erasable-syntax only, no build step — Node's native type stripping runs `.ts` files directly)
 
-- **index.ts**: HTTP server (`node:http`). Routes `/api/data`, `/api/events` (SSE), `/api/refresh`, `/api/action`, `/api/write`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object, the scheduled refresh loop, the SSE broadcast set, and the single-instance guard.
-- **config.ts**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses), reads `GITHUB_TOKEN` env var as a token fallback.
+- **index.ts**: HTTP server (`node:http`). Routes `/api/data`, `/api/events` (SSE), `/api/refresh`, `/api/action`, `/api/write`, `/api/simon/runs` and `/api/simon/runs/:id`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object, the scheduled refresh loop (which also runs the opt-in `autoTransitionMergedCards` after each tick), the SSE broadcast set, and the single-instance guard.
+- **config.ts**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses, `simon.bin` = `simon`), requires an absolute `simon.root` when the `simon` block is present, reads `GITHUB_TOKEN` env var as a token fallback.
 - **state.ts**: `data/state.json` load/save, migrations (`celebrated` string→object, `prLog` backfill), and `cardState` (per-card override/seen-horizon lookup, created lazily).
 - **jira.ts**: Jira Cloud REST client: JQL search, ADF-to-plain-text flattening, comment pagination fallback for cards with more comments than the search endpoint embeds.
 - **github.ts**: GitHub client. PR discovery is one GraphQL search per configured repo (the author's 50 most recently updated PRs with branch, state, draft flag, pending review requests and the head commit's CI rollup in a single response, #72); comments and reviews for PRs linked to a card come from REST. Every request goes through one `send()` helper that counts it into per-refresh stats (total, per endpoint family, 304s, retries, last `x-ratelimit-remaining`) and carries the secondary-rate-limit backoff: a 403/429 that names the secondary limit or carries `Retry-After`/an exhausted `x-ratelimit-remaining` is retried up to 3 times (Retry-After, else the reset timestamp, else exponential backoff from 1s, capped at 60s) before it throws (#69). REST GETs add a conditional-request (ETag) cache. Refresh paces its enrich batches for the same reason — the limit is rate-shaped, so concurrency caps alone don't hold it.
 - **link.ts**: Matches PRs to Jira cards by branch name, PR title, PR body (`/browse/KEY` link), or card description (containing the PR URL); returns the unlinked leftovers.
 - **classify.ts**: Given a card + its linked PR + its stored `cardState`, decides the bucket and attention flags.
 - **refresh.ts**: Orchestrates one refresh cycle: fetch (or demo-generate), link, classify, build the full snapshot payload (`buildSnapshot`), including `prLog` upsert and the `recentActivity`/`doneCards` derivations. Also the fallback-to-last-known-good logic on partial fetch failure.
+- **simon.ts**: Read-only Simon executor run data for `/api/simon/runs[/:id]`. Scans `<simon.root>/state/runs/*.jsonl` ledgers into run summaries and joins on `simon status --json` (5s timeout) for each key's attention class, falling back to a ledger-derived class (outcome, `in_flight`, or `stale` after 10 minutes of silence) when the binary fails. Run ids are checked against `RUN_ID_RE` and path-contained before any read. Outside the snapshot/SSE cycle on purpose.
 - **demo.ts**: Canned cards/PRs shaped to match `jira.ts`/`github.ts` output, so demo mode runs the real `buildSnapshot` pipeline with no network.
-- **actions.ts**: `applyAction()` — shared ack/move logic used by the HTTP handler (`POST /api/action`) and the CLI's `ack`/`move` commands, so the two transports can't drift on semantics. Also exports `BUCKETS`, the list of buckets a manual move can target (excludes `needs_attention`).
+- **actions.ts**: `applyAction()` — shared ack/move/unpin logic used by the HTTP handler (`POST /api/action`) and the CLI's `ack`/`move`/`unpin` commands, so the two transports can't drift on semantics. Also exports `BUCKETS`, the list of buckets a manual move can target (excludes `needs_attention`).
 - **transport.ts**: Dual-transport primitives shared by the CLI and MCP server: `probeServer()` (is a real server answering on the configured port), `writePidFile()` (the writer half of the pid-file contract), `serverAppearsRunning()`/`saveStateGuarded()` (the split-brain guard for direct-mode writes — see Concurrency below).
 - **ops.ts**: The dual-transport OPERATIONS built on those primitives — `opSnapshot`/`opRefresh`/`opAction`/`opWrite`, each deciding once between the HTTP proxy path (a live server's in-memory state is the source of truth) and the direct-disk path with the split-brain guards. The CLI and MCP handlers both consume these; callers own presentation only.
-- **writeback.ts**: `performWrite()` — the single entry point for every write-back path (`POST /api/write`, the CLI's `transition`/`comment`/`pr-comment` commands, the MCP write tools). Builds the minimal ADF doc for Jira comments, re-reads `config.json` fresh on every call so `writeEnabled` takes effect without a restart, and refreshes the board after a successful write.
+- **writeback.ts**: `performWrite()` — the single entry point for every write-back path (`POST /api/write`, the CLI's `transition`/`comment`/`pr-comment` commands, the MCP write tools). Builds the minimal ADF doc for Jira comments, re-reads `config.json` fresh on every call so `writeEnabled` takes effect without a restart, and refreshes the board after a successful write. Also `autoTransitionMergedCards()`, the opt-in (`autoTransitionMerged`, requires `writeEnabled`) tick-time transition of `merged_not_in_test` cards to In Test. It shares `performWrite`'s fail-closed config re-read, demo refusal and project-prefix gates, but calls `transitionCard()` directly so it doesn't trigger a re-entrant refresh. See the README's Write-back section for its guards.
 - **cli.ts**: `simon-dash` CLI (`status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Argv parsing and output formatting only — the actual operations come from `ops.ts`, so the CLI and MCP server can't drift on transport semantics.
 - **types.ts**: Shared types (Card, Pr, Item, Snapshot, State, Config, ActionResult, WriteResult) mirroring `web/src/types.ts`'s payload shapes.
 
@@ -24,20 +25,23 @@
 
 A stdio MCP server exposing the board to Claude sessions, using the exact same dual-transport rule as the CLI (see `transport.ts` above and the Concurrency section below — MCP direct-mode writes go through the same split-brain guard).
 
-- **handlers.ts**: Tool handler functions (`boardStatus`, `doRefresh`, `ackCard`, `moveCard`, `cardComments`, `transitionCard`, `commentCard`, `commentPr`), kept separate from the stdio wiring so they're callable directly in tests without a real MCP transport. All four operations delegate to `server/ops.ts` (the shared dual-transport layer, see below); this file only shapes tool results (summaries, untrusted-text notes) on top.
-- **index.ts**: Registers the 8 tools above on an `McpServer` and connects a `StdioServerTransport`. Read tools (`board_status`, `refresh`, `ack_card`, `move_card`, `card_comments`) are always available; the three write tools (`transition_card`, `comment_card`, `comment_pr`) are real mutations gated by `writeEnabled` and always a no-op in demo mode, and their tool descriptions explicitly instruct the calling model to draft content and get the user's approval before calling them.
+- **handlers.ts**: Tool handler functions (`boardStatus`, `doRefresh`, `ackCard`, `moveCard`, `unpinCard`, `cardComments`, `transitionCard`, `commentCard`, `commentPr`), kept separate from the stdio wiring so they're callable directly in tests without a real MCP transport. Every operation delegates to `server/ops.ts` (the shared dual-transport layer, see below); this file only shapes tool results (summaries, untrusted-text notes) on top.
+- **index.ts**: Registers the 9 tools above on an `McpServer` and connects a `StdioServerTransport`. The six board tools (`board_status`, `refresh`, `ack_card`, `move_card`, `unpin_card`, `card_comments`) are always available and never touch Jira or GitHub beyond reading; the three write tools (`transition_card`, `comment_card`, `comment_pr`) are real mutations gated by `writeEnabled` and always a no-op in demo mode, and their tool descriptions explicitly instruct the calling model to draft content and get the user's approval before calling them.
 
 ### Web (`web/src/`, Preact + TypeScript, Vite build)
 
 - **main.tsx**: Entry point: mounts `<App>` wrapped in an `<ErrorBoundary>`.
-- **app.tsx**: Top-level shell: live-update/refresh wiring, theme state (OS-aware), route branching (`/`, `/done`, `/filed`, 404), header, banners, toast. Acknowledging a Needs Attention card auto-advances the selection to the next such card.
+- **app.tsx**: Top-level shell: live-update/refresh wiring, theme state (OS-aware), route branching (`/`, `/done`, `/filed`, `/simon`, `/simon/<run id>`, 404), header, banners, toast. Fires the completion confetti and toast when a refresh reports `newlyDone` cards (a card reaching Done). Acknowledging a Needs Attention card auto-advances the selection to the next such card.
 - **notify.ts**: Desktop-notification rules for cards entering Needs Attention. Split like live-event.ts — `decideNotification()` is pure (keyed on card identity, not bucket length; skips the connect replay; only fires while the tab is hidden; always advances its baseline even when suppressed) and the Notification API calls sit below it.
+- **live-event.ts**: Pure decision for each incoming SSE snapshot: whether it is a new refresh (fire `onRefreshed`, which drives confetti) or a connect replay / re-broadcast of the same snapshot (don't).
 - **use-data.ts**: `useData()` hook: holds an `EventSource` on `/api/events` for all data (initial render included), exposes `refresh()` for the manual button and `act()` for `/api/action` calls with error handling.
 - **board.tsx**: `useBoardFilter()` hook (search/status/repo filter state, drag-and-drop handlers) plus `BoardStats`, `BoardFilterBar`, `BoardList` components.
 - **detail.tsx**: Card detail side panel: a prominent status + next-action strip, Fix Version (with an explicit missing-state), PR/CI/review status, actionable New Jira Comments / New GitHub Comments queues, the per-source comment history behind "All Jira activity" / "All GitHub activity" disclosures, and ack/move actions.
 - **extras.tsx**: Todo section, Unlinked PRs section, Recent Activity (grouped by merged/closed/comment).
 - **done.tsx**: `/done` full-page sortable table of `doneCards` (cards Jira has marked Done). Replaces the former `/merged` and `/closed` pages.
 - **filed.tsx**: `/filed` full-page table of `filed` (cards this user reported, any project), newest first.
+- **simon.tsx**: `/simon` (Simon executor runs list) and `/simon/<run id>` (one run's timeline, re-polled every 1.5s while the run has no `run_end`) pages, over `/api/simon/runs[/:id]`. Shows an "unconfigured" card when `config.json` has no `simon` block.
+- **simon-run-fold.ts**: Pure fold of a run's raw ledger events into the phases and timeline the detail page renders. The server ships raw events; all interpretation lives here.
 - **chart-panel.tsx**: Chart.js-backed Monthly Activity (line) and Top Repos (stacked bar) charts, built from `prLog`.
 - **chart-panel-lazy.tsx**: Dynamic-import wrapper around `chart-panel.tsx` so Chart.js ships in its own chunk, not the initial bundle.
 - **celebrate.ts**: Lazy-loaded `canvas-confetti` wrapper, respects `prefers-reduced-motion`.
@@ -73,7 +77,7 @@ POST /api/refresh   ▼
   response ──► GET /api/data returns state.snapshot directly (no recompute)
 ```
 
-`POST /api/action` (ack/move) mutates `state.snapshot` in place (splicing the item between bucket arrays, clearing attention) and persists, without going through `buildSnapshot` again. It's a local edit of the last snapshot, not a new fetch.
+`POST /api/action` (ack/move/unpin) mutates `state.snapshot` in place (splicing the item between bucket arrays, clearing attention) and persists, without going through `buildSnapshot` again. It's a local edit of the last snapshot, not a new fetch.
 
 Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshIntervalSeconds`, default 120s) and broadcasts every new snapshot over `GET /api/events` (Server-Sent Events) — after scheduled refreshes, manual `/api/refresh` calls, actions, and writes. On the client, `useData()` holds one `EventSource` open and renders whatever arrives; the initial render comes from the connect event (the server sends the current snapshot immediately), so there is no mount-time `/api/data` fetch and no client-side poll timer. The manual Refresh button still calls `/api/refresh` directly.
 
@@ -84,6 +88,7 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
   cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt, ackedReasons, lastStatus } },
   celebrated: [{ id: "org/repo#num", at: isoString | null }],  // legacy, load-only (see below)
   doneCelebrated: [{ id: "jiraKey", at: isoString | null }],
+  doneLedger: DoneCard[],  // lifetime Done list, newest first (optional in older files)
   lastRefreshAt: isoString | null,
   snapshot: <last full payload, or null>,
   lastCards: <last successful Jira fetch, or null>,
@@ -94,9 +99,10 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
 
 - **cards**: per-card local overrides. `override`/`overrideAt` record a manual bucket pin; `lastSeenPr`/`lastSeenJira` are the comment "seen" horizons used by `classifyCard` to decide what counts as new; `ackedReasons` lists acknowledged state-based attention reasons (muted while continuously true); `lastStatus` is the card's Jira status as of the last refresh, compared each refresh to release a pin when the status transitions (#53). All are optional in pre-existing state files.
 - **celebrated**: legacy PR-merge celebration ids from older state files. No longer written — completion is now tracked by Jira Done, not PR merges — but still read at load time so `migratePrLog` can backfill `prLog` history for pre-`prLog` state files.
-- **doneCelebrated**: Jira cards observed in the Done category (keyed by card key), so the completion confetti only fires once per card. The `doneTotal` counter is not derived from it — it's `doneCards.length`, so the number always matches the Done list. Completion — not a PR merge — is what the UI celebrates and counts. Two rules keep this ledger honest, both learned the hard way:
+- **doneCelebrated**: Jira cards observed in the Done category (keyed by card key), so the completion confetti only fires once per card. The `doneTotal` counter is not derived from it. The counter is `doneLedger.length` (see **doneLedger** below), so the number always matches the Done list. Completion — not a PR merge — is what the UI celebrates and counts. Two rules keep this ledger honest, both learned the hard way:
   - **Only your own cards are appended.** Before `buildJql`'s assignee filter was fixed, the board fetched other people's cards and the refresh loop celebrated every Done one it saw — 25 foreign rows in permanent state. A fetch-layer bug must not be able to write state that outlives it, so the writer checks `card.assigneeId` against the configured account rather than trusting the fetch.
-  - **Entries expire.** An entry's only job is preventing a second celebration, and it can only do that job while its card can still turn up in a fetch (`buildJql` bounds Done cards at `updated >= -14d`). An entry both absent from the current refresh and older than `CELEBRATION_RETENTION_DAYS` (90) is dropped, so the ledger stays bounded and a bad row ages out instead of needing a hand-run migration. Entries for cards in the *current* fetch are never dropped at any age: dropping one would re-celebrate that card on every subsequent refresh.
+  - **Entries expire.** An entry's only job is preventing a second celebration, and it can only do that job while its card can still turn up in a fetch (`buildJql` only fetches Done cards updated since the `doneLedger` watermark). An entry both absent from the current refresh and older than `CELEBRATION_RETENTION_DAYS` (90) is dropped, so the ledger stays bounded and a bad row ages out instead of needing a hand-run migration. Entries for cards in the *current* fetch are never dropped at any age: dropping one would re-celebrate that card on every subsequent refresh.
+- **doneLedger**: the lifetime ledger of Done cards, and the source of both `snapshot.doneCards` and `snapshot.doneTotal` (`doneLedger.length`). Done cards are fetched incrementally against a watermark (`doneWatermark()` in `jira.ts`: the newest `doneAt` in the ledger minus one day, date-only). Each refresh merges the fetched Done cards in by key, with this refresh's row winning, and evicts any card the fetch now shows as not Done. So the count is all-time and does not shrink as cards age. A missing or empty ledger means an unbounded first fetch that seeds it.
 - **lastCards** / **lastPrs**: last-known-good fetch results, used to backfill the board on a partial or total source failure instead of blanking it.
 - **prLog**: full PR lifecycle history (see API.md), upserted from every fetched PR each refresh; never pruned.
 - **snapshot**: the exact payload the API returns; recomputed by `buildSnapshot` on every refresh, read as-is by `GET /api/data`.
@@ -118,9 +124,9 @@ Evaluated top to bottom; the first matching row wins:
 | *(override)* | A manual-move override routes to its pinned bucket. Overrides auto-clear when the card's Jira status changes between refreshes (a transition supersedes the pin, #53) or once the card reaches In Test or Done, and are released explicitly by the `unpin` action. |
 | `qa_ready` | Jira status equals the configured "In Test" status — unless `new_jira_comments` is visible, which routes the card to `needs_attention` instead: a Jira comment on a card in test is QA waiting on the developer, and the `lastSeenJira` watermark clears it (and returns the card here) as soon as the comment is read. |
 | `waiting_review` | PR is open and a draft while the card is in a review status. Moving the card there is the operator saying it is out for peer review, so the draft stops holding it in Self Review Needed (#53). Checked before `mergeable`: a draft PR cannot be merged as it stands, however its reviews landed. |
-| `mergeable` | PR is open and approved. |
-| `waiting_review` | The card is in a review status ("Code Review"/"In Review", or `jira.statuses.review`; matched case-insensitively) — with or without a PR — or an open PR has any review activity. An approved or draft PR still wins. |
-| `self_review` | PR is open with no review activity and the card isn't in a review status. |
+| `mergeable` | PR is open, not a draft, and approved. |
+| `waiting_review` | PR is open, not a draft, and not approved, whatever its review activity (#91). Only the draft flag routes an open PR to `self_review`. |
+| `waiting_review` | The card is in a review status ("Code Review"/"In Review", or `jira.statuses.review`; matched case-insensitively), with no open PR (#64). |
 | `in_progress` | Default: none of the above apply. |
 
 `in_qa` is reachable only via a manual move (a pinned override) — the classifier itself never routes there.
@@ -134,8 +140,8 @@ where it already is.
 
 | Trigger | Routes? | Condition |
 |---|---|---|
-| `ci_failing` | yes | Linked PR is open and its CI status is `failing`. |
-| `merged_not_in_test` | yes | Linked PR is merged but the Jira card's status is neither "In Test" nor "Done" yet. |
+| `ci_failing` | yes | Linked PR is open, its CI status is `failing`, and at least one failing check is not also failing on the base branch. While the base branch's CI is still running the previous verdict is carried over (or the card is not flagged if there is none). |
+| `merged_not_in_test` | yes | Linked PR is merged, the card is in a pre-test status (`jira.statuses.inProgress`, default "In Progress", or a review status; never a To Do- or Done-category status), and the card has not been seen In Test or Done since the PR merged (`cardState.reachedTestAt`), so a QA rejection does not re-flag on the old merge. |
 | `new_pr_comments` | badge | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. Renders as the "N new comments" pill. |
 | `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill — except on an In Test card, where it routes to `needs_attention` (see the bucket table above). |
 | `missing_qa_instructions` | badge | Card is in the configured "In Test" status and its description has no QA/test instructions. Renders as the "No QA Instructions" pill. |
@@ -157,8 +163,8 @@ Routing keys off the Jira **status category** (`new`/`indeterminate`/`done`), no
 
 1. **Canceled** cards (status matching `statuses.canceled`, default "Canceled") are dropped entirely — no bucket, no todo, no blocked, no done, no counts.
 2. **Blocked** cards (status matching `statuses.blocked`, default "Blocked") are split into `blocked` and skip classification. Name-only, not category: Jira files Blocked under the same `indeterminate` category as In Progress. A linked PR does not keep the card on the board.
-3. **To Do category** cards are split into `todo` and skip classification.
-4. **Done category** cards (excluding Canceled) are added to `doneCards`, and to `doneCelebrated` once if assigned to the configured account, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge. `doneTotal` is `doneCards.length`, not the ledger size.
+3. **To Do category** cards with no linked PR are split into `todo` and skip classification. A To Do card that already has a linked PR stays on the board.
+4. **Done category** cards (excluding Canceled) are added to `doneCards`, and to `doneCelebrated` once if assigned to the configured account, then leave the board (skipping the bucket loop). Completion follows Jira's Done state, not the PR merge. The fetched Done cards are then merged into `doneLedger`, and `doneTotal` is `doneLedger.length` (the lifetime count), not the `doneCelebrated` size.
 5. Everything else is classified into a bucket. A merged-but-not-Done card stays on the board (QA can still reject it) with the merged PR carried on the item's `pr` as context — there's no separate merged list.
 
 ## Concurrency

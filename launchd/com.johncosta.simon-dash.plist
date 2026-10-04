@@ -6,7 +6,10 @@
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>REPLACE_WITH_REPO_PATH/bin/start.sh</string></array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>ThrottleInterval</key><integer>30</integer>
   <key>EnvironmentVariables</key>
   <dict>

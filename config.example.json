@@ -34,5 +34,6 @@
   "port": 3010,
   "refreshIntervalSeconds": 120,
   "demo": false,
-  "writeEnabled": false
+  "writeEnabled": false,
+  "autoTransitionMerged": false
 }

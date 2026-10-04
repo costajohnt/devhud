@@ -25,9 +25,10 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 - **Charts**: a Monthly Activity line chart (Opened/Merged/Closed) and a Top Repos stacked bar chart (Active/Merged/Closed), built from the full PR lifecycle log.
 - **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
 - **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
-- **Celebration**: confetti and a toast the first time a PR is observed merged.
+- **Celebration**: confetti and a toast the first time one of your cards is observed reaching Done in Jira (a merged PR only means the code is ready for QA, so it is not celebrated).
+- **Simon runs** (optional): set the `simon` block in `config.json` (`root`, the absolute path of a local Simon executor scaffold, plus an optional `bin`, default `simon`) and the header's **runs** link opens `/simon`, a list of executor runs read from `<root>/state/runs/*.jsonl`. Each run's attention class comes from `simon status --json` when that binary is reachable, and from the ledger otherwise. `/simon/<run id>` shows one run's event timeline and re-polls while the run is live. Without the block, the page shows an "unconfigured" card. Read-only: nothing here writes to Simon.
 - **Attention notifications** (opt-in): toggle the 🔕 bell in the header to get a desktop notification when a card newly enters Needs Attention. Only fires while the tab is hidden — a board you're looking at already shows the card — and never replays what was already there when the page loaded. Off until you turn it on, and the browser's permission prompt appears on that click rather than at page load.
-- **Write-back** (opt-in, off by default): transition a Jira card, comment on a card, or comment on a PR via the CLI or MCP tools. See the Write-back section below.
+- **Write-back** (opt-in, off by default): transition a Jira card, comment on a card, or comment on a PR via the CLI or MCP tools, and optionally move cards whose PR merged to In Test automatically (`autoTransitionMerged`). See the Write-back section below.
 
 ## Demo mode
 
@@ -94,6 +95,8 @@ launchctl load ~/Library/LaunchAgents/com.johncosta.simon-dash.plist
 
 Logs go to `~/Library/Logs/simon-dash.log` (not `/tmp`, which is world-readable and shared across users on the machine; server logs include every request path and Jira issue key). To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.simon-dash.plist`.
 
+Restart behavior: the plist sets `KeepAlive` to `{ SuccessfulExit: false }`, so launchd restarts the server only when it exits with an error (a crash, a failed build), at most once every `ThrottleInterval` (30s). A clean exit is not respawned. That covers a `SIGTERM`/`SIGINT` shutdown (exit 0) and the case where a server is already running: `bin/start.sh` first checks `data/server.pid` (the same check the CLI and MCP use, `serverAppearsRunning()` in `server/transport.ts`, plus a probe of `/api/data` on the port that file records). If a simon-dash server is already up, for example one you started by hand, the script logs that and exits 0. It does not rebuild and then die on `EADDRINUSE` every 30 seconds. To hand control back to launchd after stopping a hand-started server, run `launchctl kickstart gui/$(id -u)/com.johncosta.simon-dash` (or unload and load the agent again).
+
 ## CLI
 
 `server/cli.ts` is a plain-TS, dependency-free CLI over the same modules the
@@ -116,7 +119,10 @@ node server/cli.ts open                  # open the dashboard in your browser
 node server/cli.ts transition PROJ-123 "In Review"
 node server/cli.ts comment PROJ-123 "picking this back up today"
 node server/cli.ts pr-comment acme/webapp#482 "looks good, one nit inline"
+node server/cli.ts pr-comment webapp#482 "bare repo names use github.org from config.json"
 ```
+
+For `transition`/`comment`/`pr-comment`, everything after the key or PR ref is taken verbatim as the text (so `--json` or `-x` inside a comment is kept). Put flags before the key; a single trailing `--json` is still read as the flag, and `--` before the text disables that.
 
 Also runnable as `npm run cli -- status`, or (once linked/installed) as the
 `simon-dash` bin.
@@ -128,7 +134,7 @@ Also runnable as `npm run cli -- status`, or (once linked/installed) as the
 Install its dependencies once:
 
 ```bash
-cd mcp && npm i
+cd mcp && npm ci
 ```
 
 Register it with the Claude Code CLI:
@@ -167,26 +173,41 @@ simon-dash can optionally *write* to Jira and GitHub — transition a card's sta
 - Set `"writeEnabled": true` in `config.json`. The default (`false`, matching `config.example.json`) makes every write path refuse with a clear error: `write-back disabled; set writeEnabled: true in config.json`.
 - The gate is re-checked from disk on **every single write** (not just at process startup) — `performWrite()` reloads `config.json` fresh before deciding whether to allow the call. Flip `writeEnabled` to `false` in `config.json` and the very next `transition`/`comment`/`pr-comment` refuses, with no server/CLI/MCP restart required. This fails **closed**: if that fresh read throws for any reason (the file was deleted, permissions changed, it's transiently unreadable mid-edit), the write is refused rather than falling back to whatever config the caller already had in memory — a long-running process can't keep writing just because its in-memory config happened to say `writeEnabled: true` before `config.json` became unreadable.
 - Demo mode **always** refuses writes, regardless of `writeEnabled` — there's nothing real for canned demo data to write to. That refusal is a "stub success" (not an error), so scripting against the CLI/MCP doesn't need special-case error handling for demo mode.
-- Optional `"autoTransitionMerged": true` (default `false`): after each scheduled refresh, cards flagged `merged_not_in_test` (PR merged, card not yet In Test or Done) are moved to the configured In Test status. Requires `writeEnabled: true`, skips acked cards, and re-reads `config.json` each tick with the same fail-closed rule as every other write.
-- The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Writes only happen via an explicit CLI command (`transition`/`comment`/`pr-comment`) or an explicit MCP tool call, both of which require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose. Nothing in simon-dash writes to Jira or GitHub automatically or on a timer.
+- The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Comments are only ever posted by an explicit CLI command (`comment`/`pr-comment`) or an explicit MCP tool call, and manual transitions the same way (`transition`/`transition_card`). Those require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose.
+- **The one automatic write is opt-in:** `"autoTransitionMerged": true` (default `false`). With it on, the server's scheduled refresh loop moves cards flagged `merged_not_in_test` (linked PR merged, card not yet In Test or Done) to the configured In Test status (`jira.statuses.inTest`). It never comments and never writes to GitHub. It writes nothing unless `writeEnabled` is also `true`. It re-reads `config.json` every tick with the same fail-closed rule as every other write, refuses in demo mode, stays inside `jira.projectKey`, and skips cards whose `merged_not_in_test` flag you have acked. It is also guarded against moving cards it should not:
+  - It skips the whole batch when that refresh's Jira or GitHub data is degraded (`errors.jira`/`errors.github` set, so the board is showing last-known data).
+  - It only moves cards out of a review or in-progress status. A To Do card, or one already past In Test (e.g. "Ready for Release"), is left alone. The in-progress status is "In Progress" by default; set `jira.statuses.inProgress` if your project renamed it, or those cards are never flagged or moved.
+  - It fires at most once per merged PR. A failed attempt is not retried every tick.
+  - It never re-flags a card that QA sent back after the card had reached In Test.
+
+  Leave it off and nothing in simon-dash writes to Jira or GitHub on a timer.
 - All three write paths (the CLI, the MCP tools, and `POST /api/write` itself) funnel through the same `performWrite()` function (`server/writeback.ts`), so the gate and the "refresh the board after a successful write" behavior can't drift between them. See [docs/API.md](docs/API.md#post-apiwrite) for the endpoint and gate semantics in full.
 
 ## API
 
-Full reference: [docs/API.md](docs/API.md). Summary: `GET /api/data` returns the last snapshot from memory, `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds it, `POST /api/action` applies an `ack` or `move` to one card, `POST /api/write` (gated, off by default) transitions a card, comments on a card, or comments on a PR. Manual moves and acknowledgements are stored locally in `data/state.json`; Jira and GitHub are read-only unless you've explicitly enabled write-back.
+Full reference: [docs/API.md](docs/API.md). Summary:
+
+- `GET /api/data` returns the last snapshot from memory.
+- `GET /api/events` is a Server-Sent Events stream: the current snapshot on connect, then a new one after every refresh, action and successful write.
+- `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds the snapshot.
+- `POST /api/action` applies an `ack`, `move` or `unpin` to one card.
+- `POST /api/write` (gated, off by default) transitions a card, comments on a card, or comments on a PR.
+- `GET /api/simon/runs` and `GET /api/simon/runs/:id` list Simon executor runs and return one run's events (see Simon runs under Features).
+
+Manual moves, pins and acknowledgements are stored locally in `data/state.json`. Jira and GitHub are read-only unless you've explicitly enabled write-back.
 
 ## Buckets
 
 - **needs_attention**: Blocked-or-broken only — CI failing on an open PR, or a PR merged while the card is not in "In Test" or "Done". An open **draft** PR outranks both and routes to self_review regardless, unless the card is in a review status (see below). These stay muted after an ack only while they remain continuously true, and re-fire as new events once they clear and recur. One more case routes here: a new Jira comment on an "In Test" card (QA is waiting on the developer; reading the comment clears it and the card returns to qa_ready). Other signals (new comments elsewhere, missing QA instructions) do **not** move a card: they stay in the column their status earns and show a pill instead, because a pending event shouldn't evict a card from its lifecycle state. Comment signals are cleared by acking/moving, which reset the seen horizon.
-- **self_review**: Open draft PR whose card is not yet in a review status, or an open PR with no review activity and a card not yet in a review status.
-- **waiting_review**: The card is in a review status, or an open PR has review activity and isn't approved yet. The review status is "Code Review" or "In Review" by default, matched case-insensitively; set `jira.statuses.review` if your project renamed it. A card in a review status lands here even before its PR exists, and also when its PR is still a draft — moving the card is the explicit "I have self-reviewed it, it is out for peer review" signal (#53).
-- **mergeable**: Open PR approved.
+- **self_review**: Open **draft** PR whose card is not yet in a review status. The draft flag is the only thing that routes a card here (#91): clearing it moves the card on even before any reviewer has posted.
+- **waiting_review**: Any open non-draft PR that isn't approved, whatever its review activity; or the card is in a review status (with or without a PR). The review status is "Code Review" or "In Review" by default, matched case-insensitively; set `jira.statuses.review` if your project renamed it. A card in a review status lands here even before its PR exists, and also when its PR is still a draft — moving the card is the explicit "I have self-reviewed it, it is out for peer review" signal (#53).
+- **mergeable**: Open non-draft PR approved. A draft PR never reads as mergeable, however its reviews landed.
 - **qa_ready**: Jira card status is "In Test" and no unread Jira comment is pending (an unread one routes to needs_attention until read).
 - **in_qa**: Manual-move destination for cards actively being tested (a pinned override; the classifier itself routes In Test cards to QA Ready).
 - **in_progress**: Everything else (default).
 - **blocked** (off-board, like Todo): Jira status is "Blocked" (or `jira.statuses.blocked` if the project renamed it). Not a drag-and-drop bucket; the classifier never sees these cards.
 - Every configured status name — review, In Test, Done, To Do, Canceled, Blocked — is compared case-insensitively and ignoring surrounding whitespace, since a Jira status name is free text an admin can re-case.
-- A manual move pins the card to its bucket until a fresh attention trigger fires; overrides auto-clear when the card's Jira status changes (a transition supersedes the pin) or once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
+- A manual move pins the card to its bucket and holds it there over everything except a routing attention trigger (`ci_failing`, `merged_not_in_test`) and an open draft PR on a card not yet in a review status, both of which outrank a pin. New comments do not override a pin, they show as a pill on the pinned card. Overrides auto-clear when the card's Jira status changes (a transition supersedes the pin) or once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
 
 ## Upgrading an existing checkout
 

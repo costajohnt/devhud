@@ -5,9 +5,20 @@ on:
     branches: [master]
   pull_request:
 
+# Read-only token: CI only checks out and tests, it never writes back.
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the run already in flight for it. Pushes to
+# master each get their own run (cancel only applies to pull_request events).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -16,10 +27,15 @@ jobs:
         # on); testing only the newest release let that claim rot.
         node-version: ['22.18', '26']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            mcp/package-lock.json
       - run: npm ci
       - run: cd web && npm ci
       - run: cd mcp && npm ci

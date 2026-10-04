@@ -4,3 +4,4 @@ config.json
 data/*
 !data/.gitkeep
 web/dist/
+.superpowers/
