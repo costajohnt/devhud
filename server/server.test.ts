@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createServer, bundleStatus, readBody, BodyTooLarge, MAX_BODY_BYTES } from './index.ts';
+import { createServer, bundleStatus, readBody, BodyTooLarge, MAX_BODY_BYTES, createSseFanout, SSE_MAX_BUFFERED_BYTES } from './index.ts';
 import { PassThrough } from 'node:stream';
 import { saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
@@ -518,6 +518,72 @@ test('GET /api/events rejects a spoofed Host header', async () => {
   const { port } = new URL(base);
   const res = await requestWithHost(Number(port), '/api/events', 'evil.com', 'GET');
   expect(res.status).toBe(403);
+});
+
+// --- SSE backpressure (createSseFanout) ---
+// Fake response modeling Node's writable buffer: a stalled one keeps every
+// chunk in writableLength (the consumer never reads), a healthy one flushes
+// at once. write() returns false past the 16 KB highWaterMark, like the real
+// thing, so the policy is exercised deterministically without a socket.
+class FakeSseClient {
+  writes: string[] = [];
+  destroyed = false;
+  writableLength = 0;
+  stalled = false;
+  write(chunk: string): boolean {
+    this.writes.push(chunk);
+    if (this.stalled) this.writableLength += chunk.length;
+    return chunk.length < 16_384 && this.writableLength < 16_384;
+  }
+  destroy() { this.destroyed = true; }
+}
+
+test('SSE fan-out keeps a client whose write() returned false across back-to-back broadcasts while under the cap', () => {
+  const sse = createSseFanout<FakeSseClient>();
+  const client = new FakeSseClient();
+  sse.add(client, 'connect');
+  client.stalled = true; // momentarily not flushing (e.g. mid-render)
+  const big = 'x'.repeat(100_000); // over highWaterMark: write() returns false
+  sse.broadcast(big); // e.g. ack ...
+  sse.broadcast(big); // ... then move, milliseconds apart
+  expect(client.destroyed).toBe(false);
+  expect(sse.clients.has(client)).toBe(true);
+  expect(client.writes).toEqual(['connect', big, big]);
+});
+
+test('SSE fan-out drops a client over SSE_MAX_BUFFERED_BYTES without writing to it; healthy clients unaffected', () => {
+  const sse = createSseFanout<FakeSseClient>();
+  const healthy = new FakeSseClient();
+  const stalled = new FakeSseClient();
+  sse.add(healthy, 'connect');
+  sse.add(stalled, 'connect');
+  stalled.stalled = true; // suspended tab: never reads again
+  const snap = 'x'.repeat(1_500_000);
+  const writesBeforeCap = Math.floor(SSE_MAX_BUFFERED_BYTES / snap.length) + 1;
+  for (let i = 0; i < writesBeforeCap; i++) sse.broadcast(snap);
+  expect(stalled.writableLength).toBeGreaterThan(SSE_MAX_BUFFERED_BYTES);
+  expect(stalled.destroyed).toBe(false);
+  sse.broadcast('next'); // over the cap: dropped instead of written
+  expect(stalled.destroyed).toBe(true);
+  expect(sse.clients.has(stalled)).toBe(false);
+  expect(stalled.writes).not.toContain('next');
+  sse.broadcast('after');
+  expect(stalled.writes).toHaveLength(1 + writesBeforeCap);
+  expect(healthy.destroyed).toBe(false);
+  expect(healthy.writes.slice(-2)).toEqual(['next', 'after']);
+  expect(healthy.writes).toHaveLength(1 + writesBeforeCap + 2);
+});
+
+test('SSE fan-out isolates a client whose write throws', () => {
+  const sse = createSseFanout<FakeSseClient>();
+  const bad = new FakeSseClient();
+  const good = new FakeSseClient();
+  sse.add(bad, 'connect');
+  sse.add(good, 'connect');
+  bad.write = () => { throw new Error('EPIPE'); };
+  expect(() => sse.broadcast('a')).not.toThrow();
+  expect(sse.clients.has(bad)).toBe(false);
+  expect(good.writes).toEqual(['connect', 'a']);
 });
 
 // Spins up a server whose scheduled loop runs every second against an

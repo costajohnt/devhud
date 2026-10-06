@@ -88,6 +88,70 @@ function guardMutation(req: IncomingMessage): { status: number; error: string } 
   return null;
 }
 
+// Per-stream buffering bound for SSE. The client cap bounds stream count,
+// not what each stream holds: res.write() never refuses data, it just
+// returns false and queues in heap, so one stalled consumer (a suspended
+// laptop tab with a full TCP window) would accumulate every future snapshot.
+// 4 MB lets a couple of large snapshots queue through a brief hiccup; worst
+// case stays ~32 streams × (cap + one snapshot).
+export const SSE_MAX_BUFFERED_BYTES = 4_000_000;
+
+// The subset of ServerResponse the SSE fan-out uses, so tests can drive the
+// backpressure policy with a fake whose buffer never empties.
+export interface SseClient {
+  write(chunk: string): boolean;
+  destroy(): unknown;
+  readonly destroyed: boolean;
+  readonly writableLength: number;
+}
+
+// Backpressure policy: before each write, a client already buffering more
+// than SSE_MAX_BUFFERED_BYTES is destroyed and dropped instead of queued
+// another snapshot. Deliberately not "drop if write() returned false last
+// time": a snapshot over the 16 KB highWaterMark makes write() return false
+// even for a healthy tab, and back-to-back broadcasts (ack then move, an
+// action right after a refresh) land within milliseconds. Nothing is lost
+// by dropping: EventSource / useData()'s backoff reconnects, and
+// /api/events sends the current snapshot on connect.
+export function createSseFanout<C extends SseClient>() {
+  const clients = new Set<C>();
+  const drop = (client: C) => {
+    clients.delete(client);
+    try { client.destroy(); } catch { /* already torn down */ }
+  };
+  const writeTo = (client: C, msg: string) => {
+    if (client.writableLength > SSE_MAX_BUFFERED_BYTES) return drop(client);
+    client.write(msg);
+  };
+  return {
+    clients,
+    // Connect replay counts toward the cap like any other event.
+    add(client: C, msg: string) {
+      clients.add(client);
+      writeTo(client, msg);
+    },
+    remove(client: C) {
+      clients.delete(client);
+    },
+    broadcast(msg: string) {
+      for (const client of clients) {
+        // Per-client isolation: one torn-down socket (destroyed between its
+        // teardown and its 'close' event) must not abort the fan-out for the
+        // rest, nor turn an already-saved refresh into a 500.
+        try {
+          if (!client.destroyed) writeTo(client, msg);
+        } catch {
+          clients.delete(client);
+        }
+      }
+    },
+    closeAll() {
+      for (const client of clients) client.destroy();
+      clients.clear();
+    },
+  };
+}
+
 // `refreshFn` defaults to the real refresh() and exists so tests can drive
 // the scheduled loop (short interval + stub) without network or module
 // mocking — same convention as performWrite's refreshFn.
@@ -108,7 +172,8 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   // Live-update push channel: every open GET /api/events response. Written
   // to after each refresh (server loop or manual) and each mutation, so all
   // tabs stay in sync without polling.
-  const sseClients = new Set<ServerResponse>();
+  // Slow consumers are dropped, not buffered without bound (createSseFanout).
+  const sse = createSseFanout<ServerResponse>();
   // Only broadcast when content actually changed: updatedAt bumps on every
   // refresh even when nothing else did, so comparing the snapshot minus
   // updatedAt suppresses the every-tick full-board re-render in idle tabs.
@@ -126,16 +191,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       ? `event: tick\ndata: ${JSON.stringify({ updatedAt: snapshot.updatedAt })}\n\n`
       : `data: ${JSON.stringify(snapshot)}\n\n`;
     if (!suppressed) lastBroadcastBody = body;
-    for (const client of sseClients) {
-      // Per-client isolation: one torn-down socket (destroyed between its
-      // teardown and its 'close' event) must not abort the fan-out for the
-      // rest, nor turn an already-saved refresh into a 500.
-      try {
-        if (!client.destroyed) client.write(msg);
-      } catch {
-        sseClients.delete(client);
-      }
-    }
+    sse.broadcast(msg);
   };
   const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const start = Date.now();
@@ -153,10 +209,10 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         return send(200, state.snapshot ?? emptySnapshot());
       }
       if (url.pathname === '/api/events' && req.method === 'GET') {
-        // Cap held-open streams: each one buffers every future broadcast if
-        // its consumer stalls, so an unbounded set is a local memory-DoS
-        // vector. 32 covers any realistic number of own tabs.
-        if (sseClients.size >= 32) return send(503, { error: 'too many event streams' });
+        // Cap held-open streams: per-stream buffering is bounded by
+        // createSseFanout, but an unbounded stream count is still a local
+        // memory-DoS vector. 32 covers any realistic number of own tabs.
+        if (sse.clients.size >= 32) return send(503, { error: 'too many event streams' });
         res.writeHead(200, {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
@@ -166,12 +222,11 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         // this event alone, no separate /api/data fetch needed, and an
         // EventSource auto-reconnect (laptop wake, server restart) re-syncs
         // the same way.
-        res.write(`data: ${JSON.stringify(state.snapshot ?? emptySnapshot())}\n\n`);
-        sseClients.add(res);
-        res.on('close', () => sseClients.delete(res));
+        sse.add(res, `data: ${JSON.stringify(state.snapshot ?? emptySnapshot())}\n\n`);
+        res.on('close', () => sse.remove(res));
         // Async write failures on a held-open response otherwise surface as
         // unhandled 'error' emissions and crash the process.
-        res.on('error', () => sseClients.delete(res));
+        res.on('error', () => sse.remove(res));
         return; // held open; broadcast() writes future events
       }
       if (url.pathname === '/api/refresh' && req.method === 'POST') {
@@ -345,8 +400,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   server.close = ((cb?: (err?: Error) => void) => {
     closed = true;
     clearTimeout(timer);
-    for (const client of sseClients) client.destroy();
-    sseClients.clear();
+    sse.closeAll();
     return origClose(cb);
   }) as typeof server.close;
   return server;
