@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { LocationProvider, useLocation } from 'preact-iso';
 import { useData } from './use-data.js';
+import { BUCKET_LABEL } from './types.js';
+import type { Bucket } from './types.js';
 import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.js';
 import { Detail } from './detail.js';
 import { Extras, TodoSection, BlockedSection } from './extras.js';
@@ -65,10 +67,62 @@ function safeDecode(segment: string): string | null {
   try { return decodeURIComponent(segment); } catch { return null; }
 }
 
+// Screen-reader text for a successful /api/action call; null for any action
+// shape we don't recognize (nothing is announced rather than something vague).
+function describeAction(body: object): string | null {
+  const b = body as { type?: string; key?: string; bucket?: string };
+  if (!b.key) return null;
+  switch (b.type) {
+    case 'move': {
+      const label = b.bucket && b.bucket in BUCKET_LABEL ? BUCKET_LABEL[b.bucket as Bucket] : b.bucket;
+      return `Moved ${b.key} to ${label}`;
+    }
+    case 'ack': return `Acknowledged ${b.key}`;
+    case 'unpin': return `Unpinned ${b.key}`;
+    default: return null;
+  }
+}
+
 function AppContent() {
   const { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed, clearActionError } = useData();
   const [selected, setSelected] = useState<string | null>(null);
-  const board = useBoardFilter(data, act, actionInFlight);
+  // Polite announcement for successful actions (moves, acks, unpins) — the
+  // only feedback otherwise is the card silently relocating, which assistive
+  // tech never hears. Failures already announce via the role="alert" banner.
+  const [announcement, setAnnouncement] = useState('');
+  const announceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const announce = useCallback((message: string) => {
+    // A repeat of the identical string is not re-read by most screen readers,
+    // so nudge it with a trailing no-break space to register as a change.
+    setAnnouncement(prev => (prev === message ? `${message} ` : message));
+    if (announceTimeout.current) clearTimeout(announceTimeout.current);
+    announceTimeout.current = setTimeout(() => setAnnouncement(''), 7000);
+  }, []);
+  const announcedAct = async (body: object) => {
+    const ok = await act(body);
+    if (ok) {
+      const message = describeAction(body);
+      if (message) announce(message);
+    }
+    return ok;
+  };
+  const board = useBoardFilter(data, announcedAct, actionInFlight);
+  // Key of the row whose activation opened the detail panel, so closing the
+  // panel can hand focus back to that row's button (audit M16).
+  const openerKey = useRef<string | null>(null);
+  const selectRow = (key: string | null) => {
+    openerKey.current = key;
+    setSelected(key);
+  };
+  const closeDetail = () => {
+    const candidates = [openerKey.current, selected];
+    setSelected(null);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('.pr-row-main')];
+    for (const key of candidates) {
+      const btn = key ? buttons.find(b => b.dataset.rowKey === key) : undefined;
+      if (btn) { btn.focus(); break; }
+    }
+  };
   const { path } = useLocation();
   const [theme, setTheme] = useState(getInitialTheme);
   const [toast, setToast] = useState<string | null>(null);
@@ -235,7 +289,7 @@ function AppContent() {
         if (neighbor) nextKey = neighbor.key;
       }
     }
-    await act(body);
+    await announcedAct(body);
     if (nextKey) setSelected(nextKey);
   };
 
@@ -314,9 +368,9 @@ function AppContent() {
             <BoardStats data={data} />
             <BoardFilterBar board={board} />
             <div class="dashboard-content animate-in delay-3">
-              <BoardList data={data} selectedKey={selected} onSelect={setSelected} board={board} />
+              <BoardList data={data} selectedKey={selected} onSelect={selectRow} board={board} />
               {selectedItem && (
-                <Detail item={selectedItem} onClose={() => setSelected(null)} act={onAct} actionInFlight={actionInFlight} />
+                <Detail item={selectedItem} onClose={closeDetail} act={onAct} actionInFlight={actionInFlight} />
               )}
             </div>
             <div class="animate-in delay-3">
@@ -349,14 +403,20 @@ function AppContent() {
           </div>
         )}
       </main>
-      {toast && (
-        <div class="celebration-toast" role="status" aria-live="polite">
-          <span class="celebration-toast-message">{toast}</span>
-          <button type="button" class="celebration-toast-dismiss" aria-label="Dismiss celebration" onClick={() => setToast(null)}>
-            &times;
-          </button>
-        </div>
-      )}
+      {/* Live regions must already be in the DOM when text is inserted, or
+          screen readers miss the change — so the wrappers always render and
+          only their contents come and go. */}
+      <div class="toast-region" role="status" aria-live="polite">
+        {toast && (
+          <div class="celebration-toast">
+            <span class="celebration-toast-message">{toast}</span>
+            <button type="button" class="celebration-toast-dismiss" aria-label="Dismiss celebration" onClick={() => setToast(null)}>
+              &times;
+            </button>
+          </div>
+        )}
+      </div>
+      <div class="sr-only action-announcer" role="status" aria-live="polite">{announcement}</div>
     </div>
   );
 }

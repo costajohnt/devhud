@@ -63,7 +63,9 @@ export function useData() {
     }
   };
 
-  const act = async (body: object) => {
+  // Resolves true when the action succeeded (callers announce it), false when
+  // it failed — the failure itself is already surfaced via actionError.
+  const act = async (body: object): Promise<boolean> => {
     setActionInFlight(true);
     try {
       const res = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -77,8 +79,10 @@ export function useData() {
       }
       await get();
       setActionError(null);
+      return true;
     } catch (e) {
       setActionError(`Action failed: ${(e as Error).message}`);
+      return false;
     } finally {
       setActionInFlight(false);
     }

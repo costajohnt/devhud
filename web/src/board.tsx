@@ -64,7 +64,7 @@ const DROPPABLE: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'me
 // of a single Board component (and up into App, not into the Route's inline
 // component) so search/drag state survives re-renders instead of resetting
 // whenever a new anonymous route-component identity gets mounted.
-export function useBoardFilter(data: DashboardData | null, act: (b: object) => Promise<void>, actionInFlight = false) {
+export function useBoardFilter(data: DashboardData | null, act: (b: object) => Promise<unknown>, actionInFlight = false) {
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState<Bucket | 'all'>('all');
   const [repoFilter, setRepoFilter] = useState('all');
@@ -212,6 +212,7 @@ export function BoardFilterBar({ board }: { board: BoardFilter }) {
       )}
       <input
         class="filter-input"
+        aria-label="Search cards"
         placeholder="Search cards…"
         value={board.q}
         onInput={e => board.setQ((e.target as HTMLInputElement).value)}
@@ -247,30 +248,46 @@ export function BoardList({ data, selectedKey, onSelect, board }:
             onDrop={droppable ? (e: DragEvent) => board.onSectionDrop(e, b) : undefined}
           >
             <div class="pr-section-header">
-              <span class={`pr-section-dot ${DOT_COLOR[b]}`} />
+              <span class={`pr-section-dot ${DOT_COLOR[b]}`} aria-hidden="true" />
               <span class="pr-section-title">{BUCKET_LABEL[b]}</span>
               <span class="pr-section-count">{items.length}</span>
             </div>
             {items.map(i => {
               const p = pill(i);
               return (
+                // The row is a plain container (drag source, and a mouse click
+                // target anywhere on it). Button semantics live on
+                // .pr-row-main, which wraps only the key + summary: a
+                // role="button" row holding the PR <a> nested an interactive
+                // control inside a button, which ARIA forbids (audit M15). The
+                // link stays its own tab stop beside the button.
                 <div
                   key={i.key}
                   class={`pr-row ${selectedKey === i.key ? 'pr-row--selected' : ''}`}
                   draggable
                   onDragStart={(e: DragEvent) => board.onRowDragStart(e, i.key)}
                   onClick={() => onSelect(i.key)}
-                  onKeyDown={(e: KeyboardEvent) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onSelect(i.key);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
                 >
-                  <span class="pr-row-id">{i.key}</span>
-                  <span class="pr-row-title">{i.summary}</span>
+                  <button
+                    type="button"
+                    class="pr-row-main"
+                    data-row-key={i.key}
+                    aria-current={selectedKey === i.key ? 'true' : undefined}
+                    onKeyDown={(e: KeyboardEvent) => {
+                      // A native button's key activation fires a click that
+                      // bubbles to the row; handling the keys explicitly (and
+                      // preventing that default) keeps Enter/Space selecting
+                      // even where no click is synthesized. Selecting twice is
+                      // idempotent either way.
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelect(i.key);
+                      }
+                    }}
+                  >
+                    <span class="pr-row-id">{i.key}</span>
+                    <span class="pr-row-title">{i.summary}</span>
+                  </button>
                   {i.pr && (
                     <a class="pr-row-id" href={i.pr.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
                       {i.pr.repo.split('/')[1]}#{i.pr.number}

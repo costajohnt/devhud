@@ -7,7 +7,7 @@
 import { test, expect, vi, beforeEach } from 'vitest';
 import { h, render } from 'preact';
 import { act } from 'preact/test-utils';
-import { useBoardFilter, BoardList, BoardStats, ago } from './board.js';
+import { useBoardFilter, BoardList, BoardStats, BoardFilterBar, ago } from './board.js';
 import type { DashboardData, Item, Bucket, PrRef } from './types.js';
 
 const pr = (overrides: Partial<PrRef> = {}): PrRef => ({
@@ -208,16 +208,46 @@ test('clicking a row selects it; clicking its PR link does not', () => {
   expect(onSelect).not.toHaveBeenCalled(); // stopPropagation keeps the row out of it
 });
 
-test('rows are keyboard-operable with Enter and Space', () => {
+test('rows are keyboard-operable with Enter and Space on the row button', () => {
   const onSelect = mountList(data({ in_progress: [item({ key: 'P-1' })] }));
-  const row = host.querySelector('.pr-row')!;
-  expect(row.getAttribute('tabindex')).toBe('0');
+  const btn = host.querySelector('.pr-row .pr-row-main')!;
+  expect(btn.tagName).toBe('BUTTON');
+  expect(btn.getAttribute('type')).toBe('button');
 
   for (const key of ['Enter', ' ']) {
     onSelect.mockClear();
-    act(() => { row.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); });
+    act(() => { btn.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); });
     expect(onSelect).toHaveBeenCalledWith('P-1');
   }
+});
+
+// Audit M15: the row used to be role="button" wrapping the PR <a>, an
+// interactive control nested in a button. Now the row is a plain container,
+// the button holds only key + summary, and the link is its sibling.
+test('the row button contains no links, and the PR link is a sibling tab stop', () => {
+  mountList(data({ in_progress: [item({ key: 'P-1', pr: pr() })] }));
+  const row = host.querySelector('.pr-row')!;
+  expect(row.getAttribute('role')).toBeNull();
+  expect(row.hasAttribute('tabindex')).toBe(false);
+
+  const btn = row.querySelector('button.pr-row-main')!;
+  expect(btn.querySelectorAll('a, button, input, select, [tabindex]')).toHaveLength(0);
+  expect(btn.textContent).toContain('P-1');
+
+  const link = row.querySelector('a[target="_blank"]')!;
+  expect(link.parentElement).toBe(row);
+  expect(btn.contains(link)).toBe(false);
+});
+
+test('the search input has an accessible name', () => {
+  function Harness() {
+    const b = useBoardFilter(data(), vi.fn(async () => {}), false);
+    return h(BoardFilterBar, { board: b });
+  }
+  host = document.createElement('div');
+  document.body.append(host);
+  act(() => { render(h(Harness, null), host); });
+  expect(host.querySelector('.filter-input')!.getAttribute('aria-label')).toBe('Search cards');
 });
 
 test('CI failing outranks a merged pill, and unread comments outrank both', () => {

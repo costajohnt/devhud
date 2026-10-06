@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'preact/hooks';
 import type { Item, Bucket } from './types.js';
 import { BUCKET_LABEL } from './types.js';
 import { ago } from './board.js';
@@ -113,7 +114,7 @@ function HistorySection({ label, comments }: { label: string; comments: Item['co
 }
 
 export function Detail({ item, onClose, act, actionInFlight }:
-  { item: Item; onClose: () => void; act: (b: object) => Promise<void>; actionInFlight: boolean }) {
+  { item: Item; onClose: () => void; act: (b: object) => Promise<unknown>; actionInFlight: boolean }) {
   const fixVersions = item.fixVersions ?? [];
   // newComments is the attention window: the comments that put (or would put)
   // the card in Needs Attention plus anything newer, already filtered by the
@@ -123,11 +124,35 @@ export function Detail({ item, onClose, act, actionInFlight }:
   const unread = item.newComments;
   const history = item.comments ?? [];
 
+  // Focus contract (audit M16): opening the panel — or switching it to a
+  // different card — moves focus into it, so keyboard users land on the
+  // details instead of tabbing through the rest of the board. Keyed on the
+  // card key, not the item object: a live SSE snapshot re-renders an open
+  // panel with a fresh object for the same card and must not steal focus.
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    panelRef.current?.focus({ preventScroll: true });
+  }, [item.key]);
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && !e.defaultPrevented) {
+      e.preventDefault();
+      onClose();
+    }
+  };
+
   return (
-    <div class="pr-detail">
+    <div
+      ref={panelRef}
+      class="pr-detail"
+      role="complementary"
+      aria-label={`Details for ${item.key}: ${item.summary}`}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+    >
       <div class="pr-detail-header">
         <h2 class="pr-detail-title">{item.summary}</h2>
-        <button class="pr-detail-close" onClick={onClose} aria-label="Close">
+        <button type="button" class="pr-detail-close" onClick={onClose} aria-label="Close details">
           &times;
         </button>
       </div>
@@ -227,6 +252,7 @@ export function Detail({ item, onClose, act, actionInFlight }:
 
       <div class="action-bar">
         <button
+          type="button"
           class="action-btn action-btn--override"
           disabled={actionInFlight}
           onClick={() => act({ type: 'ack', key: item.key })}
@@ -238,6 +264,7 @@ export function Detail({ item, onClose, act, actionInFlight }:
             another tab's unpin arrives over SSE and this button disappears. */}
         {item.pinned && (
           <button
+            type="button"
             class="action-btn action-btn--override"
             disabled={actionInFlight}
             title="Return this card to classifier control"
@@ -248,6 +275,7 @@ export function Detail({ item, onClose, act, actionInFlight }:
         )}
         <select
           class="filter-select"
+          aria-label="Move card to bucket"
           value=""
           disabled={actionInFlight}
           onChange={e => {

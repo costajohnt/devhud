@@ -211,6 +211,96 @@ test('selecting a row opens the detail panel', () => {
   expect(host.querySelector('.pr-detail-fields')).not.toBeNull();
 });
 
+// --- focus contract + announcements (audit M16 / aria-live) ---
+
+const rowButton = (key = 'P-1') =>
+  [...host.querySelectorAll<HTMLButtonElement>('.pr-row-main')].find(b => b.dataset.rowKey === key)!;
+
+test('Enter on a row button opens the panel and moves focus into it', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  const btn = rowButton();
+  btn.focus();
+  act(() => { btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+
+  const panel = host.querySelector<HTMLElement>('.pr-detail')!;
+  expect(panel).not.toBeNull();
+  expect(panel.getAttribute('role')).toBe('complementary');
+  expect(panel.getAttribute('aria-label')).toContain('P-1');
+  expect(panel.getAttribute('tabindex')).toBe('-1');
+  expect(document.activeElement).toBe(panel);
+});
+
+test('Escape closes the panel and returns focus to the row button that opened it', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  act(() => { rowButton().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+  const panel = host.querySelector<HTMLElement>('.pr-detail')!;
+
+  act(() => { panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+  expect(host.querySelector('.pr-detail')).toBeNull();
+  expect(document.activeElement).toBe(rowButton());
+});
+
+test('a live snapshot re-rendering the open panel does not steal focus', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  act(() => { rowButton().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+  // User tabs back out to the board while the panel stays open.
+  rowButton().focus();
+  act(() => {
+    es().emit(snap({ updatedAt: '2026-08-01T00:05:00Z', buckets: { ...emptyBuckets(), in_progress: [item({ summary: 'Fix the thing, v2' })] } }));
+  });
+  expect(host.querySelector('.pr-detail')).not.toBeNull();
+  expect(document.activeElement).toBe(rowButton());
+});
+
+test('the toast and action live regions are mounted before any message arrives', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  const toastRegion = host.querySelector('.toast-region')!;
+  expect(toastRegion.getAttribute('role')).toBe('status');
+  expect(toastRegion.getAttribute('aria-live')).toBe('polite');
+  expect(toastRegion.textContent).toBe('');
+  const announcer = host.querySelector('.action-announcer')!;
+  expect(announcer.getAttribute('aria-live')).toBe('polite');
+  expect(announcer.classList.contains('sr-only')).toBe(true);
+  expect(announcer.textContent).toBe('');
+});
+
+// The success path is four promises deep (POST, its status check, the
+// follow-up GET /api/data, its json()); flush a few rounds.
+async function settle() {
+  for (let i = 0; i < 5; i++) await act(async () => {});
+}
+
+test('successful move and ack actions are announced in the live region', async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })) })));
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  selectFirstRow();
+  const announcer = host.querySelector('.action-announcer')!;
+
+  const move = host.querySelector<HTMLSelectElement>('.action-bar select')!;
+  expect(move.getAttribute('aria-label')).toBe('Move card to bucket');
+  await act(async () => {
+    move.value = 'mergeable';
+    move.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await settle();
+  expect(announcer.textContent).toContain('Moved P-1 to');
+
+  const ackBtn = [...host.querySelectorAll('button')].find(b => b.textContent === 'Acknowledge')!;
+  await act(async () => { ackBtn.dispatchEvent(new Event('click', { bubbles: true })); });
+  await settle();
+  expect(announcer.textContent).toContain('Acknowledged P-1');
+});
+
+test('a failed action is not announced as a success', async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: 'boom' }) })));
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  selectFirstRow();
+  const ackBtn = [...host.querySelectorAll('button')].find(b => b.textContent === 'Acknowledge')!;
+  await act(async () => { ackBtn.dispatchEvent(new Event('click', { bubbles: true })); });
+  await act(async () => {});
+  expect(host.querySelector('.action-announcer')!.textContent).toBe('');
+});
+
 test('Unpin is offered only for a pinned card, and posts type: unpin', async () => {
   // Typed params so mock.calls carries the (url, init) tuple rather than [].
   const fetchMock = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve({ ok: true, json: () => Promise.resolve(snap()) }));
