@@ -12,8 +12,8 @@
 // role for ack/move.
 import { refresh } from './refresh.ts';
 import { loadConfig } from './config.ts';
-import { isPreTest } from './classify.ts';
-import type { Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
+import { isPreTest, sameStatus } from './classify.ts';
+import type { Card, Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
 
 interface JiraTransition {
   id: string;
@@ -84,6 +84,24 @@ export async function transitionCard(cfg: JiraConfig, key: string, targetStatusN
   });
   if (!postRes.ok) throw new Error(`Jira ${postRes.status}: ${(await postRes.text()).slice(0, 200)}`);
   return { transitionedTo: transition.to?.name ?? '' };
+}
+
+// Live status of one issue, read straight from Jira (not the last refresh).
+// autoTransitionMergedCards calls this immediately before each transition so
+// a card a human moved since the last tick is not moved again. statusCategory
+// is mapped exactly as jira.ts's mapIssue does: anything other than
+// 'new' | 'indeterminate' | 'done' becomes '' (name-only matching).
+export async function getIssueStatus(cfg: JiraConfig, key: string): Promise<Pick<Card, 'status' | 'statusCategory'>> {
+  const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}`, cfg.baseUrl);
+  url.searchParams.set('fields', 'status');
+  const res = await fetch(url, { headers: { Authorization: jiraAuth(cfg), Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json() as { fields?: { status?: { name?: string; statusCategory?: { key?: string } } } };
+  const cat = data.fields?.status?.statusCategory?.key;
+  return {
+    status: data.fields?.status?.name ?? '',
+    statusCategory: cat === 'new' || cat === 'indeterminate' || cat === 'done' ? cat : '',
+  };
 }
 
 // Resolves with the new comment's id when Jira's response carries one (it
@@ -297,6 +315,8 @@ export async function performWrite({
   return refreshError ? { ok: true, ...result, refreshError } : { ok: true, ...result };
 }
 
+// attempted counts every candidate, including ones the live re-check skipped
+// (neither succeeded nor failed: nothing was POSTed for those).
 export interface AutoTransitionResult {
   attempted: number;
   succeeded: number;
@@ -325,18 +345,29 @@ export const autoTransitionId = (key: string, pr: { repo: string; number: number
 //    status, never In Test or anything after it). The status is read from
 //    state.lastCards (which carries statusCategory) when the card is there,
 //    else from the snapshot item's jiraStatus name alone.
+//  - Live re-check: immediately before each transition the issue's current
+//    status is re-read from Jira (getIssueStatus). The snapshot status can be
+//    up to refreshIntervalSeconds old, and transitionCard transitions from
+//    the LIVE status, so a card a human moved since (to Done, back to To Do,
+//    ...) must not be moved. It proceeds only if the live status is still
+//    pre-test AND the same status the snapshot saw; otherwise it is skipped
+//    and recorded in the ledger ({ ok: false, skipped: true, error }) so it
+//    is not re-checked every tick. If the GET itself fails nothing is POSTed
+//    and nothing is recorded, so the card is re-checked next tick.
 //  - At most once per (card, merged PR): every attempt — success or failure —
 //    is recorded in state.autoTransitioned and never retried, so a workflow
 //    with no In Test transition logs one error, not one every tick. The
 //    caller persists state.
 //
 // Per-card errors are logged and swallowed so one unavailable Jira transition
-// does not abort the whole batch. transitionCardFn/now are injectable for tests.
-export async function autoTransitionMergedCards({ state, configPath, loadConfigFn = loadConfig, transitionCardFn = transitionCard, now = () => new Date().toISOString() }: {
+// does not abort the whole batch. transitionCardFn/getIssueStatusFn/now
+// are injectable for tests.
+export async function autoTransitionMergedCards({ state, configPath, loadConfigFn = loadConfig, transitionCardFn = transitionCard, getIssueStatusFn = getIssueStatus, now = () => new Date().toISOString() }: {
   state: State;
   configPath?: string;
   loadConfigFn?: typeof loadConfig;
   transitionCardFn?: typeof transitionCard;
+  getIssueStatusFn?: typeof getIssueStatus;
   now?: () => string;
 }): Promise<AutoTransitionResult> {
   const none = { attempted: 0, succeeded: 0, failed: 0 };
@@ -382,6 +413,21 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
   let failed = 0;
   for (const item of candidates) {
     const id = autoTransitionId(item.key, item.pr!);
+    const seen = lastCards.get(item.key)?.status ?? item.jiraStatus;
+    let live: Pick<Card, 'status' | 'statusCategory'>;
+    try {
+      live = await getIssueStatusFn(config.jira, item.key);
+    } catch (e) {
+      // Transient (network/5xx): no POST, no ledger entry, retried next tick.
+      console.error(`auto-transition: ${item.key} live status check failed — ${(e as Error).message} (will retry next tick)`);
+      continue;
+    }
+    if (!sameStatus(live.status, seen) || !isPreTest(live, statuses)) {
+      const reason = `status changed: ${seen} -> ${live.status || '(none)'}`;
+      console.log(`auto-transition: ${item.key} skipped — ${reason}`);
+      ledger[id] = { at: now(), ok: false, skipped: true, error: reason.slice(0, 200) };
+      continue;
+    }
     try {
       await transitionCardFn(config.jira, item.key, statuses.inTest);
       console.log(`auto-transition: ${item.key} -> ${statuses.inTest}`);

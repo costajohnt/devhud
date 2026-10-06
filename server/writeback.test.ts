@@ -1,10 +1,10 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr, autoTransitionMergedCards, recordPostedComment, POSTED_COMMENT_IDS_MAX } from './writeback.ts';
+import { buildAdfDoc, findTransition, checkWriteGate, performWrite, transitionCard, commentCard, commentPr, autoTransitionMergedCards, getIssueStatus, recordPostedComment, POSTED_COMMENT_IDS_MAX } from './writeback.ts';
 import { emptyState, emptySnapshot } from './state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Config, JiraConfig, GithubConfig, State, Item, PrRef } from './types.ts';
+import type { Card, Config, JiraConfig, GithubConfig, State, Item, PrRef } from './types.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -383,6 +383,11 @@ const mergedRef = (key: string, number = 1): PrRef => ({
   repo: 'o/r', number, url: `https://gh/o/r/pull/${number}`, branch: `${key}-x`, state: 'merged', ciStatus: 'passing', reviewState: 'approved',
 });
 
+// Live-status stub for the pre-POST re-check: by default Jira still reports
+// the card In Progress (what stateWithMergedCard's snapshot saw).
+const liveStatus = (status = 'In Progress', statusCategory: Card['statusCategory'] = 'indeterminate') =>
+  vi.fn().mockResolvedValue({ status, statusCategory });
+
 // Build a minimal State with one card in the needs_attention bucket with
 // merged_not_in_test in its attention list.
 function stateWithMergedCard(key: string, ackedReasons?: string[]): State {
@@ -451,7 +456,9 @@ test('autoTransitionMergedCards: card acked for merged_not_in_test is skipped', 
 test('autoTransitionMergedCards: unacked card with merged_not_in_test is transitioned to inTest', async () => {
   const state = stateWithMergedCard('PROJ-1');
   const transitionCardFn = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
-  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  const getIssueStatusFn = liveStatus();
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+  expect(getIssueStatusFn).toHaveBeenCalledWith(baseAutoConfig.jira, 'PROJ-1');
   expect(transitionCardFn).toHaveBeenCalledOnce();
   expect(transitionCardFn).toHaveBeenCalledWith(baseAutoConfig.jira, 'PROJ-1', 'In Test');
   expect(result).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
@@ -486,7 +493,7 @@ test('autoTransitionMergedCards: transition throwing is caught, other cards stil
     return Promise.resolve({ transitionedTo: 'In Test' });
   });
 
-  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+  const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn: liveStatus() });
   expect(transitionCardFn).toHaveBeenCalledTimes(2);
   expect(result).toEqual({ attempted: 2, succeeded: 1, failed: 1 });
 });
@@ -565,7 +572,7 @@ test('autoTransitionMergedCards: review status is allowed', async () => {
     const state = stateWithMergedCard('PROJ-1');
     state.snapshot!.buckets.needs_attention[0]!.jiraStatus = 'Code Review';
     const transitionCardFn = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
-    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn });
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn: liveStatus('code review') });
     expect(result).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
   } finally { restore(); }
 });
@@ -575,25 +582,25 @@ test('autoTransitionMergedCards: fires at most once per (card, merged PR), succe
   try {
     const state = stateWithMergedCard('PROJ-1');
     const ok = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
-    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok, now: () => '2026-10-04T00:00:00Z' });
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok, getIssueStatusFn: liveStatus(), now: () => '2026-10-04T00:00:00Z' });
     expect(state.autoTransitioned!['PROJ-1@o/r#1']).toEqual({ at: '2026-10-04T00:00:00Z', ok: true });
     // Same flag still present next tick (e.g. QA rejected back): no second fire.
-    const again = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok });
+    const again = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok, getIssueStatusFn: liveStatus() });
     expect(ok).toHaveBeenCalledOnce();
     expect(again.attempted).toBe(0);
 
     // A failure is recorded and not retried on the next tick.
     const state2 = stateWithMergedCard('PROJ-2');
     const fail = vi.fn().mockRejectedValue(new Error('no transition to "In Test" available'));
-    const r1 = await autoTransitionMergedCards({ state: state2, loadConfigFn: () => baseAutoConfig, transitionCardFn: fail });
+    const r1 = await autoTransitionMergedCards({ state: state2, loadConfigFn: () => baseAutoConfig, transitionCardFn: fail, getIssueStatusFn: liveStatus() });
     expect(r1).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
     expect(state2.autoTransitioned!['PROJ-2@o/r#1']).toMatchObject({ ok: false, error: expect.stringContaining('no transition') });
-    await autoTransitionMergedCards({ state: state2, loadConfigFn: () => baseAutoConfig, transitionCardFn: fail });
+    await autoTransitionMergedCards({ state: state2, loadConfigFn: () => baseAutoConfig, transitionCardFn: fail, getIssueStatusFn: liveStatus() });
     expect(fail).toHaveBeenCalledOnce();
 
     // A different merged PR on the same card is a new event.
     state.snapshot!.buckets.needs_attention[0]!.pr = mergedRef('PROJ-1', 7);
-    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok });
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn: ok, getIssueStatusFn: liveStatus() });
     expect(ok).toHaveBeenCalledTimes(2);
   } finally { restore(); }
 });
@@ -618,6 +625,88 @@ test('autoTransitionMergedCards: QA-rejected card (end-to-end through buildSnaps
     await autoTransitionMergedCards({ state, loadConfigFn: () => cfg, transitionCardFn });
     expect(transitionCardFn).not.toHaveBeenCalled();
   } finally { restore(); }
+});
+
+// --- Live status re-check before each auto-transition POST ---
+
+test('autoTransitionMergedCards: live status unchanged (case-insensitive) -> transitions', async () => {
+  const restore = silence();
+  try {
+    const state = stateWithMergedCard('PROJ-1');
+    state.lastCards = [{ key: 'PROJ-1', summary: '', status: 'In Progress', statusCategory: 'indeterminate', description: '', url: '', createdAt: null, updatedAt: null, myAccountId: 'id', comments: [] }];
+    const transitionCardFn = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
+    const getIssueStatusFn = liveStatus('in progress');
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn, now: () => 'T' });
+    expect(getIssueStatusFn).toHaveBeenCalledOnce();
+    expect(transitionCardFn).toHaveBeenCalledOnce();
+    expect(result).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(state.autoTransitioned!['PROJ-1@o/r#1']).toEqual({ at: 'T', ok: true });
+  } finally { restore(); }
+});
+
+test('autoTransitionMergedCards: live status moved to Done or To Do -> no POST, skip recorded, not re-checked', async () => {
+  const restore = silence();
+  try {
+    for (const [status, cat] of [['Done', 'done'], ['To Do', 'new']] as const) {
+      const state = stateWithMergedCard('PROJ-1');
+      const transitionCardFn = vi.fn();
+      const getIssueStatusFn = liveStatus(status, cat);
+      const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn, now: () => 'T' });
+      expect(transitionCardFn).not.toHaveBeenCalled();
+      expect(result).toEqual({ attempted: 1, succeeded: 0, failed: 0 });
+      expect(state.autoTransitioned!['PROJ-1@o/r#1']).toEqual({ at: 'T', ok: false, skipped: true, error: `status changed: In Progress -> ${status}` });
+      // Recorded: the next tick neither re-checks nor POSTs.
+      const again = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+      expect(again.attempted).toBe(0);
+      expect(getIssueStatusFn).toHaveBeenCalledOnce();
+      expect(transitionCardFn).not.toHaveBeenCalled();
+    }
+  } finally { restore(); }
+});
+
+test('autoTransitionMergedCards: live status is a different pre-test status -> skipped (must match the snapshot)', async () => {
+  const restore = silence();
+  try {
+    const state = stateWithMergedCard('PROJ-1');
+    const transitionCardFn = vi.fn();
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn: liveStatus('Code Review') });
+    expect(transitionCardFn).not.toHaveBeenCalled();
+    expect(state.autoTransitioned!['PROJ-1@o/r#1']).toMatchObject({ ok: false, skipped: true, error: 'status changed: In Progress -> Code Review' });
+  } finally { restore(); }
+});
+
+test('autoTransitionMergedCards: live status GET fails -> no POST, no ledger entry, retried next call', async () => {
+  const restore = silence();
+  try {
+    const state = stateWithMergedCard('PROJ-1');
+    const transitionCardFn = vi.fn().mockResolvedValue({ transitionedTo: 'In Test' });
+    const getIssueStatusFn = vi.fn()
+      .mockRejectedValueOnce(new Error('Jira 503: unavailable'))
+      .mockResolvedValueOnce({ status: 'In Progress', statusCategory: 'indeterminate' });
+    const r1 = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+    expect(transitionCardFn).not.toHaveBeenCalled();
+    expect(r1).toEqual({ attempted: 1, succeeded: 0, failed: 0 });
+    expect(state.autoTransitioned!['PROJ-1@o/r#1']).toBeUndefined();
+    const r2 = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+    expect(getIssueStatusFn).toHaveBeenCalledTimes(2);
+    expect(transitionCardFn).toHaveBeenCalledOnce();
+    expect(r2).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(state.autoTransitioned!['PROJ-1@o/r#1']).toMatchObject({ ok: true });
+  } finally { restore(); }
+});
+
+test('getIssueStatus reads fields=status and maps statusCategory like jira.ts', async () => {
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  const fetchMock = vi.fn((_url: URL, _init: RequestInit) => Promise.resolve({ ok: true, json: () => Promise.resolve({ fields: { status: { name: 'Done', statusCategory: { key: 'done' } } } }) }));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await getIssueStatus(cfg, 'PROJ-1')).toEqual({ status: 'Done', statusCategory: 'done' });
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(String(url)).toBe('https://x.atlassian.net/rest/api/3/issue/PROJ-1?fields=status');
+  expect((init.headers as Record<string, string>).Authorization).toMatch(/^Basic /);
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ fields: { status: { name: 'Odd', statusCategory: { key: 'weird' } } } }) })));
+  expect(await getIssueStatus(cfg, 'PROJ-1')).toEqual({ status: 'Odd', statusCategory: '' });
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('down') })));
+  await expect(getIssueStatus(cfg, 'PROJ-1')).rejects.toThrow('Jira 503: down');
 });
 
 // --- L3: comment ids posted by write-back ---

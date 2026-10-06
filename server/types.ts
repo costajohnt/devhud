@@ -361,11 +361,14 @@ export interface CardState {
 
 // One auto-transition attempt, keyed in State.autoTransitioned by
 // `${cardKey}@${repo}#${number}` so a given merged PR fires at most once per
-// card, success or failure (failures are not retried).
+// card, success or failure (failures are not retried). `skipped` marks an
+// attempt abandoned before any POST because the live Jira status no longer
+// matched the snapshot (ok is false; error reads "status changed: X -> Y").
 export interface AutoTransitionRecord {
   at: string;
   ok: boolean;
   error?: string;
+  skipped?: boolean;
 }
 
 export interface CelebratedEntry {
