@@ -325,6 +325,18 @@ test('multi-identity: missing tokenEnv or username in an identity throws a reada
   expect(() => loadConfig(noEnv)).toThrow(/identities\[0\]\.tokenEnv/);
 });
 
+test('multi-identity: unset tokenEnv env var throws a readable error at load time', () => {
+  const p = join(dir, 'id-unset-env.json');
+  writeFileSync(p, JSON.stringify({
+    jira: baseJira,
+    github: { org: 'o', identities: [
+      { username: 'u', tokenEnv: 'GH_TOKEN_DEFINITELY_NOT_SET_XYZ123', repos: [] },
+    ] },
+  }));
+  delete process.env.GH_TOKEN_DEFINITELY_NOT_SET_XYZ123;
+  expect(() => loadConfig(p)).toThrow(/GH_TOKEN_DEFINITELY_NOT_SET_XYZ123.*is not set/);
+});
+
 test('multi-identity: invalid repo entry inside identities throws a readable error', () => {
   const p = join(dir, 'id-bad-repo.json');
   writeFileSync(p, JSON.stringify({

@@ -167,6 +167,7 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       if (!id.username) throw new Error(`config at ${path} is missing required key "github.identities[${i}].username"`);
       if (!id.tokenEnv) throw new Error(`config at ${path} is missing required key "github.identities[${i}].tokenEnv"`);
       const token = process.env[id.tokenEnv] ?? '';
+      if (!token) throw new Error(`config at ${path}: env var "${id.tokenEnv}" for github.identities[${i}] is not set`);
       return { username: id.username, token, repos: id.repos ?? [] };
     });
   } else {
