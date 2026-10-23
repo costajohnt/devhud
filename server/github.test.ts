@@ -203,6 +203,82 @@ test('fetchPrs preserves an owner-qualified repository entry', async () => {
   expect(prs[0]!.repo).toBe('other/repo');
 });
 
+// --- Multi-identity tests (#108) ---
+
+test('fetchPrs uses per-repo identity token and username when identities are configured', async () => {
+  // Two repos: org-a/repo1 uses work identity, org-b/repo2 uses personal identity.
+  const fetchMock = vi.fn((url: string | URL, init?: FetchInit) => {
+    const q = String((JSON.parse(init?.body ?? '{}') as { variables?: { q?: string } }).variables?.q ?? '');
+    const authHeader = (init && init.headers) ? (init.headers as Record<string, string>)['Authorization'] ?? '' : '';
+    if (q.includes('repo:org-a/repo1')) {
+      // Must be called with the work token and work username.
+      expect(authHeader).toBe('Bearer tok-work');
+      expect(q).toContain('author:work-user');
+      return Promise.resolve({ ok: true, headers: { get: () => null }, json: () => Promise.resolve({ data: { search: { nodes: [gqlPr({ number: 1 })] } } }) });
+    }
+    if (q.includes('repo:org-b/repo2')) {
+      expect(authHeader).toBe('Bearer tok-personal');
+      expect(q).toContain('author:personal-user');
+      return Promise.resolve({ ok: true, headers: { get: () => null }, json: () => Promise.resolve({ data: { search: { nodes: [gqlPr({ number: 2 })] } } }) });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = {
+    token: 'tok-work', org: 'org-a', repos: ['org-a/repo1', 'org-b/repo2'], username: 'work-user',
+    identities: [
+      { username: 'work-user', token: 'tok-work', repos: ['org-a/repo1'] },
+      { username: 'personal-user', token: 'tok-personal', repos: ['org-b/repo2'] },
+    ],
+    usernames: ['work-user', 'personal-user'],
+  };
+  const { prs, errors } = await fetchPrs(cfg);
+  expect(errors).toEqual([]);
+  expect(prs.map(p => p.number)).toEqual([1, 2]);
+});
+
+test('fetchPrs falls back to first identity for a repo not listed in any identity', async () => {
+  const fetchMock = fakeGithub({ 'org-a/unlisted': [gqlPr({ number: 99 })] });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = {
+    token: 'tok-first', org: 'org-a', repos: ['org-a/unlisted'], username: 'first-user',
+    identities: [
+      { username: 'first-user', token: 'tok-first', repos: [] },
+      { username: 'second-user', token: 'tok-second', repos: ['org-a/explicit'] },
+    ],
+    usernames: ['first-user', 'second-user'],
+  };
+  const { prs, errors } = await fetchPrs(cfg);
+  expect(errors).toEqual([]);
+  expect(prs[0]!.number).toBe(99);
+  // The request must have used the first identity (the default).
+  const [, init] = fetchMock.mock.calls[0]! as [string, FetchInit];
+  const hdrs = init && init.headers ? (init.headers as Record<string, string>) : {};
+  expect(hdrs['Authorization']).toBe('Bearer tok-first');
+});
+
+test('enrichPr uses the per-repo identity token', async () => {
+  const pr = basePr({ repo: 'org-b/repo2', number: 5 });
+  const fetchMock = vi.fn((url: string | URL, init?: FetchInit) => {
+    const authHeader = (init && init.headers) ? (init.headers as Record<string, string>)['Authorization'] ?? '' : '';
+    // Every call must use the personal token, not the work token.
+    expect(authHeader).toBe('Bearer tok-personal');
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = {
+    token: 'tok-work', org: 'org-a', repos: ['org-a/repo1', 'org-b/repo2'], username: 'work-user',
+    identities: [
+      { username: 'work-user', token: 'tok-work', repos: ['org-a/repo1'] },
+      { username: 'personal-user', token: 'tok-personal', repos: ['org-b/repo2'] },
+    ],
+    usernames: ['work-user', 'personal-user'],
+  };
+  await enrichPr(pr, cfg);
+  // All three requests (issue comments, review comments, reviews) used the personal token.
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
 test('fetchPrs isolates a per-repo failure into an "org/repo: message" error, without blanking the other repos', async () => {
   const fetchMock = vi.fn((url: string | URL, init?: FetchInit) => {
     const q = String((JSON.parse(init?.body ?? '{}') as { variables?: { q?: string } }).variables?.q ?? '');

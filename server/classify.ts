@@ -54,8 +54,13 @@ export interface ClassifyResult {
   newComments: NewComment[];
 }
 
-export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors = [], prDegraded = false, postedCommentIds = [], now = new Date().toISOString() }: {
-  card: Card; pr: Pr | null; cs: CardState; statuses: JiraStatuses; username: string; ignoreAuthors?: string[];
+export function classifyCard({ card, pr, cs, statuses, username, usernames, ignoreAuthors = [], prDegraded = false, postedCommentIds = [], now = new Date().toISOString() }: {
+  card: Card; pr: Pr | null; cs: CardState; statuses: JiraStatuses; username: string;
+  // All self usernames across identities (#108). When present, a PR comment
+  // from any of these logins is treated as "self" and not flagged as new.
+  // When absent, only the single `username` is treated as self (legacy path).
+  usernames?: string[];
+  ignoreAuthors?: string[];
   // Ids of Jira comments the dashboard's own write-back posted (State.
   // postedCommentIds). They carry the user's accountId but are not a reply
   // the user typed, so they must not advance the own-reply watermark (L3).
@@ -70,6 +75,10 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
 }): ClassifyResult {
   const attention: string[] = [];
   const newComments: NewComment[] = [];
+  // Build the set of "self" usernames once. Single-identity configs and all
+  // existing callers pass only `username`; multi-identity configs also pass
+  // `usernames` so every configured login is treated as self.
+  const selfNames = new Set(usernames ?? [username]);
 
   // Red CI that is red on the base branch too is not this card's problem;
   // ciNewFailures is [] only when every failed check also fails there (#79).
@@ -78,7 +87,7 @@ export function classifyCard({ card, pr, cs, statuses, username, ignoreAuthors =
   if (pr?.ciStatus === 'failing' && pr.state === 'open' && ciFailureIsNew(pr)) attention.push('ci_failing');
 
   for (const c of pr?.comments ?? []) {
-    if (c.author !== username && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {
+    if (!selfNames.has(c.author) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {
       newComments.push(githubNewComment(c));
     }
   }

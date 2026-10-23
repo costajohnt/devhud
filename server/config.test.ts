@@ -263,3 +263,75 @@ test('"simon": null is treated as absent; bad simon shapes get readable errors',
   writeFileSync(binP, JSON.stringify({ ...base, simon: { root: '/tmp/x', bin: 5 } }));
   expect(() => loadConfig(binP)).toThrow(/simon\.bin/);
 });
+
+// --- Multi-identity (#108) ---
+
+const baseJira = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' };
+
+test('multi-identity: identities array is normalised; each token is resolved from env', () => {
+  const p = join(dir, 'multi-id.json');
+  writeFileSync(p, JSON.stringify({
+    jira: baseJira,
+    github: {
+      org: 'myorg',
+      identities: [
+        { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['myorg/repo1'] },
+        { username: 'personal-user', tokenEnv: 'GH_TOKEN_PERSONAL', repos: ['otherorg/repo2'] },
+      ],
+    },
+  }));
+  process.env.GH_TOKEN_WORK = 'tok-work';
+  process.env.GH_TOKEN_PERSONAL = 'tok-personal';
+  try {
+    const cfg = loadConfig(p);
+    expect(cfg.github.identities).toHaveLength(2);
+    expect(cfg.github.identities![0]).toEqual({ username: 'work-user', token: 'tok-work', repos: ['myorg/repo1'] });
+    expect(cfg.github.identities![1]).toEqual({ username: 'personal-user', token: 'tok-personal', repos: ['otherorg/repo2'] });
+    expect(cfg.github.usernames).toEqual(['work-user', 'personal-user']);
+    // Legacy fields are derived from the first identity.
+    expect(cfg.github.username).toBe('work-user');
+    expect(cfg.github.token).toBe('tok-work');
+    // Repos is the union across identities.
+    expect(cfg.github.repos).toEqual(['myorg/repo1', 'otherorg/repo2']);
+  } finally {
+    delete process.env.GH_TOKEN_WORK;
+    delete process.env.GH_TOKEN_PERSONAL;
+  }
+});
+
+test('multi-identity: single-identity config is also normalised to identities array', () => {
+  const p = join(dir, 'single-id-normalised.json');
+  writeFileSync(p, JSON.stringify({
+    jira: baseJira,
+    github: { org: 'o', repos: ['r'], username: 'u', token: 'tok' },
+  }));
+  const cfg = loadConfig(p);
+  expect(cfg.github.identities).toHaveLength(1);
+  expect(cfg.github.identities![0]).toMatchObject({ username: 'u', token: 'tok', repos: ['r'] });
+  expect(cfg.github.usernames).toEqual(['u']);
+});
+
+test('multi-identity: missing tokenEnv or username in an identity throws a readable error', () => {
+  const base2 = { jira: baseJira, github: { org: 'o' } };
+
+  const noUser = join(dir, 'id-no-username.json');
+  writeFileSync(noUser, JSON.stringify({ ...base2, github: { org: 'o',
+    identities: [{ tokenEnv: 'GH_TOKEN_WORK', repos: [] }] } }));
+  expect(() => loadConfig(noUser)).toThrow(/identities\[0\]\.username/);
+
+  const noEnv = join(dir, 'id-no-tokenenv.json');
+  writeFileSync(noEnv, JSON.stringify({ ...base2, github: { org: 'o',
+    identities: [{ username: 'u', repos: [] }] } }));
+  expect(() => loadConfig(noEnv)).toThrow(/identities\[0\]\.tokenEnv/);
+});
+
+test('multi-identity: invalid repo entry inside identities throws a readable error', () => {
+  const p = join(dir, 'id-bad-repo.json');
+  writeFileSync(p, JSON.stringify({
+    jira: baseJira,
+    github: { org: 'o', identities: [
+      { username: 'u', tokenEnv: 'GH_TOKEN_WORK', repos: ['bad repo?'] },
+    ] },
+  }));
+  expect(() => loadConfig(p)).toThrow(/identities\[0\]\.repos/);
+});

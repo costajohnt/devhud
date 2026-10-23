@@ -421,6 +421,26 @@ fragment Checks on StatusCheckRollup {
 
 interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
 
+// Returns the identity (username + token) that covers fullRepo, falling back
+// to the first identity (or the top-level fields for configs without an
+// identities array). Matching is exact on the fully-qualified "owner/repo"
+// string; a bare "repo" name is compared against the last segment only so
+// configs that mix qualified and bare names continue to work.
+function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username: string; token: string } {
+  const identities = cfg.identities;
+  if (!identities?.length) return { username: cfg.username, token: cfg.token };
+  const repoName = fullRepo.includes('/') ? fullRepo.split('/')[1]! : fullRepo;
+  // Walk identities in order; the first match wins. The last identity acts as
+  // the default for repos not covered by any earlier entry (empty repos means
+  // "cover everything not already claimed").
+  for (const id of identities) {
+    if (!id.repos.length) continue; // skip default-identity entries in the scan
+    if (id.repos.includes(fullRepo) || id.repos.includes(repoName)) return id;
+  }
+  // Fall back: last identity with no repos (catch-all), then first identity.
+  return identities.findLast(id => !id.repos.length) ?? identities[0]!;
+}
+
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
 //
 // Author filtering happens server-side. Asking /pulls for the repo's 50
@@ -432,11 +452,12 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   const errors: string[] = [];
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
+    const { username, token } = resolveIdentity(cfg, full);
     try {
       // sort:updated-desc in the query string: GraphQL search has no sort
       // argument and defaults to best match, which would break the "author's
       // 50 most recently updated" window once the author has more PRs than fit.
-      const data = await graphql<PrSearchData>(PR_SEARCH_QUERY, { q: `is:pr author:${cfg.username} repo:${full} sort:updated-desc` }, cfg.token);
+      const data = await graphql<PrSearchData>(PR_SEARCH_QUERY, { q: `is:pr author:${username} repo:${full} sort:updated-desc` }, token);
       for (const node of data.search?.nodes ?? []) {
         // A search typed ISSUE can hand back an Issue node, which the
         // PullRequest fragment leaves empty.
@@ -456,15 +477,16 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
 export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [owner, repo] = pr.repo.split('/');
   const base = `/repos/${owner}/${repo}`;
+  const { token } = resolveIdentity(cfg, pr.repo);
   // Review comments take sort=created&direction=desc so a >100-comment thread
   // keeps the newest comments (the ones that matter for attention) instead of
   // silently truncating to the oldest page. Issue comments ignore those
   // parameters, so newestIssueComments pages to the end instead. The reviews
   // endpoint is left as-is.
   const [issueComments, reviewComments, reviews] = await Promise.all([
-    newestIssueComments(`${base}/issues/${pr.number}/comments`, cfg.token),
-    gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
-    gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
+    newestIssueComments(`${base}/issues/${pr.number}/comments`, token),
+    gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, token),
+    gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, token),
   ]);
   const comment = (c: RawComment): PrComment => ({ author: c.user?.login ?? '', body: c.body ?? '', createdAt: c.created_at ?? c.submitted_at });
   pr.comments = [

@@ -45,11 +45,31 @@ export interface JiraConfig {
   statuses: JiraStatuses;
 }
 
+// One GitHub credential set, covering a specific list of fully-qualified repos
+// (owner/repo). Used when a developer has separate work and personal accounts.
+// loadConfig resolves tokenEnv to a token at startup; github.ts never reads the
+// env var itself.
+export interface GithubIdentity {
+  username: string;
+  token: string; // resolved from tokenEnv at load time
+  // Fully-qualified repos ("owner/repo") covered by this identity.
+  // The last identity in the list acts as the default for repos not covered
+  // by any earlier identity.
+  repos: string[];
+}
+
 export interface GithubConfig {
   token: string;
   org: string;
   repos: string[];
   username: string;
+  // Multi-identity support (#108). loadConfig always populates both fields,
+  // even for single-identity configs (normalised to a one-element array).
+  // Test fixtures that construct GithubConfig directly may omit them; the
+  // fallback in github.ts keeps single-identity behaviour in that case.
+  identities?: GithubIdentity[];
+  // All usernames across all identities, for the "self" check in classify.ts.
+  usernames?: string[];
 }
 
 // Optional pointer at a local Simon executor scaffold (the Go orchestrator's

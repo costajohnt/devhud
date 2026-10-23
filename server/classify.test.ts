@@ -569,3 +569,32 @@ test('own-reply watermark ignores comments posted by write-back (L3)', () => {
   const withReply = [...comments, { id: '3', author: 'Me', authorId: 'me', body: 'click X', createdAt: '2026-07-04T00:00:00Z' }];
   expect(classifyCard({ ...base, card: card({ comments: withReply }), pr: null, cs: cs(), postedCommentIds: ['2'] }).attention).not.toContain('new_jira_comments');
 });
+
+// --- Multi-identity: comments from any configured username are treated as self (#108) ---
+
+test('multi-identity: PR comments from any usernames entry are not flagged as new', () => {
+  const prWith = (author: string) =>
+    pr({ comments: [{ author, body: 'hi', createdAt: '2026-07-02T00:00:00Z' }] });
+  // All three logins are "self"; none should trigger new_pr_comments.
+  for (const login of ['work-user', 'personal-user']) {
+    const result = classifyCard({
+      ...base,
+      username: 'work-user',
+      usernames: ['work-user', 'personal-user'],
+      card: card(),
+      pr: prWith(login),
+      cs: cs(),
+    });
+    expect(result.attention, `login ${login} should be treated as self`).not.toContain('new_pr_comments');
+  }
+  // A comment from an external reviewer is still flagged.
+  const external = classifyCard({
+    ...base,
+    username: 'work-user',
+    usernames: ['work-user', 'personal-user'],
+    card: card(),
+    pr: prWith('external-reviewer'),
+    cs: cs(),
+  });
+  expect(external.attention).toContain('new_pr_comments');
+});
