@@ -12,6 +12,7 @@
 // role for ack/move.
 import { refresh } from './refresh.ts';
 import { loadConfig } from './config.ts';
+import { resolveIdentity } from './github.ts';
 import { isPreTest, sameStatus } from './classify.ts';
 import type { Card, Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
 
@@ -137,7 +138,7 @@ export function recordPostedComment(state: State, id: string): void {
 export async function commentPr(cfg: GithubConfig, repo: string, number: number, body: string): Promise<Record<string, never>> {
   const res = await fetch(`https://api.github.com/repos/${repo}/issues/${number}/comments`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json', 'content-type': 'application/json' },
+    headers: { Authorization: `Bearer ${resolveIdentity(cfg, repo).token}`, Accept: 'application/vnd.github+json', 'content-type': 'application/json' },
     body: JSON.stringify({ body }),
     signal: AbortSignal.timeout(30_000),
   });
