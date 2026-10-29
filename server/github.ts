@@ -207,9 +207,11 @@ export function formatGithubStats(s: GithubRequestStats = githubStats()): string
 // Conditional-request cache: GitHub 304s don't count against the rate
 // limit, and between refresh ticks most responses are byte-identical — with
 // the server polling every couple of minutes this turns almost the whole
-// sweep free. Keyed by path (token never varies within a process). Keys are
-// comments/reviews per PR, so the cache grows with the number of PRs ever
-// linked; a long-lived server needs the size cap below.
+// sweep free. Keyed by path: a path names one repo, and a repo always
+// resolves to the same identity's token (resolveIdentity), so a cached body
+// never crosses tokens. Keys are comments/reviews per PR, so the cache grows
+// with the number of PRs ever linked; a long-lived server needs the size cap
+// below.
 // ponytail: bulk-drop at the cap (one re-paid sweep), LRU if it ever matters.
 const ETAG_CACHE_MAX = 500;
 const etagCache = new Map<string, { etag: string; body: unknown; link: string | null }>();
@@ -421,6 +423,25 @@ fragment Checks on StatusCheckRollup {
 
 interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
 
+// Returns the identity (username + token) that owns fullRepo ("owner/repo").
+// An identity whose repos list contains the repo owns it; bare names in that
+// list are qualified with cfg.org first, the same rule fetchPrs applies to
+// cfg.repos, and matching is case-insensitive like GitHub's own names. A
+// repo no explicit list claims goes to the catch-all identity (the one with
+// an empty repos list; loadConfig allows at most one). With no catch-all it
+// throws: falling back to another identity would read or post as the wrong
+// account. Configs without identities use the top-level fields.
+export function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username: string; token: string } {
+  const identities = cfg.identities;
+  if (!identities?.length) return { username: cfg.username, token: cfg.token };
+  const key = fullRepo.toLowerCase();
+  const qualify = (r: string) => (r.includes('/') ? r : `${cfg.org}/${r}`).toLowerCase();
+  const owner = identities.find(id => id.repos.some(r => qualify(r) === key))
+    ?? identities.find(id => !id.repos.length);
+  if (!owner) throw new Error(`no GitHub identity owns "${fullRepo}"; list it under one identity or add a catch-all identity`);
+  return owner;
+}
+
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
 //
 // Author filtering happens server-side. Asking /pulls for the repo's 50
@@ -433,10 +454,11 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
     try {
+      const { username, token } = resolveIdentity(cfg, full);
       // sort:updated-desc in the query string: GraphQL search has no sort
       // argument and defaults to best match, which would break the "author's
       // 50 most recently updated" window once the author has more PRs than fit.
-      const data = await graphql<PrSearchData>(PR_SEARCH_QUERY, { q: `is:pr author:${cfg.username} repo:${full} sort:updated-desc` }, cfg.token);
+      const data = await graphql<PrSearchData>(PR_SEARCH_QUERY, { q: `is:pr author:${username} repo:${full} sort:updated-desc` }, token);
       for (const node of data.search?.nodes ?? []) {
         // A search typed ISSUE can hand back an Issue node, which the
         // PullRequest fragment leaves empty.
@@ -456,15 +478,16 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
 export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [owner, repo] = pr.repo.split('/');
   const base = `/repos/${owner}/${repo}`;
+  const { token } = resolveIdentity(cfg, pr.repo);
   // Review comments take sort=created&direction=desc so a >100-comment thread
   // keeps the newest comments (the ones that matter for attention) instead of
   // silently truncating to the oldest page. Issue comments ignore those
   // parameters, so newestIssueComments pages to the end instead. The reviews
   // endpoint is left as-is.
   const [issueComments, reviewComments, reviews] = await Promise.all([
-    newestIssueComments(`${base}/issues/${pr.number}/comments`, cfg.token),
-    gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, cfg.token),
-    gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, cfg.token),
+    newestIssueComments(`${base}/issues/${pr.number}/comments`, token),
+    gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, token),
+    gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, token),
   ]);
   const comment = (c: RawComment): PrComment => ({ author: c.user?.login ?? '', body: c.body ?? '', createdAt: c.created_at ?? c.submitted_at });
   pr.comments = [

@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapPr, newCiFailures, ciBaseVerdict, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats, resetGithubRateLimit, lastPageFromLink } from './github.ts';
+import { mapPr, newCiFailures, ciBaseVerdict, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats, resetGithubRateLimit, lastPageFromLink, resolveIdentity } from './github.ts';
 import { classifyCard } from './classify.ts';
 import type { Pr, GithubConfig, Card, CardState } from './types.ts';
 
@@ -201,6 +201,82 @@ test('fetchPrs preserves an owner-qualified repository entry', async () => {
   const { prs, errors } = await fetchPrs(cfg);
   expect(errors).toEqual([]);
   expect(prs[0]!.repo).toBe('other/repo');
+});
+
+// --- Multi-identity tests (#108) ---
+
+test('fetchPrs uses per-repo identity token and username when identities are configured', async () => {
+  // Two repos: org-a/repo1 uses work identity, org-b/repo2 uses personal identity.
+  const fetchMock = vi.fn((url: string | URL, init?: FetchInit) => {
+    const q = String((JSON.parse(init?.body ?? '{}') as { variables?: { q?: string } }).variables?.q ?? '');
+    const authHeader = (init && init.headers) ? (init.headers as Record<string, string>)['Authorization'] ?? '' : '';
+    if (q.includes('repo:org-a/repo1')) {
+      // Must be called with the work token and work username.
+      expect(authHeader).toBe('Bearer tok-work');
+      expect(q).toContain('author:work-user');
+      return Promise.resolve({ ok: true, headers: { get: () => null }, json: () => Promise.resolve({ data: { search: { nodes: [gqlPr({ number: 1 })] } } }) });
+    }
+    if (q.includes('repo:org-b/repo2')) {
+      expect(authHeader).toBe('Bearer tok-personal');
+      expect(q).toContain('author:personal-user');
+      return Promise.resolve({ ok: true, headers: { get: () => null }, json: () => Promise.resolve({ data: { search: { nodes: [gqlPr({ number: 2 })] } } }) });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = {
+    token: 'tok-work', org: 'org-a', repos: ['org-a/repo1', 'org-b/repo2'], username: 'work-user',
+    identities: [
+      { username: 'work-user', token: 'tok-work', repos: ['org-a/repo1'] },
+      { username: 'personal-user', token: 'tok-personal', repos: ['org-b/repo2'] },
+    ],
+    usernames: ['work-user', 'personal-user'],
+  };
+  const { prs, errors } = await fetchPrs(cfg);
+  expect(errors).toEqual([]);
+  expect(prs.map(p => p.number)).toEqual([1, 2]);
+});
+
+test('fetchPrs falls back to first identity for a repo not listed in any identity', async () => {
+  const fetchMock = fakeGithub({ 'org-a/unlisted': [gqlPr({ number: 99 })] });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = {
+    token: 'tok-first', org: 'org-a', repos: ['org-a/unlisted'], username: 'first-user',
+    identities: [
+      { username: 'first-user', token: 'tok-first', repos: [] },
+      { username: 'second-user', token: 'tok-second', repos: ['org-a/explicit'] },
+    ],
+    usernames: ['first-user', 'second-user'],
+  };
+  const { prs, errors } = await fetchPrs(cfg);
+  expect(errors).toEqual([]);
+  expect(prs[0]!.number).toBe(99);
+  // The request must have used the first identity (the default).
+  const [, init] = fetchMock.mock.calls[0]! as [string, FetchInit];
+  const hdrs = init && init.headers ? (init.headers as Record<string, string>) : {};
+  expect(hdrs['Authorization']).toBe('Bearer tok-first');
+});
+
+test('enrichPr uses the per-repo identity token', async () => {
+  const pr = basePr({ repo: 'org-b/repo2', number: 5 });
+  const fetchMock = vi.fn((url: string | URL, init?: FetchInit) => {
+    const authHeader = (init && init.headers) ? (init.headers as Record<string, string>)['Authorization'] ?? '' : '';
+    // Every call must use the personal token, not the work token.
+    expect(authHeader).toBe('Bearer tok-personal');
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve([]) });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg: GithubConfig = {
+    token: 'tok-work', org: 'org-a', repos: ['org-a/repo1', 'org-b/repo2'], username: 'work-user',
+    identities: [
+      { username: 'work-user', token: 'tok-work', repos: ['org-a/repo1'] },
+      { username: 'personal-user', token: 'tok-personal', repos: ['org-b/repo2'] },
+    ],
+    usernames: ['work-user', 'personal-user'],
+  };
+  await enrichPr(pr, cfg);
+  // All three requests (issue comments, review comments, reviews) used the personal token.
+  expect(fetchMock).toHaveBeenCalledTimes(3);
 });
 
 test('fetchPrs isolates a per-repo failure into an "org/repo: message" error, without blanking the other repos', async () => {
@@ -566,4 +642,51 @@ test('mapPr sets ciNewFailures only on an open failing PR', () => {
   expect(mapPr(node('OPEN', 'FAILURE'), 'o/r').ciNewFailures).toEqual([]);
   expect('ciNewFailures' in mapPr(node('OPEN', 'SUCCESS'), 'o/r')).toBe(false);
   expect('ciNewFailures' in mapPr(node('MERGED', 'FAILURE'), 'o/r')).toBe(false);
+});
+
+// Catch-all semantics (#108): an identity with no repos owns every
+// configured repo that no explicit identity claims; without one, the first
+// identity does. Bare names qualify with cfg.org before matching.
+const idCfg = (identities: GithubConfig['identities']): GithubConfig =>
+  ({ token: 'x', org: 'acme', repos: [], username: 'x', identities });
+const work = { username: 'work', token: 'tok-work', repos: ['svc'] };
+const personal = { username: 'personal', token: 'tok-personal', repos: ['me/side'] };
+const catchAll = { username: 'catch', token: 'tok-catch', repos: [] };
+
+test('resolveIdentity: explicit repo list wins, bare names qualify with org', () => {
+  expect(resolveIdentity(idCfg([work, personal]), 'acme/svc').username).toBe('work');
+  expect(resolveIdentity(idCfg([work, personal]), 'me/side').username).toBe('personal');
+});
+
+test('resolveIdentity: a bare identity repo does not claim the same name in another org', () => {
+  expect(resolveIdentity(idCfg([work, catchAll]), 'otherorg/svc').username).toBe('catch');
+});
+
+test('resolveIdentity: the catch-all identity owns unclaimed repos wherever it sits in the list', () => {
+  expect(resolveIdentity(idCfg([work, catchAll, personal]), 'acme/unlisted').username).toBe('catch');
+  expect(resolveIdentity(idCfg([work, personal, catchAll]), 'acme/unlisted').username).toBe('catch');
+});
+
+test('resolveIdentity: with no catch-all, an unclaimed repo throws instead of falling back to another account', () => {
+  expect(() => resolveIdentity(idCfg([personal, work]), 'acme/unlisted')).toThrow(/no GitHub identity owns "acme\/unlisted"/);
+});
+
+test('resolveIdentity: repo matching is case-insensitive (GitHub returns canonical case)', () => {
+  const mixed = { username: 'mixed', token: 'tok-mixed', repos: ['Me/Side', 'WebApp'] };
+  expect(resolveIdentity(idCfg([work, mixed]), 'me/side').username).toBe('mixed');
+  expect(resolveIdentity(idCfg([work, mixed]), 'ACME/webapp').username).toBe('mixed');
+});
+
+test('fetchPrs reports an unowned repo as a per-repo error without fetching it', async () => {
+  const fetchMock = fakeGithub({ 'acme/svc': [gqlPr({ number: 1 })] });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg = { ...idCfg([work]), repos: ['svc', 'acme/unlisted'] };
+  const { prs, errors } = await fetchPrs(cfg);
+  expect(prs.map(p => p.number)).toEqual([1]);
+  expect(errors).toEqual([expect.stringMatching(/^acme\/unlisted: .*no GitHub identity owns/)]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+test('resolveIdentity: configs without identities use the top-level username and token', () => {
+  expect(resolveIdentity({ token: 't', org: 'o', repos: [], username: 'u' }, 'o/r')).toEqual({ username: 'u', token: 't' });
 });

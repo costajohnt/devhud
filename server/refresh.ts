@@ -69,6 +69,9 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
 }): Snapshot {
   const { statuses } = config.jira;
   const username = config.github.username;
+  // Multi-identity: pass all configured usernames so comments from any of them
+  // are treated as "self" in classifyCard's new-comments check (#108).
+  const usernames = config.github.usernames;
   const ignoreAuthors = config.ignoreAuthors ?? [];
   state.prLog ??= {};
   state.doneCelebrated ??= [];
@@ -141,7 +144,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // can't tell whether its PR vanished or simply belongs to a failed repo.
     const prDegraded = degraded === 'all'
       || (degraded !== null && (pr ? degraded.has(pr.repo) : degraded.size > 0));
-    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, ignoreAuthors, prDegraded, postedCommentIds: state.postedCommentIds ?? [] });
+    const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, usernames, ignoreAuthors, prDegraded, postedCommentIds: state.postedCommentIds ?? [] });
     const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
