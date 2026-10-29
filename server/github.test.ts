@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { mapPr, newCiFailures, ciBaseVerdict, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats, resetGithubRateLimit, lastPageFromLink } from './github.ts';
+import { mapPr, newCiFailures, ciBaseVerdict, ciFromRollup, reviewStateFrom, fetchPrs, enrichPr, throttleWaitMs, isThrottleMessage, githubStats, resetGithubStats, resetGithubRateLimit, lastPageFromLink, resolveIdentity } from './github.ts';
 import { classifyCard } from './classify.ts';
 import type { Pr, GithubConfig, Card, CardState } from './types.ts';
 
@@ -642,4 +642,35 @@ test('mapPr sets ciNewFailures only on an open failing PR', () => {
   expect(mapPr(node('OPEN', 'FAILURE'), 'o/r').ciNewFailures).toEqual([]);
   expect('ciNewFailures' in mapPr(node('OPEN', 'SUCCESS'), 'o/r')).toBe(false);
   expect('ciNewFailures' in mapPr(node('MERGED', 'FAILURE'), 'o/r')).toBe(false);
+});
+
+// Catch-all semantics (#108): an identity with no repos owns every
+// configured repo that no explicit identity claims; without one, the first
+// identity does. Bare names qualify with cfg.org before matching.
+const idCfg = (identities: GithubConfig['identities']): GithubConfig =>
+  ({ token: 'x', org: 'acme', repos: [], username: 'x', identities });
+const work = { username: 'work', token: 'tok-work', repos: ['svc'] };
+const personal = { username: 'personal', token: 'tok-personal', repos: ['me/side'] };
+const catchAll = { username: 'catch', token: 'tok-catch', repos: [] };
+
+test('resolveIdentity: explicit repo list wins, bare names qualify with org', () => {
+  expect(resolveIdentity(idCfg([work, personal]), 'acme/svc').username).toBe('work');
+  expect(resolveIdentity(idCfg([work, personal]), 'me/side').username).toBe('personal');
+});
+
+test('resolveIdentity: a bare identity repo does not claim the same name in another org', () => {
+  expect(resolveIdentity(idCfg([work, catchAll]), 'otherorg/svc').username).toBe('catch');
+});
+
+test('resolveIdentity: the catch-all identity owns unclaimed repos wherever it sits in the list', () => {
+  expect(resolveIdentity(idCfg([work, catchAll, personal]), 'acme/unlisted').username).toBe('catch');
+  expect(resolveIdentity(idCfg([work, personal, catchAll]), 'acme/unlisted').username).toBe('catch');
+});
+
+test('resolveIdentity: with no catch-all, unclaimed repos fall back to the first identity', () => {
+  expect(resolveIdentity(idCfg([personal, work]), 'acme/unlisted').username).toBe('personal');
+});
+
+test('resolveIdentity: configs without identities use the top-level username and token', () => {
+  expect(resolveIdentity({ token: 't', org: 'o', repos: [], username: 'u' }, 'o/r')).toEqual({ username: 'u', token: 't' });
 });

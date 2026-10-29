@@ -52,9 +52,10 @@ export interface JiraConfig {
 export interface GithubIdentity {
   username: string;
   token: string; // resolved from tokenEnv at load time
-  // Fully-qualified repos ("owner/repo") covered by this identity.
-  // The last identity in the list acts as the default for repos not covered
-  // by any earlier identity.
+  // Repos owned by this identity ("name" qualifies with github.org, or
+  // "owner/name"). Empty marks the catch-all: it owns every configured repo
+  // no other identity lists. With no catch-all, unclaimed repos go to the
+  // first identity. See resolveIdentity in github.ts.
   repos: string[];
 }
 

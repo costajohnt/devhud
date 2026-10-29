@@ -26,8 +26,9 @@ interface RawConfig {
     // Single-identity shape (backward compat): token/username/repos at the top level.
     token?: string; org?: string; repos?: string[]; username?: string;
     // Multi-identity shape (#108): each entry carries its own credentials and
-    // repo list. When present, the top-level token/username fields are optional
-    // and only used as ultimate fallbacks.
+    // repo list. When present, the top-level token/username are ignored; the
+    // top-level repos still apply and belong to the catch-all identity (the
+    // one entry without repos), or to the first identity if there is none.
     identities?: Array<{ username?: string; tokenEnv?: string; repos?: string[] }>;
   };
   port?: number;
@@ -178,11 +179,14 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     }];
   }
 
-  // Union of all repos across identities (may overlap with github.repos for
-  // single-identity; identical in that case). fetchPrs iterates this list.
-  const allRepos = github.identities?.length
-    ? [...new Set(identities.flatMap(id => id.repos))]
-    : (github.repos ?? []);
+  // fetchPrs iterates this list: the top-level github.repos plus every
+  // identity's own repos. A catch-all identity (no repos) owns the top-level
+  // entries no explicit identity claims (resolveIdentity in github.ts); more
+  // than one catch-all would make that ownership ambiguous.
+  if (identities.filter(id => !id.repos.length).length > 1) {
+    throw new Error(`config at ${path}: at most one github.identities entry may omit "repos" (the catch-all identity)`);
+  }
+  const allRepos = [...new Set([...(github.repos ?? []), ...identities.flatMap(id => id.repos)])];
 
   const allUsernames = [...new Set(identities.map(id => id.username))];
   const firstIdentity = identities[0]!;

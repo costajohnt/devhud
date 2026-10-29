@@ -744,3 +744,20 @@ test('recordPostedComment keeps a bounded, deduped list', () => {
   expect(state.postedCommentIds!.filter(x => x === '10')).toHaveLength(1);
   expect(state.postedCommentIds).not.toContain('0');
 });
+
+test('commentPr authenticates with the identity that owns the PR repo, not the first identity (#108)', async () => {
+  let capturedAuth = '';
+  vi.stubGlobal('fetch', vi.fn((_url: string | URL, init?: RequestInit) => {
+    capturedAuth = (init?.headers as Record<string, string>)?.Authorization ?? '';
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+  }));
+  const cfg: GithubConfig = {
+    token: 'tok-work', org: 'acme', repos: ['acme/webapp', 'me/side'], username: 'work-user',
+    identities: [
+      { username: 'work-user', token: 'tok-work', repos: ['acme/webapp'] },
+      { username: 'personal-user', token: 'tok-personal', repos: ['me/side'] },
+    ],
+  };
+  await commentPr(cfg, 'me/side', 7, 'hi');
+  expect(capturedAuth).toBe('Bearer tok-personal');
+});

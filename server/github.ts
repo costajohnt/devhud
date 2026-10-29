@@ -207,8 +207,9 @@ export function formatGithubStats(s: GithubRequestStats = githubStats()): string
 // Conditional-request cache: GitHub 304s don't count against the rate
 // limit, and between refresh ticks most responses are byte-identical — with
 // the server polling every couple of minutes this turns almost the whole
-// sweep free. Keyed by path (token never varies within a process). Keys are
-// comments/reviews per PR, so the cache grows with the number of PRs ever
+// sweep free. Keyed by path: a path names one repo, and a repo always
+// resolves to the same identity's token (resolveIdentity), so a cached body
+// never crosses tokens. Keys are comments/reviews per PR, so the cache grows with the number of PRs ever
 // linked; a long-lived server needs the size cap below.
 // ponytail: bulk-drop at the cap (one re-paid sweep), LRU if it ever matters.
 const ETAG_CACHE_MAX = 500;
@@ -421,24 +422,19 @@ fragment Checks on StatusCheckRollup {
 
 interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
 
-// Returns the identity (username + token) that covers fullRepo, falling back
-// to the first identity (or the top-level fields for configs without an
-// identities array). Matching is exact on the fully-qualified "owner/repo"
-// string; a bare "repo" name is compared against the last segment only so
-// configs that mix qualified and bare names continue to work.
-function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username: string; token: string } {
+// Returns the identity (username + token) that owns fullRepo ("owner/repo").
+// An identity whose repos list contains the repo owns it; bare names in that
+// list are qualified with cfg.org first, the same rule fetchPrs applies to
+// cfg.repos. A repo no explicit list claims goes to the catch-all identity
+// (the one with an empty repos list; loadConfig allows at most one), else to
+// the first identity. Configs without identities use the top-level fields.
+export function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username: string; token: string } {
   const identities = cfg.identities;
   if (!identities?.length) return { username: cfg.username, token: cfg.token };
-  const repoName = fullRepo.includes('/') ? fullRepo.split('/')[1]! : fullRepo;
-  // Walk identities in order; the first match wins. The last identity acts as
-  // the default for repos not covered by any earlier entry (empty repos means
-  // "cover everything not already claimed").
-  for (const id of identities) {
-    if (!id.repos.length) continue; // skip default-identity entries in the scan
-    if (id.repos.includes(fullRepo) || id.repos.includes(repoName)) return id;
-  }
-  // Fall back: last identity with no repos (catch-all), then first identity.
-  return identities.findLast(id => !id.repos.length) ?? identities[0]!;
+  const qualify = (r: string) => (r.includes('/') ? r : `${cfg.org}/${r}`);
+  return identities.find(id => id.repos.some(r => qualify(r) === fullRepo))
+    ?? identities.find(id => !id.repos.length)
+    ?? identities[0]!;
 }
 
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
