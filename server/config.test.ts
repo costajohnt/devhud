@@ -386,3 +386,46 @@ test('multi-identity: more than one catch-all identity is a config error', () =>
     delete process.env.GH_TOKEN_WORK;
   }
 });
+
+// Writes a multi-identity config with both tokens set and returns loadConfig's result (or throw).
+function loadIdentities(name: string, github: Record<string, unknown>) {
+  const p = join(dir, name);
+  writeFileSync(p, JSON.stringify({ jira: baseJira, github: { org: 'acme', ...github } }));
+  process.env.GH_TOKEN_WORK = 'tok-work';
+  process.env.GH_TOKEN_PERSONAL = 'tok-personal';
+  try { return loadConfig(p); } finally {
+    delete process.env.GH_TOKEN_WORK;
+    delete process.env.GH_TOKEN_PERSONAL;
+  }
+}
+
+test('multi-identity: a top-level repo no identity owns, with no catch-all, is a config error', () => {
+  expect(() => loadIdentities('id-unowned.json', { repos: ['webapp', 'api'], identities: [
+    { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['webapp'] },
+    { username: 'personal-user', tokenEnv: 'GH_TOKEN_PERSONAL', repos: ['me/side'] },
+  ] })).toThrow(/"acme\/api" is in github\.repos but no github\.identities entry lists it.*catch-all/);
+});
+
+test('multi-identity: top-level repos all claimed by explicit identities need no catch-all', () => {
+  const cfg = loadIdentities('id-all-claimed.json', { repos: ['webapp'], identities: [
+    { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['acme/webapp'] },
+  ] });
+  expect(cfg.github.repos).toEqual(['webapp']);
+});
+
+test('multi-identity: a repo listed under two identities is a config error', () => {
+  expect(() => loadIdentities('id-double-claim.json', { identities: [
+    { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['svc'] },
+    { username: 'personal-user', tokenEnv: 'GH_TOKEN_PERSONAL', repos: ['acme/svc'] },
+  ] })).toThrow(/"acme\/svc" is listed under more than one github\.identities entry/);
+});
+
+test('multi-identity: case-variant duplicate repos are a config error', () => {
+  expect(() => loadIdentities('id-case-dup.json', { repos: ['WebApp'], identities: [
+    { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['acme/webapp'] },
+  ] })).toThrow(/"acme\/WebApp" and "acme\/webapp" differ only in case/);
+  expect(() => loadIdentities('id-case-dup2.json', { identities: [
+    { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['Svc'] },
+    { username: 'personal-user', tokenEnv: 'GH_TOKEN_PERSONAL', repos: ['svc'] },
+  ] })).toThrow(/differ only in case/);
+});

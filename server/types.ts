@@ -54,8 +54,8 @@ export interface GithubIdentity {
   token: string; // resolved from tokenEnv at load time
   // Repos owned by this identity ("name" qualifies with github.org, or
   // "owner/name"). Empty marks the catch-all: it owns every configured repo
-  // no other identity lists. With no catch-all, unclaimed repos go to the
-  // first identity. See resolveIdentity in github.ts.
+  // no other identity lists. With no catch-all, every repo must be listed
+  // under exactly one identity. See resolveIdentity in github.ts.
   repos: string[];
 }
 

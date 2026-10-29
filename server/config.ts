@@ -28,7 +28,8 @@ interface RawConfig {
     // Multi-identity shape (#108): each entry carries its own credentials and
     // repo list. When present, the top-level token/username are ignored; the
     // top-level repos still apply and belong to the catch-all identity (the
-    // one entry without repos), or to the first identity if there is none.
+    // one entry without repos). With no catch-all, each must be listed under
+    // an identity or loadConfig throws.
     identities?: Array<{ username?: string; tokenEnv?: string; repos?: string[] }>;
   };
   port?: number;
@@ -179,14 +180,37 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     }];
   }
 
-  // fetchPrs iterates this list: the top-level github.repos plus every
-  // identity's own repos. A catch-all identity (no repos) owns the top-level
-  // entries no explicit identity claims (resolveIdentity in github.ts); more
-  // than one catch-all would make that ownership ambiguous.
-  if (identities.filter(id => !id.repos.length).length > 1) {
-    throw new Error(`config at ${path}: at most one github.identities entry may omit "repos" (the catch-all identity)`);
+  // fetchPrs iterates allRepos: the top-level github.repos plus every
+  // identity's own repos, deduplicated after qualifying bare names with the
+  // org. GitHub owner/repo names are case-insensitive, so two spellings that
+  // differ only in case are rejected rather than fetched twice.
+  const qualify = (r: string) => (r.includes('/') ? r : `${github.org}/${r}`);
+  const spelling = new Map<string, string>();
+  const allRepos: string[] = [];
+  for (const r of [...(github.repos ?? []), ...identities.flatMap(id => id.repos)]) {
+    const q = qualify(r), key = q.toLowerCase(), prev = spelling.get(key);
+    if (prev === undefined) { spelling.set(key, q); allRepos.push(r); }
+    else if (prev !== q) throw new Error(`config at ${path}: github repos "${prev}" and "${q}" differ only in case; list each repo once`);
   }
-  const allRepos = [...new Set([...(github.repos ?? []), ...identities.flatMap(id => id.repos)])];
+  // Every repo must have exactly one owning identity (resolveIdentity in
+  // github.ts): an explicit repos entry, or else the catch-all (the single
+  // identity without repos). No silent fallback to another account.
+  if (github.identities?.length) {
+    const owner = new Map<string, number>();
+    identities.forEach((id, i) => {
+      for (const r of id.repos) {
+        const key = qualify(r).toLowerCase();
+        if ((owner.get(key) ?? i) !== i) throw new Error(`config at ${path}: "${qualify(r)}" is listed under more than one github.identities entry`);
+        owner.set(key, i);
+      }
+    });
+    const catchAlls = identities.filter(id => !id.repos.length).length;
+    if (catchAlls > 1) throw new Error(`config at ${path}: at most one github.identities entry may omit "repos" (the catch-all identity)`);
+    if (!catchAlls) {
+      const unowned = (github.repos ?? []).find(r => !owner.has(qualify(r).toLowerCase()));
+      if (unowned) throw new Error(`config at ${path}: "${qualify(unowned)}" is in github.repos but no github.identities entry lists it; list it under one identity or add a catch-all identity (an entry without "repos")`);
+    }
+  }
 
   const allUsernames = [...new Set(identities.map(id => id.username))];
   const firstIdentity = identities[0]!;

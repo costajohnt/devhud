@@ -78,7 +78,8 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // Build the set of "self" usernames once. Single-identity configs and all
   // existing callers pass only `username`; multi-identity configs also pass
   // `usernames` so every configured login is treated as self.
-  const selfNames = new Set(usernames ?? [username]);
+  // GitHub logins are case-insensitive, so compare lowercased.
+  const selfNames = new Set((usernames ?? [username]).map(u => u.toLowerCase()));
 
   // Red CI that is red on the base branch too is not this card's problem;
   // ciNewFailures is [] only when every failed check also fails there (#79).
@@ -87,7 +88,7 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   if (pr?.ciStatus === 'failing' && pr.state === 'open' && ciFailureIsNew(pr)) attention.push('ci_failing');
 
   for (const c of pr?.comments ?? []) {
-    if (!selfNames.has(c.author) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {
+    if (!selfNames.has(c.author.toLowerCase()) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {
       newComments.push(githubNewComment(c));
     }
   }

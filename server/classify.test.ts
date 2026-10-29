@@ -598,3 +598,18 @@ test('multi-identity: PR comments from any usernames entry are not flagged as ne
   });
   expect(external.attention).toContain('new_pr_comments');
 });
+
+test('multi-identity: self logins match case-insensitively (GitHub logins are case-insensitive)', () => {
+  const result = classifyCard({
+    ...base,
+    username: 'work-user',
+    usernames: ['work-user', 'Personal-User'],
+    card: card(),
+    pr: pr({ comments: [
+      { author: 'Work-User', body: 'hi', createdAt: '2026-07-02T00:00:00Z' },
+      { author: 'personal-user', body: 'hi', createdAt: '2026-07-02T00:00:00Z' },
+    ] }),
+    cs: cs(),
+  });
+  expect(result.attention).not.toContain('new_pr_comments');
+});

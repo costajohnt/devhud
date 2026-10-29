@@ -209,8 +209,9 @@ export function formatGithubStats(s: GithubRequestStats = githubStats()): string
 // the server polling every couple of minutes this turns almost the whole
 // sweep free. Keyed by path: a path names one repo, and a repo always
 // resolves to the same identity's token (resolveIdentity), so a cached body
-// never crosses tokens. Keys are comments/reviews per PR, so the cache grows with the number of PRs ever
-// linked; a long-lived server needs the size cap below.
+// never crosses tokens. Keys are comments/reviews per PR, so the cache grows
+// with the number of PRs ever linked; a long-lived server needs the size cap
+// below.
 // ponytail: bulk-drop at the cap (one re-paid sweep), LRU if it ever matters.
 const ETAG_CACHE_MAX = 500;
 const etagCache = new Map<string, { etag: string; body: unknown; link: string | null }>();
@@ -425,16 +426,20 @@ interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } |
 // Returns the identity (username + token) that owns fullRepo ("owner/repo").
 // An identity whose repos list contains the repo owns it; bare names in that
 // list are qualified with cfg.org first, the same rule fetchPrs applies to
-// cfg.repos. A repo no explicit list claims goes to the catch-all identity
-// (the one with an empty repos list; loadConfig allows at most one), else to
-// the first identity. Configs without identities use the top-level fields.
+// cfg.repos, and matching is case-insensitive like GitHub's own names. A
+// repo no explicit list claims goes to the catch-all identity (the one with
+// an empty repos list; loadConfig allows at most one). With no catch-all it
+// throws: falling back to another identity would read or post as the wrong
+// account. Configs without identities use the top-level fields.
 export function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username: string; token: string } {
   const identities = cfg.identities;
   if (!identities?.length) return { username: cfg.username, token: cfg.token };
-  const qualify = (r: string) => (r.includes('/') ? r : `${cfg.org}/${r}`);
-  return identities.find(id => id.repos.some(r => qualify(r) === fullRepo))
-    ?? identities.find(id => !id.repos.length)
-    ?? identities[0]!;
+  const key = fullRepo.toLowerCase();
+  const qualify = (r: string) => (r.includes('/') ? r : `${cfg.org}/${r}`).toLowerCase();
+  const owner = identities.find(id => id.repos.some(r => qualify(r) === key))
+    ?? identities.find(id => !id.repos.length);
+  if (!owner) throw new Error(`no GitHub identity owns "${fullRepo}"; list it under one identity or add a catch-all identity`);
+  return owner;
 }
 
 // Fetches PRs across repos. Returns { prs, errors } to isolate per-repo failures.
@@ -448,8 +453,8 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   const errors: string[] = [];
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
-    const { username, token } = resolveIdentity(cfg, full);
     try {
+      const { username, token } = resolveIdentity(cfg, full);
       // sort:updated-desc in the query string: GraphQL search has no sort
       // argument and defaults to best match, which would break the "author's
       // 50 most recently updated" window once the author has more PRs than fit.

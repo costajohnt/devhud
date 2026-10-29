@@ -667,8 +667,24 @@ test('resolveIdentity: the catch-all identity owns unclaimed repos wherever it s
   expect(resolveIdentity(idCfg([work, personal, catchAll]), 'acme/unlisted').username).toBe('catch');
 });
 
-test('resolveIdentity: with no catch-all, unclaimed repos fall back to the first identity', () => {
-  expect(resolveIdentity(idCfg([personal, work]), 'acme/unlisted').username).toBe('personal');
+test('resolveIdentity: with no catch-all, an unclaimed repo throws instead of falling back to another account', () => {
+  expect(() => resolveIdentity(idCfg([personal, work]), 'acme/unlisted')).toThrow(/no GitHub identity owns "acme\/unlisted"/);
+});
+
+test('resolveIdentity: repo matching is case-insensitive (GitHub returns canonical case)', () => {
+  const mixed = { username: 'mixed', token: 'tok-mixed', repos: ['Me/Side', 'WebApp'] };
+  expect(resolveIdentity(idCfg([work, mixed]), 'me/side').username).toBe('mixed');
+  expect(resolveIdentity(idCfg([work, mixed]), 'ACME/webapp').username).toBe('mixed');
+});
+
+test('fetchPrs reports an unowned repo as a per-repo error without fetching it', async () => {
+  const fetchMock = fakeGithub({ 'acme/svc': [gqlPr({ number: 1 })] });
+  vi.stubGlobal('fetch', fetchMock);
+  const cfg = { ...idCfg([work]), repos: ['svc', 'acme/unlisted'] };
+  const { prs, errors } = await fetchPrs(cfg);
+  expect(prs.map(p => p.number)).toEqual([1]);
+  expect(errors).toEqual([expect.stringMatching(/^acme\/unlisted: .*no GitHub identity owns/)]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 test('resolveIdentity: configs without identities use the top-level username and token', () => {
