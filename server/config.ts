@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Config, JiraStatuses } from './types.ts';
+import type { Config, JiraStatuses, GithubIdentity } from './types.ts';
 
 const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled', blocked: 'Blocked' };
 
@@ -22,7 +22,16 @@ interface RawConfig {
     baseUrl?: string; email?: string; apiToken?: string;
     projectKey?: string; accountId?: string; statuses?: Partial<JiraStatuses>;
   };
-  github?: { token?: string; org?: string; repos?: string[]; username?: string };
+  github?: {
+    // Single-identity shape (backward compat): token/username/repos at the top level.
+    token?: string; org?: string; repos?: string[]; username?: string;
+    // Multi-identity shape (#108): each entry carries its own credentials and
+    // repo list. When present, the top-level token/username are ignored; the
+    // top-level repos still apply and belong to the catch-all identity (the
+    // one entry without repos). With no catch-all, each must be listed under
+    // an identity or loadConfig throws.
+    identities?: Array<{ username?: string; tokenEnv?: string; repos?: string[] }>;
+  };
   port?: number;
   demo?: boolean;
   writeEnabled?: boolean;
@@ -60,8 +69,16 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   for (const key of ['projectKey', 'accountId'] as const) {
     if (!jira[key]) throw new Error(`config at ${path} is missing required key "jira.${key}"`);
   }
-  for (const key of ['username', 'org'] as const) {
-    if (!github[key]) throw new Error(`config at ${path} is missing required key "github.${key}"`);
+  // With the identities array, username and token are not required at the top
+  // level — they can live inside each identity. Without identities, the old
+  // single-identity fields are still required so the error message stays useful.
+  if (!github.identities?.length) {
+    for (const key of ['username', 'org'] as const) {
+      if (!github[key]) throw new Error(`config at ${path} is missing required key "github.${key}"`);
+    }
+  } else {
+    // org is still needed to expand bare repo names to "org/repo" in fetchPrs.
+    if (!github.org) throw new Error(`config at ${path} is missing required key "github.org"`);
   }
   // JIRA_DASH_DEMO is a deprecated alias kept for anyone with it already set
   // in their environment; SIMON_DASH_DEMO is the current name post-rename.
@@ -92,9 +109,18 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   // Repos allow one optional "owner/" segment: fetchPrs (github.ts) supports
   // fully-qualified cross-org entries like "otherorg/svc" and a test relies
   // on it. Exactly one slash — still no path smuggling.
+  const repoPattern = /^[\w.-]+(\/[\w.-]+)?$/;
   for (const r of github.repos ?? []) {
-    if (!/^[\w.-]+(\/[\w.-]+)?$/.test(r)) {
+    if (!repoPattern.test(r)) {
       throw new Error(`config at ${path} has an invalid "github.repos" entry (${JSON.stringify(r)}); must be "name" or "owner/name" using only [\\w.-] characters`);
+    }
+  }
+  // Validate repos inside the identities array with the same pattern.
+  for (const [i, id] of (github.identities ?? []).entries()) {
+    for (const r of id.repos ?? []) {
+      if (!repoPattern.test(r)) {
+        throw new Error(`config at ${path} has an invalid "github.identities[${i}].repos" entry (${JSON.stringify(r)}); must be "name" or "owner/name" using only [\\w.-] characters`);
+      }
     }
   }
   // A corrupted or hand-edited config.json can hand back a non-numeric or
@@ -134,6 +160,61 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       throw new Error(`config at ${path} has an invalid "simon.bin" (${JSON.stringify(simon.bin)}); must be a non-empty string`);
     }
   }
+  // Build the normalised identities array from whichever shape was provided.
+  // Single-identity (old) shape: wrap into a one-element array.
+  // Multi-identity (new) shape: resolve each tokenEnv, validate required fields.
+  let identities: GithubIdentity[];
+  if (github.identities?.length) {
+    identities = github.identities.map((id, i) => {
+      if (!id.username) throw new Error(`config at ${path} is missing required key "github.identities[${i}].username"`);
+      if (!id.tokenEnv) throw new Error(`config at ${path} is missing required key "github.identities[${i}].tokenEnv"`);
+      const token = process.env[id.tokenEnv] ?? '';
+      if (!token) throw new Error(`config at ${path}: env var "${id.tokenEnv}" for github.identities[${i}] is not set`);
+      return { username: id.username, token, repos: id.repos ?? [] };
+    });
+  } else {
+    identities = [{
+      username: github.username!,
+      token: github.token || process.env.GITHUB_TOKEN || '',
+      repos: github.repos ?? [],
+    }];
+  }
+
+  // fetchPrs iterates allRepos: the top-level github.repos plus every
+  // identity's own repos, deduplicated after qualifying bare names with the
+  // org. GitHub owner/repo names are case-insensitive, so two spellings that
+  // differ only in case are rejected rather than fetched twice.
+  const qualify = (r: string) => (r.includes('/') ? r : `${github.org}/${r}`);
+  const spelling = new Map<string, string>();
+  const allRepos: string[] = [];
+  for (const r of [...(github.repos ?? []), ...identities.flatMap(id => id.repos)]) {
+    const q = qualify(r), key = q.toLowerCase(), prev = spelling.get(key);
+    if (prev === undefined) { spelling.set(key, q); allRepos.push(r); }
+    else if (prev !== q) throw new Error(`config at ${path}: github repos "${prev}" and "${q}" differ only in case; list each repo once`);
+  }
+  // Every repo must have exactly one owning identity (resolveIdentity in
+  // github.ts): an explicit repos entry, or else the catch-all (the single
+  // identity without repos). No silent fallback to another account.
+  if (github.identities?.length) {
+    const owner = new Map<string, number>();
+    identities.forEach((id, i) => {
+      for (const r of id.repos) {
+        const key = qualify(r).toLowerCase();
+        if ((owner.get(key) ?? i) !== i) throw new Error(`config at ${path}: "${qualify(r)}" is listed under more than one github.identities entry`);
+        owner.set(key, i);
+      }
+    });
+    const catchAlls = identities.filter(id => !id.repos.length).length;
+    if (catchAlls > 1) throw new Error(`config at ${path}: at most one github.identities entry may omit "repos" (the catch-all identity)`);
+    if (!catchAlls) {
+      const unowned = (github.repos ?? []).find(r => !owner.has(qualify(r).toLowerCase()));
+      if (unowned) throw new Error(`config at ${path}: "${qualify(unowned)}" is in github.repos but no github.identities entry lists it; list it under one identity or add a catch-all identity (an entry without "repos")`);
+    }
+  }
+
+  const allUsernames = [...new Set(identities.map(id => id.username))];
+  const firstIdentity = identities[0]!;
+
   // Off by default: write-back (Jira transitions/comments, PR comments) must
   // be explicitly opted into. See server/writeback.ts's checkWriteGate.
   return {
@@ -143,8 +224,12 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
       statuses: { ...DEFAULT_STATUSES, ...(jira.statuses ?? {}) },
     },
     github: {
-      token: github.token || process.env.GITHUB_TOKEN || '',
-      org: github.org!, repos: github.repos ?? [], username: github.username!,
+      token: firstIdentity.token,
+      org: github.org!,
+      repos: allRepos,
+      username: firstIdentity.username,
+      identities,
+      usernames: allUsernames,
     },
     port,
     demo,
