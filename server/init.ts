@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
-import { isHttpsUrl, loadConfig } from './config.ts';
+import { DEFAULT_STATUSES as CONFIG_STATUSES, isHttpsUrl, loadConfig } from './config.ts';
 import { writeFilePrivate } from './state.ts';
 
 export interface Prompter {
@@ -53,7 +53,11 @@ async function getJson<T>(fetchFn: FetchFn, url: string, headers: Record<string,
   } catch { return null; }
 }
 
-const DEFAULT_STATUSES = { todo: 'To Do', inProgress: 'In Progress', review: 'Code Review', inTest: 'In Test', done: 'Done', blocked: 'Blocked', canceled: 'Canceled' };
+// loadConfig's defaults plus the two stages it leaves unset (classify falls
+// back to the stock names), written out so the user can see and edit them.
+// todo is pulled out only to keep the written key order.
+const { todo, ...laterStatuses } = CONFIG_STATUSES;
+const DEFAULT_STATUSES = { todo, inProgress: 'In Progress', review: 'Code Review', ...laterStatuses };
 
 // Map the project's real status names onto the board's stages where a name
 // obviously fits; anything unmatched keeps its default for the user to edit.

@@ -13,7 +13,7 @@ import { rebuildQueue } from './queue.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
 import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded, readApiToken, tokenHeaders } from './transport.ts';
-import type { Config, Snapshot, Bucket } from './types.ts';
+import type { Config, Snapshot, Bucket, WriteResult } from './types.ts';
 
 export interface OpCtx {
   config: Config;
@@ -119,8 +119,6 @@ export async function opAction(ctx: OpCtx, { type, key, bucket, reason }: {
   return { ok: true, bucket: r.bucket, wasPinned: r.wasPinned };
 }
 
-export type OpWriteResult = Record<string, unknown>;
-
 // Write-back (transition/comment/pr_comment): the write call itself is a
 // network call to Jira/GitHub with no local state — but performWrite's
 // post-write refresh does write state.json (the same operation opAction/
@@ -131,7 +129,7 @@ export async function opWrite(ctx: OpCtx, writeArgs: {
   type: string; key?: string; repo?: string; number?: number; body?: string; status?: string;
   // 'mcp' for writes an MCP tool asked for: gated by mcpWriteEnabled too.
   source?: 'mcp';
-}): Promise<OpWriteResult> {
+}): Promise<WriteResult> {
   if (await probed(ctx)) {
     let res: Response;
     try {
@@ -141,15 +139,15 @@ export async function opWrite(ctx: OpCtx, writeArgs: {
     } catch (e) {
       return { error: (e as Error).message };
     }
-    const j = await res.json().catch(() => ({})) as OpWriteResult;
-    if (!res.ok) return { error: j.error ?? `HTTP ${res.status}` };
+    const j = await res.json().catch(() => ({})) as WriteResult;
+    if (!res.ok) return { error: ('error' in j ? j.error : undefined) ?? `HTTP ${res.status}` };
     return j;
   }
   const blockingPid = serverAppearsRunning(ctx.statePath);
   if (blockingPid) return { error: splitBrainError(blockingPid) };
   const state = loadState(ctx.statePath);
-  const result = await performWrite({ config: ctx.config, state, ...writeArgs, configPath: ctx.configPath }) as unknown as OpWriteResult;
-  if (result.ok && !result.demo) {
+  const result = await performWrite({ state, ...writeArgs, configPath: ctx.configPath });
+  if ('ok' in result && !('demo' in result)) {
     // The external Jira/GitHub write already succeeded by this point — a
     // blocked local save must not read as the whole call having failed
     // (nothing needs retrying upstream, and retrying could double-post);

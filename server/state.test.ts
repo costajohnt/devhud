@@ -11,7 +11,6 @@ const p = join(mkdtempSync(join(tmpdir(), 'jd-')), 'state.json');
 test('fresh state when file missing', () => {
   const s = loadState(p);
   expect(s.cards).toEqual({});
-  expect(s.celebrated).toEqual([]);
   expect(s.doneCelebrated).toEqual([]);
   expect(s.lastCards).toBeNull();
   expect(s.lastPrs).toBeNull();
@@ -73,21 +72,26 @@ test('saveState skips rotating a corrupt current file, protecting the existing .
   expect(JSON.parse(readFileSync(path, 'utf8')).cards.NEW.override).toBe('in_progress');
 });
 
-test('loadState migrates legacy string celebrated entries to { id, at: null }', () => {
+test('loadState migrates legacy celebrated/mergedTotal into prLog, and saving drops both keys', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');
-  writeFileSync(path, JSON.stringify({ ...emptyState(), celebrated: ['org/repo#42', { id: 'org/repo#43', at: '2026-01-01T00:00:00Z' }] }));
+  writeFileSync(path, JSON.stringify({ ...emptyState(), prLog: undefined, mergedTotal: 2, celebrated: ['org/repo#42', { id: 'org/repo#43', at: '2026-01-01T00:00:00Z' }] }));
   const s = loadState(path);
-  expect(s.celebrated).toEqual([
-    { id: 'org/repo#42', at: null },
-    { id: 'org/repo#43', at: '2026-01-01T00:00:00Z' },
-  ]);
+  expect(s.prLog).toEqual({
+    'org/repo#42': { id: 'org/repo#42', repo: 'org/repo', openedAt: null, mergedAt: null, closedAt: null },
+    'org/repo#43': { id: 'org/repo#43', repo: 'org/repo', openedAt: null, mergedAt: '2026-01-01T00:00:00Z', closedAt: null },
+  });
+  saveState(path, s);
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  expect(saved).not.toHaveProperty('celebrated');
+  expect(saved).not.toHaveProperty('mergedTotal');
+  expect(Object.keys(saved.prLog)).toEqual(['org/repo#42', 'org/repo#43']);
 });
 
 test('loadState tolerates a state file with no prLog field (pre-existing states)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');
-  writeFileSync(path, JSON.stringify({ ...emptyState(), prLog: undefined, celebrated: [] }));
+  writeFileSync(path, JSON.stringify({ ...emptyState(), prLog: undefined }));
   const s = loadState(path);
   expect(s.prLog).toEqual({});
 });
@@ -95,9 +99,7 @@ test('loadState tolerates a state file with no prLog field (pre-existing states)
 test('loadState backfills prLog from celebrated entries missing from it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const path = join(dir, 'state.json');
-  const legacy: Partial<ReturnType<typeof emptyState>> = { ...emptyState(), celebrated: [{ id: 'org/repo#42', at: '2026-01-01T00:00:00Z' }] };
-  delete legacy.prLog;
-  writeFileSync(path, JSON.stringify(legacy));
+  writeFileSync(path, JSON.stringify({ ...emptyState(), prLog: undefined, celebrated: [{ id: 'org/repo#42', at: '2026-01-01T00:00:00Z' }] }));
   const s = loadState(path);
   expect(s.prLog['org/repo#42']).toEqual({
     id: 'org/repo#42', repo: 'org/repo', openedAt: null, mergedAt: '2026-01-01T00:00:00Z', closedAt: null,
@@ -231,15 +233,15 @@ test('a genuinely first-run load stays silent and empty', () => {
 test('loadState defaults the write-back ledgers for pre-existing or hand-mangled state files', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-'));
   const p = join(dir, 'state.json');
-  writeFileSync(p, JSON.stringify({ cards: {}, celebrated: [] }));
+  writeFileSync(p, JSON.stringify({ cards: {} }));
   const old = loadState(p);
   expect(old.autoTransitioned).toEqual({});
   expect(old.postedCommentIds).toEqual([]);
-  writeFileSync(p, JSON.stringify({ cards: {}, celebrated: [], autoTransitioned: ['junk'], postedCommentIds: 'nope' }));
+  writeFileSync(p, JSON.stringify({ cards: {}, autoTransitioned: ['junk'], postedCommentIds: 'nope' }));
   const bad = loadState(p);
   expect(bad.autoTransitioned).toEqual({});
   expect(bad.postedCommentIds).toEqual([]);
-  writeFileSync(p, JSON.stringify({ cards: {}, celebrated: [], autoTransitioned: { 'P-1@o/r#1': { at: 'x', ok: true } }, postedCommentIds: ['1', 2] }));
+  writeFileSync(p, JSON.stringify({ cards: {}, autoTransitioned: { 'P-1@o/r#1': { at: 'x', ok: true } }, postedCommentIds: ['1', 2] }));
   const good = loadState(p);
   expect(good.autoTransitioned).toEqual({ 'P-1@o/r#1': { at: 'x', ok: true } });
   expect(good.postedCommentIds).toEqual(['1']);

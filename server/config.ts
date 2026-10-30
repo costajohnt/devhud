@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { CONFIG_PATH } from './paths.ts';
 import type { Config, JiraStatuses, GithubIdentity } from './types.ts';
 
-const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled', blocked: 'Blocked' };
+export const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', blocked: 'Blocked', canceled: 'Canceled' };
 
 // Comment authors whose comments never trigger triage or enter the actionable
 // queue. Your own comments are already excluded by Jira accountId and GitHub
@@ -99,10 +99,7 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     // org is still needed to expand bare repo names to "org/repo" in fetchPrs.
     if (!github.org) throw new Error(`config at ${path} is missing required key "github.org"`);
   }
-  // SIMON_DASH_DEMO and JIRA_DASH_DEMO are deprecated aliases kept for anyone
-  // with them already set from earlier names; DEVHUD_DEMO is the current name.
-  const demo = Boolean(c.demo)
-    || ['DEVHUD_DEMO', 'SIMON_DASH_DEMO', 'JIRA_DASH_DEMO'].some((k) => process.env[k] === '1');
+  const demo = Boolean(c.demo) || process.env.DEVHUD_DEMO === '1';
   // Demo mode never talks to real Jira, so requiring these would just make
   // trying the demo harder for no reason. Everyone else needs them, or
   // every real fetch/write fails with a confusing runtime auth error
