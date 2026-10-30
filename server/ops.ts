@@ -44,11 +44,12 @@ export async function opSnapshot(ctx: OpCtx): Promise<Snapshot | OpError> {
       return { error: (e as Error).message };
     }
   }
-  const snap = loadState(ctx.statePath).snapshot ?? emptySnapshot();
+  const state = loadState(ctx.statePath);
+  const snap = state.snapshot ?? emptySnapshot();
   // A state file from before the queue existed migrates to queue: []; rebuild
   // from the buckets so the CLI/MCP don't report an empty TODO list until the
   // next refresh. Cheap and pure, so always rebuilt on this path.
-  rebuildQueue(snap, ctx.config.jira.statuses);
+  rebuildQueue(snap, ctx.config.jira.statuses, state.queueSeen);
   return snap;
 }
 
