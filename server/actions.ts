@@ -1,5 +1,5 @@
 import { cardState } from './state.ts';
-import { STATE_REASONS, isInReview, sameStatus } from './classify.ts';
+import { STATE_REASONS, routeBucket } from './classify.ts';
 import { QUEUE_REASONS, rebuildQueue, routesToAttention } from './queue.ts';
 import { KEY_RE } from './writeback.ts';
 import type { State, Config, Bucket, ActionResult, Item, NewComment } from './types.ts';
@@ -58,28 +58,8 @@ const ackReasons = (prior: string[] | null | undefined, attention: string[]): st
 // to `mergeable` while the next refresh moved it straight back to
 // `self_review`. Shared between ack and unpin so the two can't drift from
 // each other or from the classifier.
-export function classifierDest(item: Item, config: Config): Bucket {
-  const pr = item.pr;
-  const statuses = config.jira?.statuses;
-  const draftOpen = pr?.state === 'open' && !!pr.isDraft;
-  const outForReview = isInReview(item.jiraStatus, statuses);
-  if (draftOpen && !outForReview) return 'self_review';
-  // Only what classifyCard routes on, not every badge: a card whose
-  // remaining reasons are badges (comments, ready_to_merge) belongs in the
-  // bucket its lifecycle earns.
-  if (routesToAttention(item, statuses)) return 'needs_attention';
-  if (sameStatus(item.jiraStatus, statuses?.inTest)) return 'qa_ready';
-  // Mirrors the classifier's #53 exception, and its position: a draft PR is
-  // never Mergeable, so this is checked before the approved branch.
-  if (draftOpen) return 'waiting_review';
-  // Same as classifyCard since #90: only the draft flag routes an open PR to
-  // self_review, so a non-draft open PR is out for review whatever its
-  // review count.
-  if (pr?.state === 'open') return pr.reviewState === 'approved' ? 'mergeable' : 'waiting_review';
-  // Mirrors the classifier's no-PR review case (#64) — this function exists to
-  // track it exactly, so the two cannot disagree about where a card belongs.
-  if (isInReview(item.jiraStatus, statuses)) return 'waiting_review';
-  return 'in_progress';
+export function classifierDest(item: Item, config: Config, override: Bucket | null = null): Bucket {
+  return routeBucket({ status: item.jiraStatus, pr: item.pr, visible: item.attention, override, statuses: config.jira?.statuses });
 }
 
 // Shared ack/move logic used by both the HTTP handler (server/index.ts
@@ -190,7 +170,7 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     if (source) loc.item.newComments = loc.item.newComments.filter(c => c.source !== source);
     if (loc.from === 'needs_attention' && !routesToAttention(loc.item, config.jira?.statuses)) {
       snap.buckets.needs_attention.splice(loc.i, 1);
-      const dest = cs.override ?? classifierDest(loc.item, config);
+      const dest = classifierDest(loc.item, config, cs.override);
       loc.item.bucket = dest;
       snap.buckets[dest].push(loc.item);
       return { ok: true, bucket: dest };
@@ -219,7 +199,7 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
       snap.buckets.needs_attention.splice(loc.i, 1);
       // A prior manual move still wins: acking clears attention flags, it
       // doesn't undo a pin (that's what unpin is for).
-      const dest = cs.override ?? classifierDest(loc.item, config);
+      const dest = classifierDest(loc.item, config, cs.override);
       loc.item.bucket = dest;
       snap.buckets[dest].push(loc.item);
       return { ok: true, bucket: dest };

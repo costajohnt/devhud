@@ -1,4 +1,7 @@
 import type { Card, Pr, CardState, JiraStatuses, StatusNames, Bucket, NewComment, PrComment, JiraComment } from './types.ts';
+import { STATE_REASONS, ROUTING_REASONS } from './reasons.ts';
+// Derived from the reason table (reasons.ts); re-exported for existing importers.
+export { STATE_REASONS, ROUTING_REASONS };
 
 // The one place a raw PR/Jira comment becomes a NewComment (300-char body
 // cap, source tag, author fallback). classify's attention queue and
@@ -22,22 +25,6 @@ const isIgnoredAuthor = (name: string | null | undefined, ignore: string[]): boo
   const n = (name ?? '').toLowerCase();
   return !!n && ignore.some(a => n.includes(a.toLowerCase()));
 };
-
-// The attention reasons that stay true across refreshes (unlike comment
-// reasons, which the lastSeen* watermarks govern). Only these may live in
-// CardState.ackedReasons — ack recording (actions.ts) and the pruning below
-// both filter against this list so the two files can't drift.
-export const STATE_REASONS: readonly string[] = ['ci_failing', 'changes_requested', 'ready_to_merge', 'merged_not_in_test', 'missing_qa_instructions', 'missing_fix_version'];
-
-// A card has a lifecycle state (its Jira status / PR state) and it has pending
-// events. Needs Attention is an overlay on the second axis, so only reasons
-// that mean *blocked or broken* may evict a card from the column its status
-// puts it in. Everything else stays where it belongs and wears a badge: new
-// comments render as the "N new comments" pill, missing QA instructions as a
-// pill on the QA Ready card. Before this split, one unread comment moved an In
-// Progress card out of In Progress, and the missing-QA rule emptied QA Ready
-// into Needs Attention on the day it shipped.
-export const ROUTING_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test'];
 
 // QA-instructions heuristic for In Test cards: a line mentioning "QA
 // instructions" / "QA test instructions" / "test instructions" anywhere in
@@ -202,13 +189,31 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   }
   cs.lastStatus = card.status;
 
+  const bucket = routeBucket({ status: card.status, pr, visible, override: cs.override, statuses });
+
+  newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+  return { bucket, attention: visible, newComments };
+}
+
+// Which column a card belongs in, given its status, PR, visible attention
+// reasons and any manual pin (audit M16). The one routing ladder:
+// classifyCard and the actions that move a card without a refresh
+// (actions.ts classifierDest) both call it, so they can't drift. They had,
+// three times (#53, #64, #90).
+export function routeBucket({ status, pr, visible, override, statuses }: {
+  status: string;
+  pr: Pick<Pr, 'state' | 'isDraft' | 'reviewState'> | null;
+  visible: readonly string[];
+  override: Bucket | null;
+  statuses: JiraStatuses | undefined;
+}): Bucket {
   // A draft PR is the author's "not ready for others yet" signal. Moving the Jira card to a review status is the
   // operator answering "I have looked, it is out for peer review" — an
   // explicit lifecycle statement, so the draft no longer holds the card in
   // Self Review Needed (#53). Same principle as #42: a card belongs in the
   // column its status earns unless something is blocked or broken.
   const draftOpen = pr?.state === 'open' && !!pr.isDraft;
-  const outForReview = isInReview(card.status, statuses);
+  const outForReview = isInReview(status, statuses);
 
   let bucket: Bucket;
   if (draftOpen && !outForReview) {
@@ -217,8 +222,8 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // QA waiting on the developer outranks a pin, as a routing reason does
   // (and as routesToAttention/classifierDest already assume): an In QA pin
   // must not hide a tester's question. See the In Test branch below.
-  else if (sameStatus(card.status, statuses.inTest) && visible.includes('new_jira_comments')) bucket = 'needs_attention';
-  else if (cs.override) bucket = cs.override;
+  else if (sameStatus(status, statuses?.inTest) && visible.includes('new_jira_comments')) bucket = 'needs_attention';
+  else if (override) bucket = override;
   // The one comment that IS routing. ROUTING_REASONS stays global and unchanged
   // (adding new_jira_comments to it would bounce In Progress cards on every
   // comment, which is exactly what that list exists to prevent). This is scoped
@@ -232,7 +237,7 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // STATE_REASON and so is not ack-governed — an explicit ack/move (which
   // advance lastSeenJira) or the developer's own reply on the tracker (#85)
   // clears it, and the card falls straight back to QA Ready.
-  else if (sameStatus(card.status, statuses.inTest)) {
+  else if (sameStatus(status, statuses?.inTest)) {
     bucket = visible.includes('new_jira_comments') ? 'needs_attention' : 'qa_ready';
   }
   // Checked before the approved branch below: a draft PR cannot be merged as
@@ -250,11 +255,10 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // sitting in In Progress no matter how many refreshes ran (#64). The Jira
   // status is the developer's own statement about the work; it should not be
   // conditional on the board having found a PR.
-  else if (isInReview(card.status, statuses)) bucket = 'waiting_review';
+  else if (isInReview(status, statuses)) bucket = 'waiting_review';
   else bucket = 'in_progress';
 
-  newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
-  return { bucket, attention: visible, newComments };
+  return bucket;
 }
 
 // Every Jira status name — configured or fetched — is free text an admin can

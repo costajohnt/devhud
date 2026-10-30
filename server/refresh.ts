@@ -1,6 +1,7 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { buildQueue } from './queue.ts';
+import { PR_ACK_REASONS } from './reasons.ts';
 import { CARD_STATE_RETENTION_DAYS, prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
@@ -127,7 +128,6 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   const buildTime = new Date().toISOString();
   const later = (a: string | null | undefined, b: string | null | undefined): string | null =>
     !a ? b ?? null : !b ? a : Date.parse(b) > Date.parse(a) ? b : a;
-  const PR_ACK_REASONS = ['ci_failing', 'changes_requested', 'ready_to_merge'];
   // PRs linked by a card that stays on the board this refresh. An off-board
   // card must not clear the acks of a PR another on-board card still links.
   const onBoardRefs = new Set<string>();
