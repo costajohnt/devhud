@@ -395,3 +395,39 @@ test('ignoreAuthors defaults to Rovo only', () => {
   }));
   expect(loadConfig(p).ignoreAuthors).toEqual(['Rovo']);
 });
+
+// Audit 2026-10-29: JSON.parse's message quotes the surrounding source, which
+// for this file can be a token, and it reached HTTP/MCP callers verbatim.
+test('a malformed config never echoes its contents, only the position', () => {
+  const p = join(dir, 'leaky.json');
+  writeFileSync(p, '{"github":{"token":ghp_SECRET123456}}');
+  let msg = '';
+  try { loadConfig(p); } catch (e) { msg = (e as Error).message; }
+  expect(msg).toMatch(/is not valid JSON/);
+  expect(msg).not.toContain('ghp_');
+  const trailing = join(dir, 'trailing.json');
+  writeFileSync(trailing, '{\n"a":1,\n}');
+  expect(() => loadConfig(trailing)).toThrow(/line 3, column 1/);
+});
+
+test('jira.baseUrl must be https (Basic auth would go over cleartext); demo mode skips it', () => {
+  const base = { github: { org: 'o', repos: ['r'], username: 'u' } };
+  const jira = { email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' };
+  for (const baseUrl of ['http://x.atlassian.net', 'x.atlassian.net', 'ftp://x', 'http://localhost.evil.test']) {
+    const p = join(dir, 'http-base.json');
+    writeFileSync(p, JSON.stringify({ ...base, jira: { ...jira, baseUrl } }));
+    expect(() => loadConfig(p)).toThrow(/jira.baseUrl.*https/);
+  }
+  const ok = join(dir, 'https-base.json');
+  writeFileSync(ok, JSON.stringify({ ...base, jira: { ...jira, baseUrl: 'https://x.atlassian.net' } }));
+  expect(loadConfig(ok).jira.baseUrl).toBe('https://x.atlassian.net');
+  // A local Jira (Data Center over an SSH tunnel) may use http to loopback.
+  for (const baseUrl of ['http://localhost:8080', 'http://127.0.0.1:2990/jira', 'http://[::1]:8080']) {
+    const p = join(dir, 'loopback-base.json');
+    writeFileSync(p, JSON.stringify({ ...base, jira: { ...jira, baseUrl } }));
+    expect(loadConfig(p).jira.baseUrl).toBe(baseUrl);
+  }
+  const demo = join(dir, 'demo-base.json');
+  writeFileSync(demo, JSON.stringify({ ...base, demo: true, jira: { projectKey: 'PROJ', accountId: 'id' } }));
+  expect(loadConfig(demo).demo).toBe(true);
+});

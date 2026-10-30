@@ -2,8 +2,8 @@ import { test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, bundleStatus, readBody, BodyTooLarge, MAX_BODY_BYTES, createSseFanout, SSE_MAX_BUFFERED_BYTES } from './index.ts';
 import { PassThrough } from 'node:stream';
 import { saveState, emptyState } from './state.ts';
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -902,4 +902,40 @@ test('readBody caps on bytes, not UTF-16 units', async () => {
   const q = readBody(ok);
   ok.end(Buffer.from(JSON.stringify({ s: '\u20ac'.repeat(1000) }), 'utf8'));
   expect(await q).toEqual({ s: '\u20ac'.repeat(1000) });
+});
+
+// Audit 2026-10-29: a successful Jira/GitHub write whose local save then
+// failed returned a generic 500, inviting a retry that double-posts. It now
+// answers 200 with the save error, as direct mode (ops.ts) already did.
+test('POST /api/write: a write that succeeded but could not be saved answers 200 with saveBlockedError', async () => {
+  await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
+  const started = await startServer({ writeEnabled: true });
+  server = started.server;
+  const realFetch = globalThis.fetch;
+  const posted: string[] = [];
+  vi.stubGlobal('fetch', (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(started.base)) return realFetch(url, init);
+    if (u.includes('/rest/api/3/issue/PROJ-1/comment')) {
+      posted.push(u);
+      return Promise.resolve(new Response(JSON.stringify({ id: 'c1' }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    }
+    return Promise.resolve(new Response('{}', { status: 500 }));
+  });
+  const stateDir = dirname(started.statePath);
+  chmodSync(stateDir, 0o500); // saveState's temp file can't be created
+  try {
+    const r = await realFetch(`${started.base}/api/write`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'comment', key: 'PROJ-1', body: 'hi' }),
+    });
+    expect(r.status).toBe(200);
+    const j = await r.json() as { ok?: boolean; saveBlockedError?: string };
+    expect(j.ok).toBe(true);
+    expect(j.saveBlockedError).toBeTruthy();
+    expect(posted).toHaveLength(1);
+  } finally {
+    chmodSync(stateDir, 0o700);
+    vi.unstubAllGlobals();
+  }
 });

@@ -1,6 +1,8 @@
 # No trailing slash: a worktree that symlinks node_modules must stay ignored too.
 node_modules
 config.json
+# init writes config.json via a 0600 temp file + rename; a failed write can leave it.
+config.json.tmp
 data/*
 !data/.gitkeep
 web/dist/
