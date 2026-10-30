@@ -11,7 +11,7 @@
 // post-write refresh can't drift between callers, mirroring applyAction's
 // role for ack/move.
 import { refresh } from './refresh.ts';
-import { loadConfig } from './config.ts';
+import { loadConfig, qualifyRepo } from './config.ts';
 import { resolveIdentity } from './github.ts';
 import { isPreTest, primaryStatus, sameStatus } from './classify.ts';
 import type { Card, Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
@@ -310,7 +310,7 @@ export async function performWrite({
   // Same normalization rule as fetchPrs (github.ts): a repos[] entry may
   // already be fully qualified ("otherorg/svc"); only bare names get the
   // configured org prefixed.
-  if (type === 'pr_comment' && !liveConfig.github.repos.some(r => (r.includes('/') ? r : `${liveConfig.github.org}/${r}`) === repo)) {
+  if (type === 'pr_comment' && !liveConfig.github.repos.some(r => qualifyRepo(r, liveConfig.github.org) === repo)) {
     return { error: `repo "${repo}" is not in the configured github.repos list`, status: 403 };
   }
 

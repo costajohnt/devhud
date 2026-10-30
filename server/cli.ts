@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { join, dirname, extname } from 'node:path';
 import { CONFIG_PATH, STATE_PATH } from './paths.ts';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './config.ts';
+import { loadConfig, qualifyRepo } from './config.ts';
 import { BUCKETS } from './actions.ts';
 import { opSnapshot, opRefresh, opAction, opWrite } from './ops.ts';
 import { probeServer, readApiToken } from './transport.ts';
@@ -144,9 +144,8 @@ export function parseCli(argv: string[]): { values: { json: boolean; help: boole
 // and performWrite's repos[] scope check apply to bare config.repos entries,
 // so a ref copied from config.repos works as-is. Already-qualified refs pass
 // through untouched.
-export function qualifyRepo(repo: string, org: string): string {
-  return repo.includes('/') ? repo : `${org}/${repo}`;
-}
+// Kept as a re-export: cli.test.ts imports it from here.
+export { qualifyRepo };
 
 export interface CliResult {
   code: number;
