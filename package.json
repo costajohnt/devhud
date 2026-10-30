@@ -1,7 +1,6 @@
 {
   "name": "devhud",
   "version": "0.1.0",
-  "private": true,
   "description": "A heads-up display for in-flight Jira and GitHub work: a prioritized TODO list of everything that needs you",
   "license": "MIT",
   "author": "John Costa <costajohnt@gmail.com>",
@@ -42,5 +41,19 @@
     "dist/",
     "web/dist/",
     "config.example.json"
-  ]
+  ],
+  "keywords": [
+    "jira",
+    "github",
+    "dashboard",
+    "todo",
+    "pull-requests",
+    "code-review",
+    "mcp",
+    "cli"
+  ],
+  "homepage": "https://github.com/costajohnt/devhud#readme",
+  "bugs": {
+    "url": "https://github.com/costajohnt/devhud/issues"
+  }
 }

@@ -1,0 +1,51 @@
+name: Release
+
+# Tag pushes only: no workflow_dispatch, which would let a manual run publish
+# from any branch.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # The whole CI workflow (both Node versions, tests, build, pack-and-install
+  # check) has to pass on the exact commit being published.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # npm trusted publishing (OIDC): no npm token is stored anywhere.
+      id-token: write
+    steps:
+      # Pinned to commit SHAs: a tag like v7 is a moving pointer its owner can
+      # repoint, and this job holds an OIDC token that can publish the package.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # Publish only commits already on master: a v* tag pushed on a side
+      # branch must not ship unreviewed code.
+      - run: git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          # Node 26 bundles npm >= 11.5.1, all trusted publishing needs; no
+          # npm@latest upgrade (unpinned supply chain).
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      # prepack builds web/dist and dist/, so the web deps are needed too.
+      - run: cd web && npm ci
+      - run: npm publish --provenance --access public
