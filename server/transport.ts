@@ -85,12 +85,12 @@ export function saveStateGuarded(statePath: string, state: State): void {
   saveState(statePath, state);
 }
 
-// The local API token (audit M3). Loopback alone let any local process read
-// the board and, with writeEnabled, write to Jira/GitHub as the user; the
-// state and pid files were already owner-only (0600), the socket was not.
-// The server creates the token once in a 0600 file next to the state file;
-// the CLI and MCP read it from there and send it on every /api/* request,
-// the browser gets it as a cookie through `devhud open`.
+// The local API token (audit M3). Loopback alone let any local principal
+// that can reach the port read the board and, with writeEnabled, write to
+// Jira/GitHub as the user. The server makes a fresh token each start and
+// writes it 0600 next to the state file once it holds its port; the CLI and
+// MCP read it from there and send it on every /api/* request. Browsers never
+// see it: they get a separate session (server/index.ts).
 export const apiTokenPath = (statePath: string): string => join(dirname(statePath), 'api-token');
 
 export function readApiToken(statePath: string): string | null {

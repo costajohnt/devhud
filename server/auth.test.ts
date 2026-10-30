@@ -95,8 +95,11 @@ test('a one-time login code becomes a header session; nothing is set as a cookie
   // A session can't mint codes; a cookie is not a credential at all.
   expect((await fetch(`${base}/api/login-code`, { method: 'POST', headers: { 'x-devhud-session': session } })).status).toBe(401);
   expect((await fetch(`${base}/api/data`, { headers: { cookie: `devhud_token=${session}` } })).status).toBe(401);
-  // Single use.
-  expect((await claim(base, code)).status).toBe(401);
+  // Single use: a second claim is refused (and revokes the first session,
+  // see the theft test below).
+  const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  expect((await claim(base, code)).status).toBe(409);
+  errSpy.mockRestore();
 });
 
 test('login codes expire after a minute', async () => {
@@ -155,4 +158,21 @@ test('the request log never records query strings (the event stream carries the 
   }
   expect(lines.some(l => l.startsWith('GET /api/data '))).toBe(true);
   expect(lines.join('\n')).not.toContain('SECRET123');
+});
+
+// PR #140 round 2: the login code is visible in the `open` command's argv to
+// other local users. If one claims it first, the browser's claim (which
+// always follows) revokes that session instead of silently losing.
+test('a second claim of the same login code revokes the session the first claim got', async () => {
+  const { base, token } = await start();
+  const code = await mintCode(base, token);
+  const thief = ((await (await claim(base, code)).json()) as { session: string }).session;
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': thief } })).status).toBe(200);
+  const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const victim = await claim(base, code);
+  errSpy.mockRestore();
+  expect(victim.status).toBe(409);
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': thief } })).status).toBe(401);
+  // A third try is just an unknown code.
+  expect((await claim(base, code)).status).toBe(401);
 });
