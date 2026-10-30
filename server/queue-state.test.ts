@@ -276,11 +276,19 @@ test('a partly degraded GitHub fetch keeps first-seen only where the PR repo is 
 // Jira no longer returns kept their first-seen times forever.
 test('a partial GitHub outage still prunes Jira-only reasons and vanished cards', () => {
   const state = upgraded();
-  state.queueSeen = { 'P-1:ci_failing': OLD, 'P-1:missing_fix_version': OLD, 'P-9:ci_failing': OLD };
-  state.snapshot = buildSnapshot({ cards: [card()], prs: [], state, config, errors: { github: 'o/r failed' }, degradedPrRepos: new Set(['o/r']) });
+  state.queueSeen = {
+    'P-1:ci_failing': OLD, 'P-1:missing_fix_version': OLD, 'P-1:missing_qa_instructions': OLD,
+    'P-9:ci_failing': OLD, 'P-2:ci_failing': OLD,
+  };
+  // P-2's PR is in a healthy repo with green CI: its stamp has no excuse.
+  const p2 = card({ key: 'P-2', url: 'https://j/P-2' });
+  const healthy = pr({ repo: 'o/s', number: 5, url: 'https://gh/o/s/5', branch: 'P-2-fix' });
+  state.snapshot = buildSnapshot({ cards: [card(), p2], prs: [healthy], state, config, errors: { github: 'o/r failed' }, degradedPrRepos: new Set(['o/r']) });
   expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
   expect(state.queueSeen['P-1:missing_fix_version']).toBeUndefined();
+  expect(state.queueSeen['P-1:missing_qa_instructions']).toBeUndefined();
   expect(state.queueSeen['P-9:ci_failing']).toBeUndefined();
+  expect(state.queueSeen['P-2:ci_failing']).toBeUndefined();
 });
 
 test('a card-less PR that gains a card keeps its wait', () => {
