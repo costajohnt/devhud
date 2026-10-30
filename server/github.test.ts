@@ -690,3 +690,31 @@ test('fetchPrs reports an unowned repo as a per-repo error without fetching it',
 test('resolveIdentity: configs without identities use the top-level username and token', () => {
   expect(resolveIdentity({ token: 't', org: 'o', repos: [], username: 'u' }, 'o/r')).toEqual({ username: 'u', token: 't' });
 });
+
+// Audit 2026-10-29: reviews come back oldest first; past 100 the newest
+// approval or change request was on a page never fetched.
+test('enrichPr pages reviews to the newest, so a late approval is seen', async () => {
+  const review = (n: number, state: string) => ({ user: { login: 'rev' }, state, body: '', submitted_at: new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString() });
+  const pages: Record<string, { body: unknown[]; link?: string }> = {
+    '/repos/o/r/pulls/5/reviews?per_page=100': { body: Array.from({ length: 100 }, (_, i) => review(i, 'COMMENTED')), link: '<https://api.github.com/repositories/1/pulls/5/reviews?per_page=100&page=2>; rel="last"' },
+    '/repos/o/r/pulls/5/reviews?per_page=100&page=2': { body: [review(150, 'APPROVED')] },
+  };
+  vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
+    const hit = pages[String(url).replace('https://api.github.com', '')];
+    return Promise.resolve({ ok: true, status: 200, headers: headers(hit?.link ? { link: hit.link } : {}), json: () => Promise.resolve(hit?.body ?? []) });
+  }));
+  const pr = await enrichPr(basePr({ repo: 'o/r', number: 5 }), { token: 't', org: 'o', repos: [], username: 'me' });
+  expect(pr.reviewState).toBe('approved');
+});
+
+test('fetchPrs names failed repos in failedRepos instead of only in error text', async () => {
+  vi.stubGlobal('fetch', vi.fn((_url: string | URL, init?: { body?: string }) => {
+    const q = JSON.parse(init!.body!).variables.q as string;
+    return q.includes('repo:o/bad')
+      ? Promise.resolve({ ok: false, status: 404, headers: headers({}), text: () => Promise.resolve('Not Found'), json: () => Promise.resolve({}) })
+      : Promise.resolve({ ok: true, status: 200, headers: headers({}), json: () => Promise.resolve({ data: { search: { nodes: [] } } }) });
+  }));
+  const r = await fetchPrs({ token: 't', org: 'o', repos: ['good', 'bad'], username: 'me' });
+  expect(r.failedRepos).toEqual(['o/bad']);
+  expect(r.errors).toHaveLength(1);
+});

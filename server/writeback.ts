@@ -393,6 +393,7 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
 
   const statuses = config.jira.statuses;
   const lastCards = new Map((state.lastCards ?? []).map(c => [c.key, c]));
+  const lastPrs = new Map((state.lastPrs ?? []).map(p => [`${p.repo}#${p.number}`, p]));
   const ledger = (state.autoTransitioned ??= {});
 
   // Cards flagged merged_not_in_test are always routed to needs_attention
@@ -407,6 +408,12 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
     if (!item.pr || item.pr.state !== 'merged') return false;
     if (ledger[autoTransitionId(item.key, item.pr)]) return false;
     const card = lastCards.get(item.key);
+    // A card touched in Jira after the merge may have gone to In Test and
+    // been rejected back between two refreshes, a trip reachedTestAt never
+    // saw (audit M2). The board can't tell that from a fresh pre-test card,
+    // so an automated write stays out; the flag still shows for the user.
+    const mergedAt = lastPrs.get(`${item.pr.repo}#${item.pr.number}`)?.mergedAt;
+    if (card?.updatedAt && mergedAt && Date.parse(card.updatedAt) > Date.parse(mergedAt)) return false;
     return isPreTest(card ?? { status: item.jiraStatus }, statuses);
   });
 

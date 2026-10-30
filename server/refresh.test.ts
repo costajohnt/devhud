@@ -12,7 +12,7 @@ vi.mock('./jira.ts', () => ({
 // shared with refresh's banner composition, so it keeps its real behavior.
 vi.mock('./github.ts', async (importOriginal) => ({
   ...await importOriginal<typeof import('./github.ts')>(),
-  fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
+  fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [], failedRepos: [] })),
   fetchReviewRequests: vi.fn(() => Promise.resolve({ requests: [], errors: [], failedRepos: [] })),
   enrichPr: vi.fn((p: Pr) => Promise.resolve(p)),
 }));
@@ -357,7 +357,7 @@ test('item comments merge both sources, newest first, capped at 10', () => {
 
 test('per-repo GitHub failure keeps that repo\'s PRs from state.lastPrs instead of vanishing them', async () => {
   const { fetchPrs } = await import('./github.ts');
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: ['o/r: 500 boom'] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: ['o/r: 500 boom'], failedRepos: ['o/r'] });
   const state = emptyState();
   state.lastCards = [card()];
   state.lastPrs = [pr()];
@@ -370,7 +370,7 @@ test('a PR whose enrichment rejects keeps its fresh discovery fields and takes e
   const { fetchPrs, enrichPr } = await import('./github.ts');
   const staleGoodPr = pr({ ciStatus: 'passing', reviewState: 'approved' });
   const freshPr = pr({ ciStatus: 'unknown', reviewState: 'none' });
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [freshPr], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [freshPr], errors: [], failedRepos: [] });
   vi.mocked(enrichPr).mockRejectedValueOnce(new Error('enrich failed'));
   const state = emptyState();
   state.lastCards = [card()];
@@ -391,7 +391,7 @@ test('a PR merged since last refresh stays merged when its enrichment rejects', 
   const stale = pr({ state: 'open', ciStatus: 'failing', reviewState: 'approved', comments: [comment],
     updatedAt: '2026-07-01T12:00:00Z', enriched: true, enrichedAt: '2026-07-01T12:05:00Z', enrichConfirmed: true });
   const fresh = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z', ciStatus: 'unknown', updatedAt: '2026-07-02T00:00:00Z' });
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [fresh], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [fresh], errors: [], failedRepos: [] });
   vi.mocked(enrichPr).mockClear();
   vi.mocked(enrichPr).mockRejectedValueOnce(new Error('GitHub 502 /repos/o/r/issues/1/comments'));
   const state = emptyState();
@@ -409,7 +409,7 @@ test('a PR merged since last refresh stays merged when its enrichment rejects', 
 
   // The copied enrichedAt predates the fresh updatedAt, so the next refresh
   // re-enriches instead of reusing the stale comments.
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ...fresh, comments: [] })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ...fresh, comments: [] })], errors: [], failedRepos: [] });
   await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(2);
 });
@@ -421,7 +421,7 @@ test('a pending base keeps the previous ciNewFailures verdict, so a pre-existing
   const state = emptyState();
   state.lastCards = [card()];
   state.lastPrs = [pr({ ciStatus: 'failing', ciNewFailures: [] })];
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [], failedRepos: [] });
   const payload = await refresh({ config, state });
   const item = Object.values(payload.buckets).flat()[0];
   expect(item?.pr?.ciNewFailures).toEqual([]);
@@ -430,13 +430,13 @@ test('a pending base keeps the previous ciNewFailures verdict, so a pre-existing
 
   // A previous verdict of real new failures is carried just the same.
   state.lastPrs = [pr({ ciStatus: 'failing', ciNewFailures: ['lint'] })];
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [], failedRepos: [] });
   const red = await refresh({ config, state });
   expect(red.buckets.needs_attention[0]?.attention).toContain('ci_failing');
 
   // No previous verdict at all: base pending alone holds off the flag.
   state.lastPrs = [];
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'failing', ciBasePending: true })], errors: [], failedRepos: [] });
   const none = await refresh({ config, state });
   expect(none.buckets.needs_attention).toHaveLength(0);
   expect(Object.values(none.buckets).flat()[0]?.pr).toMatchObject({ ciBasePending: true });
@@ -482,8 +482,8 @@ test('refreshes on one State are serialized, and callers arriving mid-sweep shar
   const state = emptyState();
   state.lastCards = [card()];
 
-  let resolveFirstCallPrs!: (v: { prs: Pr[]; errors: string[] }) => void;
-  const firstCallPrsPromise = new Promise<{ prs: Pr[]; errors: string[] }>((resolve) => { resolveFirstCallPrs = resolve; });
+  let resolveFirstCallPrs!: (v: { prs: Pr[]; errors: string[]; failedRepos: string[] }) => void;
+  const firstCallPrsPromise = new Promise<{ prs: Pr[]; errors: string[]; failedRepos: string[] }>((resolve) => { resolveFirstCallPrs = resolve; });
   const before = vi.mocked(fetchPrs).mock.calls.length;
 
   // Call A starts and hangs on its PR fetch.
@@ -499,7 +499,7 @@ test('refreshes on one State are serialized, and callers arriving mid-sweep shar
   expect(state.snapshot).toBeNull();
 
   // A finishes with a distinctive PR list; it writes first.
-  resolveFirstCallPrs({ prs: [pr({ repo: 'o/older', number: 99 })], errors: [] });
+  resolveFirstCallPrs({ prs: [pr({ repo: 'o/older', number: 99 })], errors: [], failedRepos: [] });
   const payloadA = await callA;
   expect(state.snapshot).toBe(payloadA);
   expect(state.lastPrs!.some(p => p.repo === 'o/older')).toBe(true);
@@ -593,7 +593,7 @@ test('an unrelated repo failure does not stop ack-pruning for cards whose PR dat
   state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['ci_failing'] };
   // o/r fetched fine (CI now green — the acked reason has cleared); o/dead is
   // permanently broken. The stale-repo failure must degrade only o/dead.
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'passing' })], errors: ['o/dead: Not Found'] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ ciStatus: 'passing' })], errors: ['o/dead: Not Found'], failedRepos: ['o/dead'] });
   await refresh({ config, state });
   expect(state.cards['PROJ-1']!.ackedReasons).toBeNull();
 });
@@ -625,7 +625,7 @@ test('enrichPr runs in capped batches, so a big board cannot trip the secondary 
   const cards = Array.from({ length: count }, (_, i) => card({ key: `PROJ-${i + 1}` }));
   const prs = Array.from({ length: count }, (_, i) => pr({ number: i + 1, branch: `PROJ-${i + 1}-x` }));
   vi.mocked(fetchJiraCards).mockResolvedValueOnce(cards);
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs, errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs, errors: [], failedRepos: [] });
 
   let inFlight = 0;
   let peak = 0;
@@ -674,7 +674,7 @@ test('an enrichment recorded in the same second as the PR\'s updatedAt is re-enr
   state.lastCards = [card()];
   state.lastPrs = [pr({ updatedAt: at, enriched: true, enrichedAt: '2026-07-02T00:00:00.700Z',
     comments: [{ author: 'a', body: 'stale', createdAt: at }] })];
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [], failedRepos: [] });
   vi.mocked(enrichPr).mockClear();
   // The re-check runs on the next poll, 30s later here, and sees the comment
   // that landed in the same second as updatedAt.
@@ -691,7 +691,7 @@ test('an enrichment recorded in the same second as the PR\'s updatedAt is re-enr
 
   // Confirmed for this updatedAt: the next refresh reuses it and carries the
   // stamp and the flag forward, so the one-time re-fetch stays one-time.
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [], failedRepos: [] });
   const second = await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
   expect(second.buckets.waiting_review[0]?.comments).toHaveLength(2);
@@ -700,7 +700,7 @@ test('an enrichment recorded in the same second as the PR\'s updatedAt is re-enr
 
   // A moved updatedAt reopens the question: the fresh row is enriched again
   // and its result carries no flag until the following poll settles it.
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: '2026-07-02T00:02:00Z' })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: '2026-07-02T00:02:00Z' })], errors: [], failedRepos: [] });
   await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(2);
 });
@@ -717,13 +717,13 @@ test('a host clock behind GitHub does not re-enrich a quiet PR on every poll: ex
   vi.mocked(enrichPr).mockClear();
   // The clock is still 5s behind on the re-check, two seconds later.
   vi.mocked(enrichPr).mockImplementationOnce(async (p: Pr) => { p.enriched = true; p.enrichedAt = '2026-07-01T23:59:57Z'; return p; });
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [], failedRepos: [] });
   await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [], failedRepos: [] });
   await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr({ updatedAt: at })], errors: [], failedRepos: [] });
   await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
 });
@@ -733,7 +733,7 @@ test('a last-known PR enriched before enrichedAt existed is re-enriched once rat
   const state = emptyState();
   state.lastCards = [card()];
   state.lastPrs = [pr({ enriched: true })];
-  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr()], errors: [] });
+  vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [pr()], errors: [], failedRepos: [] });
   vi.mocked(enrichPr).mockClear();
   await refresh({ config, state });
   expect(enrichPr).toHaveBeenCalledTimes(1);
@@ -746,7 +746,7 @@ test('a GitHub throttle collapses into one calm banner, keeping any real failure
   const { fetchPrs } = await import('./github.ts');
   vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: [
     'o/r: GitHub 403 /repos/o/r/issues/1/comments: { "message": "You have exceeded a secondary rate limit." }',
-  ] });
+  ], failedRepos: ['o/r'] });
   const state = emptyState();
   state.lastCards = [card()];
   state.lastPrs = [pr()];
@@ -758,7 +758,7 @@ test('a GitHub throttle collapses into one calm banner, keeping any real failure
   vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [], errors: [
     'o/r: GitHub 403 /repos/o/r: { "message": "You have exceeded a secondary rate limit." }',
     'o/other: GitHub 404 /repos/o/other: not found',
-  ] });
+  ], failedRepos: ['o/r', 'o/other'] });
   const both = await refresh({ config, state: emptyState() });
   expect(both.errors.github).toContain('GitHub throttled this refresh');
   expect(both.errors.github).toContain('404');

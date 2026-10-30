@@ -772,3 +772,22 @@ test('commentPr refuses a repo no identity owns and never posts (#108)', async (
   await expect(commentPr(cfg, 'acme/other', 7, 'hi')).rejects.toThrow(/no GitHub identity owns "acme\/other"/);
   expect(fetchMock).not.toHaveBeenCalled();
 });
+
+// Audit 2026-10-29 M2: a card moved In Test -> back to In Progress between two
+// refreshes left no reachedTestAt stamp, so auto-transition re-moved it on the
+// old merge. A card touched after the merge is now left to the user.
+test('autoTransitionMergedCards: skips a card that changed in Jira after its PR merged', async () => {
+  const run = async (cardUpdatedAt: string) => {
+    const state = stateWithMergedCard('PROJ-1');
+    state.lastCards = [{ key: 'PROJ-1', summary: 'S', status: 'In Progress', statusCategory: 'indeterminate', description: '', url: '', createdAt: null, updatedAt: cardUpdatedAt, myAccountId: 'id', comments: [] }];
+    state.lastPrs = [{ repo: 'o/r', number: 1, url: '', title: '', body: '', branch: 'PROJ-1-x', state: 'merged', createdAt: '', updatedAt: '', mergedAt: '2026-07-01T12:00:00Z', closedAt: null, ciStatus: 'passing', reviewState: 'approved', comments: [] }];
+    const transitionCardFn = vi.fn().mockResolvedValue(undefined);
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn: liveStatus() });
+    return { result, transitionCardFn };
+  };
+  const touched = await run('2026-07-02T09:00:00.000Z');
+  expect(touched.transitionCardFn).not.toHaveBeenCalled();
+  expect(touched.result).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+  const untouched = await run('2026-07-01T11:00:00.000Z');
+  expect(untouched.transitionCardFn).toHaveBeenCalledTimes(1);
+});
