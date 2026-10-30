@@ -217,6 +217,7 @@ Tools exposed:
 devhud can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
 
 - Set `"writeEnabled": true` in `config.json`. The default (`false`, matching `config.example.json`) makes every write path refuse with a clear error: `write-back disabled; set writeEnabled: true in config.json`.
+- MCP write tools (`transition_card`, `comment_card`, `comment_pr`) additionally need `"mcpWriteEnabled": true`. Turning on `writeEnabled` for the CLI does not hand writes to an agent, which reads third-party Jira and GitHub text that could try to steer it.
 - The gate is re-checked from disk on **every single write** (not just at process startup) — `performWrite()` reloads `config.json` fresh before deciding whether to allow the call. Flip `writeEnabled` to `false` in `config.json` and the very next `transition`/`comment`/`pr-comment` refuses, with no server/CLI/MCP restart required. This fails **closed**: if that fresh read throws for any reason (the file was deleted, permissions changed, it's transiently unreadable mid-edit), the write is refused rather than falling back to whatever config the caller already had in memory — a long-running process can't keep writing just because its in-memory config happened to say `writeEnabled: true` before `config.json` became unreadable.
 - Demo mode **always** refuses writes, regardless of `writeEnabled` — there's nothing real for canned demo data to write to. That refusal is a "stub success" (not an error), so scripting against the CLI/MCP doesn't need special-case error handling for demo mode.
 - The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Comments are only ever posted by an explicit CLI command (`comment`/`pr-comment`) or an explicit MCP tool call, and manual transitions the same way (`transition`/`transition_card`). Those require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose.
@@ -233,6 +234,8 @@ devhud can optionally *write* to Jira and GitHub — transition a card's status,
 ## API
 
 Full reference: [docs/API.md](docs/API.md). Summary:
+
+Every `/api/*` request needs the server's access token: a random value the server writes on first start to `data/api-token` (mode 600, next to `state.json`). The CLI and MCP server read it from there and send it as the `x-devhud-token` header. The browser gets it as an HttpOnly, same-site-only cookie when you open the dashboard with `devhud open` (or the `?token=` link the server prints at startup); opened any other way, the page explains this instead of loading. This keeps other local processes and users from reading your board or writing as you.
 
 - `GET /api/data` returns the last snapshot from memory.
 - `GET /api/events` is a Server-Sent Events stream: the current snapshot on connect, then a new one after every refresh, action and successful write.
