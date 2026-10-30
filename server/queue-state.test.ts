@@ -126,3 +126,61 @@ test('a degraded repo keeps a card-less PR\'s acks instead of pruning them', () 
   build(state, [], [pr({ branch: 'chore', ciStatus: 'passing' })]);
   expect(state.ownPrs!['o/r#4']!.ackedReasons ?? null).toBeNull();
 });
+
+// PR #132 review: while any source kept failing, dataAsOf was held at the
+// last clean read, so an ack recorded a horizon older than the comments it
+// showed and they re-flagged every refresh for the whole outage.
+test('a dismissal during a sustained partial outage still covers the comments it showed', () => {
+  const state = upgraded();
+  const held = '2026-07-10T00:00:00.000Z';
+  const commented = pr({ comments: [{ author: 'amy', body: 'nit', createdAt: '2026-07-12T09:30:00Z' }] });
+  const outage = { dataAsOf: held, errors: { github: 'o/other: Not Found' } };
+  build(state, [card()], [commented], outage);
+  expect(reasons(state)).toContain('P-1:new_pr_comments');
+  applyAction({ state, config, type: 'ack', key: 'P-1', reason: 'new_pr_comments' });
+  for (let i = 0; i < 3; i++) build(state, [card()], [commented], outage);
+  expect(reasons(state)).not.toContain('P-1:new_pr_comments');
+  // A comment that arrives later is still new.
+  build(state, [card()], [pr({ comments: [...commented.comments, { author: 'amy', body: 'ping', createdAt: '2026-07-12T10:00:00Z' }] })], outage);
+  expect(reasons(state)).toContain('P-1:new_pr_comments');
+});
+
+test('a held horizon never moves a card\'s seen horizon backward', () => {
+  const state = upgraded();
+  cardState(state, 'P-1').lastSeenPr = '2026-07-15T00:00:00.000Z';
+  build(state, [card()], [pr({ ciStatus: 'failing' })], { dataAsOf: '2026-07-10T00:00:00.000Z', errors: { github: 'x' } });
+  applyAction({ state, config, type: 'ack', key: 'P-1' });
+  expect(cardState(state, 'P-1').lastSeenPr).toBe('2026-07-15T00:00:00.000Z');
+});
+
+// PR #132 review: with the In Test pin wipe gone, an In QA pin outranked the
+// In Test Jira-comment routing, so QA's question left the card in In QA.
+test('QA waiting on the developer outranks an In QA pin', () => {
+  const state = upgraded();
+  const inTest = card({ status: 'In Test' });
+  build(state, [inTest], [], { dataAsOf: '2026-07-10T00:00:00.000Z' });
+  applyAction({ state, config, type: 'move', key: 'P-1', bucket: 'in_qa' });
+  build(state, [inTest], []);
+  expect(state.snapshot!.buckets.in_qa.map(i => i.key)).toEqual(['P-1']);
+  const asked = card({ status: 'In Test', comments: [{ id: 'q', author: 'qa', authorId: 'qa', body: 'fails on staging', createdAt: new Date(Date.now() + 60_000).toISOString() }] });
+  build(state, [asked], []);
+  expect(state.snapshot!.buckets.needs_attention.map(i => i.key)).toEqual(['P-1']);
+  expect(cardState(state, 'P-1').override).toBe('in_qa');
+});
+
+// PR #132 review: an off-board card cleared ownPrs acks for a PR that an
+// on-board card still links, depending on card order.
+test('an off-board card does not clear acks of a PR an on-board card still links', () => {
+  for (const order of ['done-last', 'done-first'] as const) {
+    const state = upgraded();
+    const red = pr({ ciStatus: 'failing' });
+    const p1 = card();
+    const p2 = card({ key: 'P-2', status: 'Done', statusCategory: 'done', description: `see ${red.url}` });
+    const cards = order === 'done-last' ? [p1, p2] : [p2, p1];
+    build(state, cards, [red]);
+    applyAction({ state, config, type: 'ack', key: 'P-1', reason: 'ci_failing' });
+    build(state, cards, [red]);
+    build(state, cards, [red]);
+    expect(state.ownPrs!['o/r#4']!.ackedReasons, order).toEqual(['ci_failing']);
+  }
+});

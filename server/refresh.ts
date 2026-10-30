@@ -110,6 +110,13 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   const later = (a: string | null | undefined, b: string | null | undefined): string | null =>
     !a ? b ?? null : !b ? a : Date.parse(b) > Date.parse(a) ? b : a;
   const PR_ACK_REASONS = ['ci_failing', 'changes_requested', 'ready_to_merge'];
+  // PRs linked by a card that stays on the board this refresh. An off-board
+  // card must not clear the acks of a PR another on-board card still links.
+  const onBoardRefs = new Set<string>();
+  for (const card of cards) {
+    const pr = linked.get(card.key);
+    if (pr && !(isCanceled(card, statuses) || isBlocked(card, statuses) || isDone(card, statuses))) onBoardRefs.add(`${pr.repo}#${pr.number}`);
+  }
 
   for (const card of cards) {
     // Canceled work is neither active nor complete — drop it from every bucket,
@@ -126,7 +133,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     if (isCanceled(card, statuses) || (isTodo(card, statuses) && !pr) || isBlocked(card, statuses) || isDone(card, statuses)) {
       const cs = state.cards[card.key];
       if (cs?.ackedReasons) cs.ackedReasons = null;
-      const own = pr ? ownPrs[`${pr.repo}#${pr.number}`] : undefined;
+      const ref = pr ? `${pr.repo}#${pr.number}` : null;
+      const own = ref && !onBoardRefs.has(ref) ? ownPrs[ref] : undefined;
       if (own?.ackedReasons) own.ackedReasons = null;
     }
     if (!isDone(card, statuses)) notDone.add(card.key);
@@ -185,9 +193,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
       fixVersions: card.fixVersions ?? [],
       bucket, attention, newComments, comments: itemComments(card, pr), pr: prView(pr),
-      // Read after classifyCard, which auto-clears a stale override once the
-      // card reaches In Test/Done — so this reflects the pin the board is
-      // actually honoring, not one about to be dropped.
+      // Read after classifyCard, whose lastStatus rule clears a pin on a status
+      // transition, so this reflects the pin the board is actually honoring.
       pinned: cs.override !== null, pinnedAt: cs.overrideAt,
       createdAt: card.createdAt, updatedAt: card.updatedAt,
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,

@@ -10,7 +10,11 @@ export const githubNewComment = (c: PrComment): NewComment =>
 export const jiraNewComment = (c: JiraComment): NewComment =>
   ({ source: 'jira', author: c.author || c.authorId || '', body: c.body?.slice(0, 300) ?? '', createdAt: c.createdAt });
 
-const after = (ts: string | null | undefined, since: string | null | undefined): boolean => !since || (!!ts && ts > since);
+// Date.parse, not string order: GitHub timestamps have no milliseconds
+// ("...:00Z") and stored horizons may ("...:00.000Z"); as strings 'Z' > '.',
+// so a comment exactly at the horizon read as newer than it.
+const after = (ts: string | null | undefined, since: string | null | undefined): boolean =>
+  !since || (!!ts && Date.parse(ts) > Date.parse(since));
 
 // Case-insensitive substring match — 'John' matches 'John Costa' and the
 // 'john' GitHub login, 'Rovo' matches 'Rovo (Atlassian Intelligence)'.
@@ -202,6 +206,10 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   if (draftOpen && !outForReview) {
     bucket = 'self_review';
   } else if (visible.some(r => ROUTING_REASONS.includes(r))) bucket = 'needs_attention';
+  // QA waiting on the developer outranks a pin, as a routing reason does
+  // (and as routesToAttention/classifierDest already assume): an In QA pin
+  // must not hide a tester's question. See the In Test branch below.
+  else if (sameStatus(card.status, statuses.inTest) && visible.includes('new_jira_comments')) bucket = 'needs_attention';
   else if (cs.override) bucket = cs.override;
   // The one comment that IS routing. ROUTING_REASONS stays global and unchanged
   // (adding new_jira_comments to it would bounce In Progress cards on every
