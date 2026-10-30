@@ -30,6 +30,17 @@ try {
   try { sh(bin('devhud'), ['status'], env); } catch (e) { missing = String((e as { stderr?: string }).stderr); }
   assert.match(missing, /Run `devhud init`/);
 
+  // Installed-package default home: no DEVHUD_HOME, so an installed copy must
+  // resolve $HOME/.devhud, never its own node_modules (server/paths.ts).
+  const fakeHome = join(tmp, 'fake-home');
+  mkdirSync(fakeHome);
+  const { DEVHUD_HOME: _, ...noHomeEnv } = process.env;
+  let defaultHome = '';
+  try {
+    execFileSync(bin('devhud'), ['status'], { cwd: tmp, encoding: 'utf8', env: { ...noHomeEnv, HOME: fakeHome }, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) { defaultHome = String((e as { stderr?: string }).stderr); }
+  assert.ok(defaultHome.includes(`No config at ${join(fakeHome, '.devhud', 'config.json')}.`), `installed default home: ${defaultHome}`);
+
   const port = await new Promise<number>(res => { const s = createServer().listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); }); });
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, 'config.json'), JSON.stringify({
