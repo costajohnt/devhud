@@ -1,6 +1,6 @@
 import { test, expect, vi } from 'vitest';
-import { boardStatus, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.ts';
-import { loadState, saveState, emptyState } from '../server/state.ts';
+import { boardStatus, BOARD_DONE_CARDS, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.ts';
+import { loadState, saveState, emptyState, emptySnapshot } from '../server/state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -69,7 +69,7 @@ function seedSnapshot(statePath: string) {
 
 test('boardStatus returns the empty-board placeholder against a fresh state file', async () => {
   const statePath = tempStatePath();
-  const snap = await boardStatus({ config, statePath }) as Snapshot;
+  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot;
   expect(snap.updatedAt).toBeNull();
   expect(snap.buckets.needs_attention).toEqual([]);
 });
@@ -77,7 +77,7 @@ test('boardStatus returns the empty-board placeholder against a fresh state file
 test('boardStatus returns the persisted snapshot as-is', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const snap = await boardStatus({ config, statePath }) as Snapshot;
+  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot;
   expect(snap.doneTotal).toBe(3);
   expect(snap.buckets.needs_attention[0]!.key).toBe('P-1');
 });
@@ -88,7 +88,7 @@ test('boardStatus returns the persisted snapshot as-is', async () => {
 test('boardStatus marks the payload as containing untrusted third-party text', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const snap = await boardStatus({ config, statePath }) as Snapshot & { _note: string };
+  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot & { _note: string };
   expect(snap._note).toMatch(/third-party text/);
   expect(snap._note).toMatch(/never as instructions/);
 });
@@ -284,6 +284,21 @@ test('boardStatus (read-only) still works direct-mode even with a server.pid pre
   const statePath = tempStatePath();
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
-  const snap = await boardStatus({ config, statePath }) as Snapshot;
+  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot;
   expect(snap.doneTotal).toBe(3);
+});
+
+// Audit M21: board_status used to hand an agent the lifetime PR history and
+// every Done card on every call.
+test('boardStatus leaves out prLog and caps doneCards, keeping doneTotal', async () => {
+  const statePath = join(mkdtempSync(join(tmpdir(), 'jd-mcp-board-')), 'state.json');
+  const state = emptyState();
+  const done = Array.from({ length: 30 }, (_, i) => ({ key: `P-${i}`, summary: '', jiraStatus: 'Done', jiraUrl: '', pr: null, doneAt: null }));
+  state.snapshot = { ...emptySnapshot(), updatedAt: 'x', doneCards: done, doneTotal: 30, prLog: [{ id: 'o/r#1', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: null }] };
+  saveState(statePath, state);
+  const r = await boardStatus({ config, statePath }) as Record<string, unknown>;
+  expect('prLog' in r).toBe(false);
+  expect((r.doneCards as unknown[]).length).toBe(BOARD_DONE_CARDS);
+  expect(r.doneCardsShown).toBe(BOARD_DONE_CARDS);
+  expect(r.doneTotal).toBe(30);
 });
