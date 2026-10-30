@@ -134,6 +134,9 @@ export function loadState(path: string): State {
 // (writeFileSync's `mode` only applies when it creates the file, so a stale
 // temp file left by a crash is chmodded too).
 export function writeFilePrivate(path: string, data: string): void {
+  // The pid file can be written before any state save, and an installed
+  // package's data dir (~/.devhud/data) does not exist on first run.
+  mkdirSync(dirname(path), { recursive: true });
   const tmp = path + '.tmp';
   writeFileSync(tmp, data, { mode: 0o600 });
   chmodSync(tmp, 0o600);

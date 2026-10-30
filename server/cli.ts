@@ -8,8 +8,10 @@
 // either way. Which transport was used is always printed to stderr in
 // human mode.
 import { parseArgs } from 'node:util';
+import { existsSync, realpathSync } from 'node:fs';
 import { spawnSync, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, dirname, extname } from 'node:path';
+import { CONFIG_PATH, STATE_PATH } from './paths.ts';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
 import { BUCKETS } from './actions.ts';
@@ -155,7 +157,9 @@ export async function run(argv: string[], { config, statePath, configPath }: {
   if (cmd === 'serve') {
     // Foreground: inherit stdio and block until the server exits, mirroring
     // `node server/index.ts` run directly.
-    const result = spawnSync(process.execPath, [join(fileURLToPath(new URL('.', import.meta.url)), 'index.ts')], { stdio: 'inherit' });
+    // index.ts from a checkout, index.js from a built package: same extension as this file.
+    const self = fileURLToPath(import.meta.url);
+    const result = spawnSync(process.execPath, [join(dirname(self), `index${extname(self)}`)], { stdio: 'inherit' });
     return { code: result.status ?? 1, out: '', err: '' };
   }
   if (cmd === 'open') {
@@ -265,9 +269,18 @@ export async function run(argv: string[], { config, statePath, configPath }: {
   return { code: 1, out: '', err: `Unknown command: ${cmd}\n\n${HELP}` };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// realpath: an installed bin runs through a node_modules/.bin symlink, so
+// argv[1] is the link while import.meta.url is the real file.
+const isMain = (() => { try { return realpathSync(process.argv[1] ?? '') === fileURLToPath(import.meta.url); } catch { return false; } })();
+
+if (isMain) {
   try {
-    const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+    const configPath = CONFIG_PATH;
+    const args = process.argv.slice(2);
+    if (!args.length || args.includes('--help') || args.includes('-h')) {
+      console.log(HELP);
+      process.exit(0);
+    }
     // init runs before a config exists, so it can't go through loadConfig.
     if (process.argv[2] === 'init') {
       const { runInit, ttyPrompter } = await import('./init.ts');
@@ -275,9 +288,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (err) console.error(err);
       process.exit(code);
     }
+    if (!existsSync(configPath)) {
+      console.error(`No config at ${configPath}. Run \`devhud init\` to create one.`);
+      process.exit(1);
+    }
     const config = loadConfig(configPath);
-    const root = fileURLToPath(new URL('..', import.meta.url));
-    const statePath = join(root, 'data', 'state.json');
+    const statePath = STATE_PATH;
     const { code, out, err } = await run(process.argv.slice(2), { config, statePath, configPath });
     if (err) console.error(err);
     if (out) console.log(out);
