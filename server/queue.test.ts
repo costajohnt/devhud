@@ -124,3 +124,23 @@ test('same priority and age: reason order breaks the tie (CI before review)', ()
   const q = buildQueue(buckets(item({ attention: ['changes_requested', 'ci_failing'], pr: prRef({ ciStatus: 'failing', reviewState: 'changes_requested' }) })), statuses);
   expect(q.map(e => e.reason)).toEqual(['ci_failing', 'changes_requested']);
 });
+
+// Review finding: acking a reason the card does not show (or a card off the
+// board) used to record it in ackedReasons, pre-muting the next real one.
+test('per-reason ack of an absent reason or off-board card records nothing', () => {
+  const state = stateWith(item({ attention: ['new_pr_comments'], newComments: [{ source: 'github', author: 'a', body: 'x', createdAt: '2026-07-02T00:00:00Z' }] }));
+  expect(applyAction({ state, config, type: 'ack', key: 'P-1', reason: 'ci_failing' })).toEqual({ ok: true, bucket: 'in_progress' });
+  expect(applyAction({ state, config, type: 'ack', key: 'P-9', reason: 'ci_failing' })).toEqual({ ok: true, bucket: null });
+  expect(cardState(state, 'P-1').ackedReasons ?? null).toBeNull();
+  expect(cardState(state, 'P-9').ackedReasons ?? null).toBeNull();
+  expect(cardState(state, 'P-1').lastSeenPr).toBeNull();
+});
+
+test('ready_to_merge waits for passing CI', () => {
+  const card: Card = { key: 'P-1', status: 'In Progress', myAccountId: 'me', comments: [], summary: '', description: '', url: '', createdAt: null, updatedAt: null };
+  const pr = (o: Partial<Pr>): Pr => ({ state: 'open', ciStatus: 'passing', reviewState: 'approved', comments: [], repo: 'o/r', number: 1, url: '', title: '', body: '', branch: '', createdAt: '', updatedAt: '', mergedAt: null, closedAt: null, ...o });
+  const run = (p: Pr) => classifyCard({ card, pr: p, cs: { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null }, statuses, username: 'u' }).attention;
+  expect(run(pr({ ciStatus: 'pending' }))).not.toContain('ready_to_merge');
+  expect(run(pr({ ciStatus: 'failing', ciNewFailures: [] }))).not.toContain('ready_to_merge');
+  expect(run(pr({ ciStatus: 'unknown' }))).not.toContain('ready_to_merge');
+});

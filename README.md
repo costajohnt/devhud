@@ -25,7 +25,7 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 - **TODO queue**: the top of the page. One entry per thing that needs you, across every in-flight card, ranked:
   - **P1**: CI failing on your PR (only checks not already red on the base branch), changes requested by a reviewer, or a new Jira comment on a card that is in QA (the tester is waiting on you).
   - **P2**: new PR comments (issue comments, inline review comments, review summaries), new Jira comments, a merged PR whose card is not in test yet.
-  - **P3**: an approved PR with green CI ready to merge, a card in test with no QA instructions or fix version.
+  - **P3**: an approved PR with green CI (not pending) ready to merge, a card in test with no QA instructions or fix version.
 
   Within a priority, whatever has waited longest is first. **Open** takes you to the PR or card; **Done** dismisses that one entry and leaves the card's others. Entries also clear on their own when the underlying thing does (CI goes green, you reply on the Jira card, the PR merges). The tab title shows the count, and the 🔕 bell turns on a desktop notification for each new entry. `devhud todo` and the `todo_list` MCP tool read the same queue.
 - **Live updates**: the server refreshes Jira/GitHub on its own schedule (`refreshIntervalSeconds` in `config.json`, default 120) and pushes every new snapshot to open tabs over Server-Sent Events (`GET /api/events`) — leave it on a screen and it stays current, no clicking refresh, and N open tabs still cost one API sweep. Moves and acks in one tab appear in every other tab immediately.

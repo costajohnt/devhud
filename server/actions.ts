@@ -122,11 +122,15 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
   // entries alone. Comment reasons advance only their own source's seen
   // horizon; state reasons are muted the same way a full ack mutes them.
   if (type === 'ack' && typeof reason === 'string') {
+    // Only an entry the user can actually see may be dismissed. Recording an
+    // ack for a reason not currently on the card would pre-mute it: the next
+    // real CI failure would arrive already acked (classifyCard keeps acks
+    // whose reason is true) and never surface.
+    const loc = findItem();
+    if (!loc || !snap || !loc.item.attention.includes(reason)) return { ok: true, bucket: loc?.from ?? null };
     if (reason === 'new_pr_comments') cs.lastSeenPr = horizon;
     else if (reason === 'new_jira_comments') cs.lastSeenJira = horizon;
     else cs.ackedReasons = ackReasons(cs.ackedReasons, [reason]);
-    const loc = findItem();
-    if (!loc || !snap) return { ok: true, bucket: null };
     const source = reason === 'new_pr_comments' ? 'github' : reason === 'new_jira_comments' ? 'jira' : null;
     loc.item.attention = loc.item.attention.filter(r => r !== reason);
     if (source) loc.item.newComments = loc.item.newComments.filter(c => c.source !== source);

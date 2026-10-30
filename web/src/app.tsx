@@ -274,7 +274,10 @@ function AppContent() {
   const onAct = async (body: object) => {
     const b = body as { type?: string; key?: string };
     let nextKey: string | null = null;
-    if (b.type === 'ack' && data) {
+    // A per-reason ack (a TODO entry's Done) leaves the card where it is
+    // unless that was its last routing reason, and the user never selected
+    // it, so it must not move the selection.
+    if (b.type === 'ack' && !('reason' in b) && data) {
       const na = data.buckets.needs_attention;
       const idx = na.findIndex(i => i.key === b.key);
       if (idx >= 0) {

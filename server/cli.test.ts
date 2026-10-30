@@ -434,3 +434,21 @@ test('pr-comment with a bare repo name sends the org-qualified repo and the verb
     vi.unstubAllGlobals();
   }
 });
+
+// Review finding: a state file from before the queue existed migrates to
+// queue: [], and direct mode used to print "Nothing needs you" until the
+// next refresh. opSnapshot rebuilds it from the buckets.
+test('todo in direct mode rebuilds the queue from a pre-queue snapshot', async () => {
+  const statePath = tempStatePath();
+  const state = emptyState();
+  const pr = { repo: 'o/r', number: 4, url: 'https://gh/pr/4', branch: 'b', state: 'open' as const, ciStatus: 'failing' as const, reviewState: 'none' as const };
+  state.snapshot = makeSnapshot({
+    buckets: { needs_attention: [needsAttentionItem({ pr })], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
+  });
+  state.snapshot.queue = [];
+  saveState(statePath, state);
+  const { code, out } = await run(['todo'], { config, statePath });
+  expect(code).toBe(0);
+  expect(out).toContain('P1  P-1  CI failing on o/r#4');
+  expect(out).toContain('devhud ack P-1 ci_failing');
+});

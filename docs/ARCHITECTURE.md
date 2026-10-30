@@ -142,7 +142,7 @@ where it already is.
 | `ci_failing` | yes | Linked PR is open, its CI status is `failing`, and at least one failing check is not also failing on the base branch. While the base branch's CI is still running the previous verdict is carried over (or the card is not flagged if there is none). |
 | `merged_not_in_test` | yes | Linked PR is merged, the card is in a pre-test status (`jira.statuses.inProgress`, default "In Progress", or a review status; never a To Do- or Done-category status), and the card has not been seen In Test or Done since the PR merged (`cardState.reachedTestAt`), so a QA rejection does not re-flag on the old merge. |
 | `changes_requested` | badge | Linked PR is open and its review state is changes requested. |
-| `ready_to_merge` | badge | Linked PR is open, not a draft, approved, and not `ci_failing`. |
+| `ready_to_merge` | badge | Linked PR is open, not a draft, approved, and its CI is passing (not while pending or red). |
 | `new_pr_comments` | badge | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. Renders as the "N new comments" pill. |
 | `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill — except on an In Test card, where it routes to `needs_attention` (see the bucket table above). |
 | `missing_qa_instructions` | badge | Card is in the configured "In Test" status and its description has no QA/test instructions. Renders as the "No QA Instructions" pill. |

@@ -9,6 +9,7 @@
 // argv/output formatting in the CLI, tool-result shaping in MCP.
 import { loadState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
+import { rebuildQueue } from './queue.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
 import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
@@ -41,7 +42,12 @@ export async function opSnapshot(ctx: OpCtx): Promise<Snapshot | OpError> {
       return { error: (e as Error).message };
     }
   }
-  return loadState(ctx.statePath).snapshot ?? emptySnapshot();
+  const snap = loadState(ctx.statePath).snapshot ?? emptySnapshot();
+  // A state file from before the queue existed migrates to queue: []; rebuild
+  // from the buckets so the CLI/MCP don't report an empty TODO list until the
+  // next refresh. Cheap and pure, so always rebuilt on this path.
+  rebuildQueue(snap, ctx.config.jira.statuses);
+  return snap;
 }
 
 export async function opRefresh(ctx: OpCtx): Promise<Snapshot | OpError> {

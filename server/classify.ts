@@ -89,9 +89,9 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
 
   // Review outcomes on an open PR are TODO items, not routing: the bucket
   // already reflects the review state, the badge puts it on the queue.
-  // ready_to_merge waits for green CI so the two never contradict.
+  // ready_to_merge waits for green CI: not while running, not while red.
   if (pr?.state === 'open' && pr.reviewState === 'changes_requested') attention.push('changes_requested');
-  if (pr?.state === 'open' && !pr.isDraft && pr.reviewState === 'approved' && !attention.includes('ci_failing')) attention.push('ready_to_merge');
+  if (pr?.state === 'open' && !pr.isDraft && pr.reviewState === 'approved' && pr.ciStatus === 'passing') attention.push('ready_to_merge');
 
   for (const c of pr?.comments ?? []) {
     if (!selfNames.has(c.author.toLowerCase()) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {

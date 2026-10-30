@@ -560,3 +560,25 @@ test('Done on a TODO entry acks just that reason', async () => {
   const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/action');
   expect(JSON.parse((call![1] as { body: string }).body)).toEqual({ type: 'ack', key: 'P-1', reason: 'new_pr_comments' });
 });
+
+// Review finding: Done on a queue entry ran the full-ack "advance to the next
+// needs-attention card" logic and opened a card the user never selected.
+test('Done on a TODO entry does not open or move the detail selection', async () => {
+  // Both cards stay in needs_attention after the ack, as they would when a
+  // routing reason (red CI) is still on P-1.
+  const board = snap({
+    buckets: { ...emptyBuckets(), needs_attention: [item({ bucket: 'needs_attention' }), item({ key: 'P-2', bucket: 'needs_attention' })] },
+    queue: [entry('P-1', 'new_pr_comments')],
+  });
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => Promise.resolve({
+    ok: true, json: () => Promise.resolve(url === '/api/data' ? board : { ok: true, bucket: 'needs_attention' }),
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  act(() => { es().emit(board); });
+  const done = host.querySelector('#queue .queue-done')!;
+  await act(async () => { done.dispatchEvent(new Event('click', { bubbles: true })); });
+  // Let the action's fetch -> /api/data -> setSelected chain settle.
+  await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/data')).toBe(true);
+  expect(host.querySelector('.pr-detail')).toBeNull();
+});
