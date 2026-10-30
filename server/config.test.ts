@@ -29,31 +29,17 @@ test('writeEnabled: true is normalized through untouched', () => {
   expect(loadConfig(p).writeEnabled).toBe(true);
 });
 
-test('SIMON_DASH_DEMO=1 turns on demo mode', () => {
-  const p = join(dir, 'demo-env.json');
+test.each(['DEVHUD_DEMO', 'SIMON_DASH_DEMO', 'JIRA_DASH_DEMO'])('%s=1 turns on demo mode', (name) => {
+  const p = join(dir, `demo-env-${name}.json`);
   writeFileSync(p, JSON.stringify({
     jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
     github: { org: 'o', repos: ['r'], username: 'u' },
   }));
-  process.env.SIMON_DASH_DEMO = '1';
+  process.env[name] = '1';
   try {
     expect(loadConfig(p).demo).toBe(true);
   } finally {
-    delete process.env.SIMON_DASH_DEMO;
-  }
-});
-
-test('JIRA_DASH_DEMO=1 still works as a deprecated alias', () => {
-  const p = join(dir, 'demo-env-legacy.json');
-  writeFileSync(p, JSON.stringify({
-    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
-    github: { org: 'o', repos: ['r'], username: 'u' },
-  }));
-  process.env.JIRA_DASH_DEMO = '1';
-  try {
-    expect(loadConfig(p).demo).toBe(true);
-  } finally {
-    delete process.env.JIRA_DASH_DEMO;
+    delete process.env[name];
   }
 });
 

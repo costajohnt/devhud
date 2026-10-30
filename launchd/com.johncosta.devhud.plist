@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.johncosta.simon-dash</string>
+  <key>Label</key><string>com.johncosta.devhud</string>
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>REPLACE_WITH_REPO_PATH/bin/start.sh</string></array>
   <key>RunAtLoad</key><true/>
@@ -15,7 +15,7 @@
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
-  <key>StandardOutPath</key><string>REPLACE_WITH_HOME/Library/Logs/simon-dash.log</string>
-  <key>StandardErrorPath</key><string>REPLACE_WITH_HOME/Library/Logs/simon-dash.log</string>
+  <key>StandardOutPath</key><string>REPLACE_WITH_HOME/Library/Logs/devhud.log</string>
+  <key>StandardErrorPath</key><string>REPLACE_WITH_HOME/Library/Logs/devhud.log</string>
 </dict>
 </plist>

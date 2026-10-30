@@ -3,12 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Reuse: if a simon-dash server is already up (a hand-started one, or a
+# Reuse: if a devhud server is already up (a hand-started one, or a
 # previous launchd instance), exit 0 instead of starting a second one that
 # would die on EADDRINUSE. Under launchd's KeepAlive { SuccessfulExit: false }
 # a clean exit is not respawned, so this ends the 30s rebuild-and-fail loop.
 # Same detection the CLI/MCP use (server/transport.ts): data/server.pid names
-# a live pid AND a simon-dash API answers on the port recorded there. Both,
+# a live pid AND a devhud API answers on the port recorded there. Both,
 # so a stale pid file whose pid was reused by an unrelated process does not
 # keep the real server from ever starting.
 if node --input-type=module -e "
@@ -19,7 +19,7 @@ if node --input-type=module -e "
   const pid = serverAppearsRunning('data/state.json');
   process.exit(pid && port && await probeServer(port) ? 0 : 1);
 " 2>/dev/null; then
-  echo "simon-dash: server already running (data/server.pid); not starting another"
+  echo "devhud: server already running (data/server.pid); not starting another"
   exit 0
 fi
 

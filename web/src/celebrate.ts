@@ -36,7 +36,7 @@ export async function fireConfetti(): Promise<ConfettiOutcome> {
     // partial deploy, rebuild under a live page) rejects here. Never swallow
     // it silently: the console line is what turns "the button is broken" into
     // a diagnosable report.
-    console.warn('[simon-dash] confetti failed to load', err);
+    console.warn('[devhud] confetti failed to load', err);
     return 'failed';
   }
 }

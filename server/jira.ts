@@ -156,9 +156,9 @@ export async function fetchJiraCards(cfg: JiraConfig, doneSince?: string): Promi
       const mapped = mapIssue(issue, cfg);
       const total = issue.fields?.comment?.total ?? mapped.comments.length;
       if (total > mapped.comments.length) {
-        console.warn(`simon-dash: ${issue.key} has ${total} comments but only ${mapped.comments.length} were returned; refetching latest 50`);
+        console.warn(`devhud: ${issue.key} has ${total} comments but only ${mapped.comments.length} were returned; refetching latest 50`);
         try { mapped.comments = await fetchLatestComments(issue.key, cfg, auth); }
-        catch (e) { console.warn(`simon-dash: refetch of ${issue.key} comments failed: ${(e as Error).message}`); }
+        catch (e) { console.warn(`devhud: refetch of ${issue.key} comments failed: ${(e as Error).message}`); }
       }
       cards.push(mapped);
     }

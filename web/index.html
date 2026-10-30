@@ -14,11 +14,11 @@
       // access is guarded (blocked site data throws), matching storage.ts.
       {
         const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
-        const saved = get('simon-dash-theme');
+        const saved = get('devhud-theme');
         const t = saved
           || get('jira-dash-theme')
           || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-        if (!saved) { try { localStorage.setItem('simon-dash-theme', t); } catch { /* blocked */ } }
+        if (!saved) { try { localStorage.setItem('devhud-theme', t); } catch { /* blocked */ } }
         document.documentElement.dataset.theme = t;
       }
     </script>

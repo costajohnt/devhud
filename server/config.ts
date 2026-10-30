@@ -55,7 +55,7 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
   try {
     const mode = statSync(path).mode & 0o777;
     if (mode & 0o077) {
-      console.warn(`simon-dash: ${path} is readable by group/other (mode ${mode.toString(8)}) and holds live credentials — run \`chmod 600 ${path}\``);
+      console.warn(`devhud: ${path} is readable by group/other (mode ${mode.toString(8)}) and holds live credentials — run \`chmod 600 ${path}\``);
     }
   } catch { /* already handled by the readFileSync above if the file is genuinely missing */ }
   let c: RawConfig;
@@ -80,9 +80,10 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
     // org is still needed to expand bare repo names to "org/repo" in fetchPrs.
     if (!github.org) throw new Error(`config at ${path} is missing required key "github.org"`);
   }
-  // JIRA_DASH_DEMO is a deprecated alias kept for anyone with it already set
-  // in their environment; SIMON_DASH_DEMO is the current name post-rename.
-  const demo = Boolean(c.demo) || process.env.SIMON_DASH_DEMO === '1' || process.env.JIRA_DASH_DEMO === '1';
+  // SIMON_DASH_DEMO and JIRA_DASH_DEMO are deprecated aliases kept for anyone
+  // with them already set from earlier names; DEVHUD_DEMO is the current name.
+  const demo = Boolean(c.demo)
+    || ['DEVHUD_DEMO', 'SIMON_DASH_DEMO', 'JIRA_DASH_DEMO'].some((k) => process.env[k] === '1');
   // Demo mode never talks to real Jira, so requiring these would just make
   // trying the demo harder for no reason. Everyone else needs them, or
   // every real fetch/write fails with a confusing runtime auth error

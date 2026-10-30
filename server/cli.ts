@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Plain-TS ESM CLI, no deps. Dual transport: if a simon-dash server is
+// Plain-TS ESM CLI, no deps. Dual transport: if a devhud server is
 // already listening on the configured port, commands go through its HTTP
 // API (so a running server's in-memory state — the source of truth while
 // it's up — is what gets read/mutated); otherwise the CLI operates
@@ -23,22 +23,22 @@ import type { Config, Snapshot } from './types.ts';
 // disk access, and the split-brain guard) can't drift between callers.
 export { probeServer };
 
-const HELP = `simon-dash — Jira/GitHub board CLI
+const HELP = `devhud — Jira/GitHub board CLI
 
 Usage:
-  simon-dash status [--json]               Show the board snapshot
-  simon-dash refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
-  simon-dash ack <KEY> [--json]            Acknowledge a card's attention flags
-  simon-dash move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
-  simon-dash unpin <KEY> [--json]          Release a pin, returning the card to the classifier
-  simon-dash transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status
-  simon-dash comment <KEY> <text...> [--json]       Comment on a Jira card
-  simon-dash pr-comment <repo#num> <text...> [--json]  Comment on a GitHub PR (bare repo names get github.org)
-  simon-dash serve                         Run the dashboard server in the foreground
-  simon-dash open                          Open the dashboard in your browser
-  simon-dash --help                        Show this help
+  devhud status [--json]               Show the board snapshot
+  devhud refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
+  devhud ack <KEY> [--json]            Acknowledge a card's attention flags
+  devhud move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
+  devhud unpin <KEY> [--json]          Release a pin, returning the card to the classifier
+  devhud transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status
+  devhud comment <KEY> <text...> [--json]       Comment on a Jira card
+  devhud pr-comment <repo#num> <text...> [--json]  Comment on a GitHub PR (bare repo names get github.org)
+  devhud serve                         Run the dashboard server in the foreground
+  devhud open                          Open the dashboard in your browser
+  devhud --help                        Show this help
 
-If a simon-dash server is already running on the configured port, commands
+If a devhud server is already running on the configured port, commands
 go through its HTTP API; otherwise they operate directly on data/state.json.
 
 For transition/comment/pr-comment the text is taken verbatim from everything
@@ -53,7 +53,7 @@ no-op in demo mode. See the README's write-back section.
 
 export function formatStatus(payload: Snapshot): string {
   if (!payload.updatedAt) {
-    return 'No data yet — run `simon-dash refresh` to fetch a snapshot.';
+    return 'No data yet — run `devhud refresh` to fetch a snapshot.';
   }
   const b = payload.buckets;
   const lines = [
@@ -78,7 +78,7 @@ const FREE_TEXT_CMDS = new Set(['transition', 'comment', 'pr-comment']);
 // argument is free text (comment bodies, status names) do not: their text is
 // the raw argv after the KEY/ref, so a comment containing "--json" or "-x" is
 // posted verbatim instead of being stripped or rejected as an unknown option.
-// For those commands, flags go before the KEY (`simon-dash --json comment
+// For those commands, flags go before the KEY (`devhud --json comment
 // KEY text` or `comment --json KEY text`); a single trailing `--json` is
 // still read as the flag (the documented form) unless the text is preceded
 // by `--`, after which nothing is interpreted. Returned `rest` for them is
@@ -173,7 +173,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
     const key = rest[0];
     const bucket = cmd === 'move' ? rest[1] : undefined;
     if (!key || (cmd === 'move' && !bucket)) {
-      const usage = `usage: simon-dash ${cmd} <KEY>${cmd === 'move' ? ' <bucket>' : ''}`;
+      const usage = `usage: devhud ${cmd} <KEY>${cmd === 'move' ? ' <bucket>' : ''}`;
       return { code: 1, out: '', err: [err, usage].join('\n') };
     }
 
@@ -206,7 +206,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       const m = rest[0]?.match(/^(.+)#(\d+)$/);
       body = rest.slice(1).join(' ');
       if (!m || !body) {
-        return { code: 1, out: '', err: [err, 'usage: simon-dash pr-comment <repo#num> <text...>'].join('\n') };
+        return { code: 1, out: '', err: [err, 'usage: devhud pr-comment <repo#num> <text...>'].join('\n') };
       }
       repoRef = qualifyRepo(m[1]!, config.github.org);
       number = Number(m[2]);
@@ -215,7 +215,7 @@ export async function run(argv: string[], { config, statePath, configPath }: {
       const rest2 = rest.slice(1).join(' ');
       if (cmd === 'transition') status = rest2; else body = rest2;
       if (!key || !rest2) {
-        const usage = cmd === 'transition' ? 'usage: simon-dash transition <KEY> <status...>' : 'usage: simon-dash comment <KEY> <text...>';
+        const usage = cmd === 'transition' ? 'usage: devhud transition <KEY> <status...>' : 'usage: devhud comment <KEY> <text...>';
         return { code: 1, out: '', err: [err, usage].join('\n') };
       }
     }

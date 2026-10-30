@@ -1,5 +1,5 @@
 {
-  "name": "simon-dash-web",
+  "name": "devhud-web",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.18" },
