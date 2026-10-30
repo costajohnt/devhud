@@ -26,6 +26,7 @@ export { probeServer };
 const HELP = `devhud — Jira/GitHub board CLI
 
 Usage:
+  devhud init [--force]                Interactive setup: writes config.json
   devhud status [--json]               Show the board snapshot
   devhud refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
   devhud ack <KEY> [--json]            Acknowledge a card's attention flags
@@ -244,6 +245,13 @@ export async function run(argv: string[], { config, statePath, configPath }: {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+    // init runs before a config exists, so it can't go through loadConfig.
+    if (process.argv[2] === 'init') {
+      const { runInit, ttyPrompter } = await import('./init.ts');
+      const { code, err } = await runInit({ prompter: ttyPrompter(), configPath, force: process.argv.includes('--force') });
+      if (err) console.error(err);
+      process.exit(code);
+    }
     const config = loadConfig(configPath);
     const root = fileURLToPath(new URL('..', import.meta.url));
     const statePath = join(root, 'data', 'state.json');
