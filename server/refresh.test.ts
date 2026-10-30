@@ -602,7 +602,10 @@ test('a whole-fetch GitHub failure degrades everything and preserves acks', asyn
   const { fetchPrs } = await import('./github.ts');
   const state = emptyState();
   state.lastCards = [card()]; // fetchJiraCards is mocked to reject in this suite
-  state.lastPrs = [pr({ ciStatus: 'failing' })];
+  // The last-known PR reads passing: only the whole-fetch 'all' degradation
+  // can keep the ack. With failing CI here the reason was still present and
+  // the ack survived with or without degradation, so this tested nothing.
+  state.lastPrs = [pr({ ciStatus: 'passing' })];
   state.cards['PROJ-1'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null, ackedReasons: ['ci_failing'] };
   vi.mocked(fetchPrs).mockRejectedValueOnce(new Error('github down'));
   await refresh({ config, state });
