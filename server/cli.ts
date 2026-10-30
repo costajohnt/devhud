@@ -183,19 +183,26 @@ export async function run(argv: string[], { config, statePath, configPath, probe
     return { code, out: '', err: '' };
   }
   if (cmd === 'open') {
-    // The token in the URL sets the dashboard's auth cookie; the server
-    // redirects to the bare URL right after, so it doesn't linger in the bar.
+    // Ask the running server (authenticated with the token) for a one-time,
+    // 60-second login code and open that; the token itself never goes into
+    // the URL, the opener's argv or this output.
+    let url = `http://localhost:${config.port}`;
     const token = readApiToken(statePath);
-    const url = `http://localhost:${config.port}${token ? `/?token=${encodeURIComponent(token)}` : ''}`;
+    if (token) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${config.port}/api/login-code`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-devhud-token': token } });
+        if (r.ok) url += `/?login=${encodeURIComponent(((await r.json()) as { code: string }).code)}`;
+      } catch { /* server not running: open the plain URL, which says what to do */ }
+    }
     // Platform-appropriate opener: the macOS-only `open` binary printed
     // "Opening …" and exited 0 on Linux/Windows while opening nothing, and
     // its missing 'error' listener turned the ENOENT into an unhandled
     // 'error' event (a raw stack trace) whenever anything delayed the exit.
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     const child = spawn(opener, [url], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' });
-    child.on('error', (e) => console.error(`could not launch ${opener}: ${e.message} — open ${url} yourself`));
+    child.on('error', (e) => console.error(`could not launch ${opener}: ${e.message}; open http://localhost:${config.port} and run devhud open again`));
     child.unref();
-    return { code: 0, out: `Opening ${url}`, err: '' };
+    return { code: 0, out: `Opening http://localhost:${config.port}`, err: '' };
   }
 
   // Probed once here (not inside each op) so the transport note on stderr

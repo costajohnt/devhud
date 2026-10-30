@@ -97,6 +97,12 @@ export function readApiToken(statePath: string): string | null {
   try { return readFileSync(apiTokenPath(statePath), 'utf8').trim() || null; } catch { return null; }
 }
 
+export function rotateApiToken(statePath: string): string {
+  const token = randomBytes(32).toString('base64url');
+  writeFilePrivate(apiTokenPath(statePath), token);
+  return token;
+}
+
 export function loadOrCreateApiToken(statePath: string): string {
   const existing = readApiToken(statePath);
   if (existing) return existing;

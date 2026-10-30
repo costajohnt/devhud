@@ -53,8 +53,10 @@ try {
     const token = readFileSync(join(home, 'data', 'api-token'), 'utf8').trim();
     const data = await (await fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-token': token } })).json() as { queue?: unknown[] };
     assert.ok(Array.isArray(data.queue), 'api/data has a queue');
-    // `devhud open`'s link trades the token for the dashboard cookie.
-    const opened = await fetch(`http://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' });
+    // `devhud open`'s flow: a one-time login code (minted with the token)
+    // becomes a session cookie.
+    const { code } = await (await fetch(`http://127.0.0.1:${port}/api/login-code`, { method: 'POST', headers: { 'x-devhud-token': token } })).json() as { code: string };
+    const opened = await fetch(`http://127.0.0.1:${port}/?login=${encodeURIComponent(code)}`, { redirect: 'manual' });
     assert.equal(opened.status, 302);
     assert.match(opened.headers.get('set-cookie') ?? '', /devhud_token=.*HttpOnly.*SameSite=Strict/);
   } finally {

@@ -235,7 +235,7 @@ devhud can optionally *write* to Jira and GitHub — transition a card's status,
 
 Full reference: [docs/API.md](docs/API.md). Summary:
 
-Every `/api/*` request needs the server's access token: a random value the server writes on first start to `data/api-token` (mode 600, next to `state.json`). The CLI and MCP server read it from there and send it as the `x-devhud-token` header. The browser gets it as an HttpOnly, same-site-only cookie when you open the dashboard with `devhud open` (or the `?token=` link the server prints at startup); opened any other way, the page explains this instead of loading. This keeps other local processes and users from reading your board or writing as you.
+Every `/api/*` request needs the server's access token: a random value the server writes on first start to `data/api-token` (mode 600, next to `state.json`). The CLI and MCP server read it from there and send it as the `x-devhud-token` header. The token is rotated on every server start and never put in a URL or log. The browser instead gets its own session cookie (HttpOnly, same-site only): `devhud open` asks the server for a one-time, 60-second login code and opens the dashboard with it. Opened any other way, the page explains this instead of loading. This keeps other local processes and users from reading your board or writing as you.
 
 - `GET /api/data` returns the last snapshot from memory.
 - `GET /api/events` is a Server-Sent Events stream: the current snapshot on connect, then a new one after every refresh, action and successful write.
