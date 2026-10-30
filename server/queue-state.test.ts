@@ -263,3 +263,11 @@ test('a failed fetch keeps first-seen times for entries it could not see', () =>
   build(state, [card()], [], { errors: { jira: 'down' } });
   expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
 });
+
+test('a partly degraded GitHub fetch keeps first-seen only where the PR repo is degraded', () => {
+  const state = upgraded();
+  state.queueSeen = { 'P-1:ci_failing': OLD, 'o/healthy#9:ci_failing': OLD };
+  state.snapshot = buildSnapshot({ cards: [card()], prs: [], state, config, errors: { github: 'o/r failed' }, degradedPrRepos: new Set(['o/r']) });
+  expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
+  expect(state.queueSeen['o/healthy#9:ci_failing']).toBeUndefined();
+});
