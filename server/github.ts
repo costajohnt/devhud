@@ -369,14 +369,17 @@ export function lastPageFromLink(link: string | null | undefined): number | null
 // how many pages there are), then the last page and the one before it, so
 // the newest 100-200 comments are always in hand. Costs one request up to
 // 100 comments, two up to 200, three beyond.
-async function newestIssueComments(path: string, token: string): Promise<RawComment[]> {
-  const first = await ghPage<RawComment[]>('issue_comments', `${path}?per_page=100`, token);
+async function newestPages<T>(family: GithubRequestFamily, path: string, token: string): Promise<T[]> {
+  const first = await ghPage<T[]>(family, `${path}?per_page=100`, token);
   const last = lastPageFromLink(first.link);
   if (!last || last < 2) return first.body;
   const pages = last === 2 ? [2] : [last - 1, last];
-  const rest = await Promise.all(pages.map(n => gh<RawComment[]>('issue_comments', `${path}?per_page=100&page=${n}`, token)));
-  return [...(last === 2 ? first.body : []), ...rest.flat()];
+  const rest = await Promise.all(pages.map(n => gh<T[]>(family, `${path}?per_page=100&page=${n}`, token)));
+  // Page 1 is kept too (it is already fetched): for reviews, a change request
+  // there that nobody superseded still blocks the merge.
+  return [...first.body, ...rest.flat()];
 }
+const newestIssueComments = (path: string, token: string) => newestPages<RawComment>('issue_comments', path, token);
 
 interface GqlResponse<T> { data?: T | null; errors?: { message?: string }[] }
 
@@ -526,9 +529,12 @@ export function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username
 // most-recently-updated PRs and filtering by author locally dropped ~95% of
 // the author's PRs on a busy repo; a search applies the window to *the user's*
 // PRs instead, so it returns the author's 50 newest.
-export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: string[] }> {
+// failedRepos lists the repos whose search failed, so refresh() can splice in
+// their last-known PRs without parsing repo names back out of error text.
+export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: string[]; failedRepos: string[] }> {
   const prs: Pr[] = [];
   const errors: string[] = [];
+  const failedRepos: string[] = [];
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
     try {
@@ -544,9 +550,10 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
       }
     } catch (e) {
       errors.push(`${full}: ${(e as Error).message}`);
+      failedRepos.push(full);
     }
   }
-  return { prs, errors };
+  return { prs, errors, failedRepos };
 }
 
 // Detail-fetch only PRs the queue needs (linked to a card, or the user's own
@@ -565,7 +572,9 @@ export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [issueComments, reviewComments, reviews] = await Promise.all([
     newestIssueComments(`${base}/issues/${pr.number}/comments`, token),
     gh<RawComment[]>('review_comments', `${base}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc`, token),
-    gh<RawReview[]>('reviews', `${base}/pulls/${pr.number}/reviews?per_page=100`, token),
+    // Reviews come back oldest first like issue comments; past 100 the newest
+    // approval or change request lived on a page that was never fetched.
+    newestPages<RawReview>('reviews', `${base}/pulls/${pr.number}/reviews`, token),
   ]);
   const comment = (c: RawComment): PrComment => ({ author: c.user?.login ?? '', body: c.body ?? '', createdAt: c.created_at ?? c.submitted_at });
   pr.comments = [

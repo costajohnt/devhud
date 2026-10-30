@@ -399,6 +399,10 @@ export interface CardState {
   // in In Progress means QA rejected it, not that it was never moved (H1).
   // Optional: absent in pre-existing state files.
   reachedTestAt?: string | null;
+  // Last refresh whose Jira fetch returned this card; entries unseen for
+  // CARD_STATE_RETENTION_DAYS are pruned (refresh.ts). Optional: absent in
+  // older state files, stamped on the next refresh.
+  lastSeenAt?: string | null;
 }
 
 // One auto-transition attempt, keyed in State.autoTransitioned by

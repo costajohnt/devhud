@@ -510,9 +510,10 @@ test('merged_not_in_test: a post-In-Test status is not flagged (H1)', () => {
 
 test('merged_not_in_test: review statuses and a configured inProgress name are flagged', () => {
   const m = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z' });
-  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: m, cs: cs() }).attention).toContain('merged_not_in_test');
+  const now = '2026-07-03T00:00:00Z';
+  expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: m, cs: cs(), now }).attention).toContain('merged_not_in_test');
   const custom = { ...statuses, inProgress: 'Development' };
-  expect(classifyCard({ ...base, statuses: custom, card: card({ status: 'Development' }), pr: m, cs: cs() }).attention).toContain('merged_not_in_test');
+  expect(classifyCard({ ...base, statuses: custom, card: card({ status: 'Development' }), pr: m, cs: cs(), now }).attention).toContain('merged_not_in_test');
 });
 
 test('merged_not_in_test: a QA-rejected card is not re-flagged on the merge it already shipped (H1)', () => {
@@ -633,4 +634,12 @@ test('a pin set while the card is already In Test (In QA) survives refreshes', (
   // QA rejects it back to In Progress: the transition releases the pin.
   classifyCard({ ...base, card: card({ status: 'In Progress' }), pr: null, cs: s });
   expect(s.override).toBeNull();
+});
+
+// PR #137 review: pruning drops a long-Done card's reachedTestAt, so a card
+// reopened after the retention window would re-flag on its months-old merge.
+test('merged_not_in_test: a merge older than the card-state retention window never flags', () => {
+  const m = pr({ state: 'merged', mergedAt: '2026-01-10T00:00:00Z' });
+  expect(classifyCard({ ...base, card: card(), pr: m, cs: cs(), now: '2026-03-01T00:00:00Z' }).attention).toContain('merged_not_in_test');
+  expect(classifyCard({ ...base, card: card(), pr: m, cs: cs(), now: '2026-04-15T00:00:00Z' }).attention).not.toContain('merged_not_in_test');
 });

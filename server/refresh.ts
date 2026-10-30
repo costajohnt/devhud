@@ -1,7 +1,7 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { buildQueue } from './queue.ts';
-import { prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
+import { CARD_STATE_RETENTION_DAYS, prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest } from './types.ts';
@@ -13,6 +13,10 @@ const DAY = 86400000;
 // is the safety margin against a double celebration. See the prune in
 // buildSnapshot.
 export const CELEBRATION_RETENTION_DAYS = 90;
+// Per-card state (pins, horizons, acks) for a card absent from every fetch
+// for CARD_STATE_RETENTION_DAYS (classify.ts) is dropped; a card that comes
+// back starts fresh (audit M20).
+export { CARD_STATE_RETENTION_DAYS };
 
 const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
@@ -92,6 +96,20 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   // back stays counted as complete forever.
   const notDone = new Set<string>();
 
+  // state.cards used to grow forever: every card ever classified, plus any
+  // key an ack or move named. Stamp the cards this fetch returned, give
+  // unstamped entries (older state files, acks on unknown keys) a first
+  // sighting, and drop entries unseen for the retention window. No deletes
+  // when the Jira fetch failed (the cards then came from lastCards); those
+  // still count as seen, which keeps entries alive through an outage.
+  const nowIso = new Date().toISOString();
+  const fetchedKeys = new Set(cards.map(c => c.key));
+  const cardCutoff = Date.now() - CARD_STATE_RETENTION_DAYS * DAY;
+  for (const [key, cs] of Object.entries(state.cards)) {
+    if (fetchedKeys.has(key) || !cs.lastSeenAt) cs.lastSeenAt = nowIso;
+    else if (!errors.jira && Date.parse(cs.lastSeenAt) < cardCutoff) delete state.cards[key];
+  }
+
   // Both state-based attention reasons derive from PR data; when a card's PR
   // data is degraded this refresh, classify's ack-pruning must not treat
   // "reason missing from this refresh" as "reason cleared" — that would wipe
@@ -146,6 +164,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     if (isBlocked(card, statuses)) { blocked.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     if (isTodo(card, statuses) && !pr) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     const cs = cardState(state, card.key);
+    cs.lastSeenAt ??= nowIso;
 
     // A merged PR is supporting context, not completion: it rides along on the
     // active card via prView(pr) (the board's "Merged" pill, the detail panel),
@@ -472,12 +491,9 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     // PRs back in from state.lastPrs so it doesn't vanish from the board.
     if (gh.errors.length) {
       githubErrors.push(...gh.errors);
-      for (const err of gh.errors) {
-        const failedRepo = err.match(/^([^:]+):/)?.[1];
-        if (failedRepo) {
-          degradedPrRepos.add(failedRepo);
-          prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
-        }
+      for (const failedRepo of gh.failedRepos) {
+        degradedPrRepos.add(failedRepo);
+        prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
       }
     }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);

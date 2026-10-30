@@ -184,3 +184,18 @@ test('an off-board card does not clear acks of a PR an on-board card still links
     expect(state.ownPrs!['o/r#4']!.ackedReasons, order).toEqual(['ci_failing']);
   }
 });
+
+// Audit 2026-10-29 M20: state.cards never shrank.
+test('card state unseen for the retention window is pruned; a failed Jira fetch prunes nothing', () => {
+  const state = upgraded();
+  const old = new Date(Date.now() - 91 * 86_400_000).toISOString();
+  state.cards['P-9'] = { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: null, lastSeenAt: old };
+  state.cards['P-8'] = { lastSeenPr: null, lastSeenJira: null, override: null, overrideAt: null };
+  state.snapshot = buildSnapshot({ cards: [card()], prs: [], state, config, errors: { jira: 'down' } });
+  expect(state.cards['P-9']).toBeDefined();
+  state.snapshot = buildSnapshot({ cards: [card()], prs: [], state, config, errors: {} });
+  expect(state.cards['P-9']).toBeUndefined();
+  // An unstamped entry (older state file) gets a first sighting, not a delete.
+  expect(state.cards['P-8']!.lastSeenAt).toBeTruthy();
+  expect(state.cards['P-1']!.lastSeenAt).toBeTruthy();
+});
