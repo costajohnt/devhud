@@ -21,9 +21,12 @@ const dataHorizon = (state: State): string =>
 // previous horizon. The data horizon alone is held back while any source is
 // falling back (refresh.ts), so a dismissal during a long partial outage
 // would otherwise not cover the comments it showed and they'd re-flag every
-// refresh. The shown comments are exactly what the user saw, so including
-// them never hides an unseen one; keeping the previous value means a held
-// horizon can never move a card's horizon backward.
+// refresh. Like any timestamp horizon it can't recover a comment that
+// becomes visible later with an older timestamp (a pending GitHub review's
+// inline comments carry their draft time; a refresh can land between the
+// tab rendering and the click), so it covers the comments the entry showed
+// and anything older. Keeping the previous value means a held horizon can
+// never move a card's horizon backward.
 export function seenThrough(horizon: string, previous: string | null | undefined, shown: readonly NewComment[], source: NewComment['source']): string {
   let t = horizon;
   for (const c of shown) if (c.source === source && c.createdAt && Date.parse(c.createdAt) > Date.parse(t)) t = c.createdAt;
