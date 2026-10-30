@@ -1,6 +1,6 @@
 {
   "name": "devhud",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A heads-up display for in-flight Jira and GitHub work: a prioritized TODO list of everything that needs you",
   "license": "MIT",
   "author": "John Costa <costajohnt@gmail.com>",
