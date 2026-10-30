@@ -30,12 +30,12 @@ function withNullProtoCards(state: State): State {
     // corruption path and discard it wholesale. Drop the entry instead;
     // cardState() recreates it on demand.
     if (cs === null || typeof cs !== 'object') {
-      console.warn(`simon-dash: card ${k} has a malformed entry in the state file; dropping it`);
+      console.warn(`devhud: card ${k} has a malformed entry in the state file; dropping it`);
       delete state.cards[k];
       continue;
     }
     if (cs.ackedReasons != null && !Array.isArray(cs.ackedReasons)) {
-      console.warn(`simon-dash: card ${k} has a malformed ackedReasons in the state file; resetting it`);
+      console.warn(`devhud: card ${k} has a malformed ackedReasons in the state file; resetting it`);
       cs.ackedReasons = null;
     }
   }
@@ -112,13 +112,13 @@ export function loadState(path: string): State {
     // right next to it — so check for one before concluding there's nothing.
     const recovered = fromBak();
     if (!recovered) return emptyState();
-    console.warn(`simon-dash: state file at ${path} is missing; recovered from ${path}.bak`);
+    console.warn(`devhud: state file at ${path} is missing; recovered from ${path}.bak`);
     return recovered;
   }
   try { return hydrate(raw); }
   catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    console.warn(`simon-dash: state file at ${path} is unparseable (${message}); falling back to ${path}.bak`);
+    console.warn(`devhud: state file at ${path} is unparseable (${message}); falling back to ${path}.bak`);
     return fromBak() ?? emptyState();
   }
 }

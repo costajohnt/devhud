@@ -434,13 +434,13 @@ test('turning the bell on requests permission once and remembers the choice', as
   await act(async () => {}); // requestPermission resolves a tick after the click
   expect(StubNotification.requested).toBe(1);
   expect(bell().getAttribute('aria-pressed')).toBe('true');
-  expect(localStorage.getItem('simon-dash-notify')).toBe('1');
+  expect(localStorage.getItem('devhud-notify')).toBe('1');
 
   // Off again, without re-prompting.
   await act(async () => { bell().dispatchEvent(new Event('click', { bubbles: true })); });
   await act(async () => {});
   expect(bell().getAttribute('aria-pressed')).toBe('false');
-  expect(localStorage.getItem('simon-dash-notify')).toBe('0');
+  expect(localStorage.getItem('devhud-notify')).toBe('0');
   expect(StubNotification.requested).toBe(1);
 });
 
@@ -454,12 +454,12 @@ test('a blocked permission explains itself instead of silently doing nothing', a
   await act(async () => {});
 
   expect(host.textContent).toContain('Notifications are blocked for this site');
-  expect(localStorage.getItem('simon-dash-notify')).not.toBe('1');
+  expect(localStorage.getItem('devhud-notify')).not.toBe('1');
 });
 
 test('a card entering needs_attention on a hidden tab fires one notification', () => {
   installNotification('granted');
-  localStorage.setItem('simon-dash-notify', '1');
+  localStorage.setItem('devhud-notify', '1');
   remount();
   setHidden(true);
 
@@ -469,12 +469,12 @@ test('a card entering needs_attention on a hidden tab fires one notification', (
   act(() => { es().emit(attentionSnap(['P-1', 'P-2'])); });
   expect(StubNotification.fired).toHaveLength(1);
   expect(StubNotification.fired[0]!.title).toBe('P-2 needs attention');
-  expect(StubNotification.fired[0]!.tag).toBe('simon-dash-attention');
+  expect(StubNotification.fired[0]!.tag).toBe('devhud-attention');
 });
 
 test('nothing fires while the tab is visible', () => {
   installNotification('granted');
-  localStorage.setItem('simon-dash-notify', '1');
+  localStorage.setItem('devhud-notify', '1');
   remount();
   setHidden(false);
 
@@ -486,7 +486,7 @@ test('nothing fires while the tab is visible', () => {
 test('a granted permission revoked in site settings leaves the bell off', () => {
   // localStorage still says on, but the browser no longer agrees.
   installNotification('denied');
-  localStorage.setItem('simon-dash-notify', '1');
+  localStorage.setItem('devhud-notify', '1');
   remount();
   act(() => { es().emit(snap()); });
 

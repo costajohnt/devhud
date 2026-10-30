@@ -1,4 +1,4 @@
-# simon-dash
+# devhud
 
 Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serves a Preact SPA that tracks card status and PR activity across projects.
 
@@ -32,7 +32,7 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 
 ## Demo mode
 
-Set `"demo": true` in `config.json` (or run with `SIMON_DASH_DEMO=1`; `JIRA_DASH_DEMO=1` still works as a deprecated alias) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
+Set `"demo": true` in `config.json` (or run with `DEVHUD_DEMO=1`; `SIMON_DASH_DEMO=1` and `JIRA_DASH_DEMO=1` still work as deprecated aliases) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
 
 ## Setup
 
@@ -92,26 +92,26 @@ The rule set is deliberately narrow — oxlint's `correctness` category plus `re
 
 ### 5. launchd (optional)
 
-To run simon-dash at startup on macOS:
+To run devhud at startup on macOS:
 
 ```bash
-cp launchd/com.johncosta.simon-dash.plist ~/Library/LaunchAgents/
+cp launchd/com.johncosta.devhud.plist ~/Library/LaunchAgents/
 ```
 
 Edit the plist to replace `REPLACE_WITH_REPO_PATH` with the absolute path to this repo, and `REPLACE_WITH_HOME` with your home directory (e.g. `/Users/you`) — launchd does not expand `~`, so both need a real absolute path. Then:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.johncosta.simon-dash.plist
+launchctl load ~/Library/LaunchAgents/com.johncosta.devhud.plist
 ```
 
-Logs go to `~/Library/Logs/simon-dash.log` (not `/tmp`, which is world-readable and shared across users on the machine; server logs include every request path and Jira issue key). To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.simon-dash.plist`.
+Logs go to `~/Library/Logs/devhud.log` (not `/tmp`, which is world-readable and shared across users on the machine; server logs include every request path and Jira issue key). To unload: `launchctl unload ~/Library/LaunchAgents/com.johncosta.devhud.plist`.
 
-Restart behavior: the plist sets `KeepAlive` to `{ SuccessfulExit: false }`, so launchd restarts the server only when it exits with an error (a crash, a failed build), at most once every `ThrottleInterval` (30s). A clean exit is not respawned. That covers a `SIGTERM`/`SIGINT` shutdown (exit 0) and the case where a server is already running: `bin/start.sh` first checks `data/server.pid` (the same check the CLI and MCP use, `serverAppearsRunning()` in `server/transport.ts`, plus a probe of `/api/data` on the port that file records). If a simon-dash server is already up, for example one you started by hand, the script logs that and exits 0. It does not rebuild and then die on `EADDRINUSE` every 30 seconds. To hand control back to launchd after stopping a hand-started server, run `launchctl kickstart gui/$(id -u)/com.johncosta.simon-dash` (or unload and load the agent again).
+Restart behavior: the plist sets `KeepAlive` to `{ SuccessfulExit: false }`, so launchd restarts the server only when it exits with an error (a crash, a failed build), at most once every `ThrottleInterval` (30s). A clean exit is not respawned. That covers a `SIGTERM`/`SIGINT` shutdown (exit 0) and the case where a server is already running: `bin/start.sh` first checks `data/server.pid` (the same check the CLI and MCP use, `serverAppearsRunning()` in `server/transport.ts`, plus a probe of `/api/data` on the port that file records). If a devhud server is already up, for example one you started by hand, the script logs that and exits 0. It does not rebuild and then die on `EADDRINUSE` every 30 seconds. To hand control back to launchd after stopping a hand-started server, run `launchctl kickstart gui/$(id -u)/com.johncosta.devhud` (or unload and load the agent again).
 
 ## CLI
 
 `server/cli.ts` is a plain-TS, dependency-free CLI over the same modules the
-server uses. If a simon-dash server is already running on the configured
+server uses. If a devhud server is already running on the configured
 port, commands go through its HTTP API; otherwise they operate directly on
 `data/state.json`; either way the result is the same, and which transport
 was used is printed to stderr.
@@ -136,7 +136,7 @@ node server/cli.ts pr-comment webapp#482 "bare repo names use github.org from co
 For `transition`/`comment`/`pr-comment`, everything after the key or PR ref is taken verbatim as the text (so `--json` or `-x` inside a comment is kept). Put flags before the key; a single trailing `--json` is still read as the flag, and `--` before the text disables that.
 
 Also runnable as `npm run cli -- status`, or (once linked/installed) as the
-`simon-dash` bin.
+`devhud` bin.
 
 ## Claude integration
 
@@ -151,7 +151,7 @@ cd mcp && npm ci
 Register it with the Claude Code CLI:
 
 ```bash
-claude mcp add simon-dash --scope user -- node /path/to/simon-dash/mcp/index.ts
+claude mcp add devhud --scope user -- node /path/to/devhud/mcp/index.ts
 ```
 
 Or add it directly to `.mcp.json`:
@@ -159,9 +159,9 @@ Or add it directly to `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "simon-dash": {
+    "devhud": {
       "command": "node",
-      "args": ["/path/to/simon-dash/mcp/index.ts"]
+      "args": ["/path/to/devhud/mcp/index.ts"]
     }
   }
 }
@@ -179,7 +179,7 @@ Tools exposed:
 
 ## Write-back
 
-simon-dash can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
+devhud can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
 
 - Set `"writeEnabled": true` in `config.json`. The default (`false`, matching `config.example.json`) makes every write path refuse with a clear error: `write-back disabled; set writeEnabled: true in config.json`.
 - The gate is re-checked from disk on **every single write** (not just at process startup) — `performWrite()` reloads `config.json` fresh before deciding whether to allow the call. Flip `writeEnabled` to `false` in `config.json` and the very next `transition`/`comment`/`pr-comment` refuses, with no server/CLI/MCP restart required. This fails **closed**: if that fresh read throws for any reason (the file was deleted, permissions changed, it's transiently unreadable mid-edit), the write is refused rather than falling back to whatever config the caller already had in memory — a long-running process can't keep writing just because its in-memory config happened to say `writeEnabled: true` before `config.json` became unreadable.
@@ -192,7 +192,7 @@ simon-dash can optionally *write* to Jira and GitHub — transition a card's sta
   - It fires at most once per merged PR. A failed attempt is not retried every tick.
   - It never re-flags a card that QA sent back after the card had reached In Test.
 
-  Leave it off and nothing in simon-dash writes to Jira or GitHub on a timer.
+  Leave it off and nothing in devhud writes to Jira or GitHub on a timer.
 - All three write paths (the CLI, the MCP tools, and `POST /api/write` itself) funnel through the same `performWrite()` function (`server/writeback.ts`), so the gate and the "refresh the board after a successful write" behavior can't drift between them. See [docs/API.md](docs/API.md#post-apiwrite) for the endpoint and gate semantics in full.
 
 ## API
@@ -219,7 +219,7 @@ Manual moves, pins and acknowledgements are stored locally in `data/state.json`.
 - **in_progress**: Everything else (default).
 - **blocked** (off-board, like Todo): Jira status is "Blocked" (or `jira.statuses.blocked` if the project renamed it). Not a drag-and-drop bucket; the classifier never sees these cards.
 - Every configured status name — review, In Test, Done, To Do, Canceled, Blocked — is compared case-insensitively and ignoring surrounding whitespace, since a Jira status name is free text an admin can re-case.
-- A manual move pins the card to its bucket and holds it there over everything except a routing attention trigger (`ci_failing`, `merged_not_in_test`) and an open draft PR on a card not yet in a review status, both of which outrank a pin. New comments do not override a pin, they show as a pill on the pinned card. Overrides auto-clear when the card's Jira status changes (a transition supersedes the pin) or once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `simon-dash unpin <KEY>`, or the `unpin_card` MCP tool.
+- A manual move pins the card to its bucket and holds it there over everything except a routing attention trigger (`ci_failing`, `merged_not_in_test`) and an open draft PR on a card not yet in a review status, both of which outrank a pin. New comments do not override a pin, they show as a pill on the pinned card. Overrides auto-clear when the card's Jira status changes (a transition supersedes the pin) or once the card reaches In Test or Done, and you can release one yourself with the detail panel's **Unpin** button, `devhud unpin <KEY>`, or the `unpin_card` MCP tool.
 
 ## Upgrading an existing checkout
 

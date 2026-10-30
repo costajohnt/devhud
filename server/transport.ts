@@ -1,4 +1,4 @@
-// Shared dual-transport helper: if a simon-dash server is already listening
+// Shared dual-transport helper: if a devhud server is already listening
 // on the configured port, callers (CLI, MCP server) should go through its
 // HTTP API so the running server's in-memory state — the source of truth
 // while it's up — is what gets read/mutated; otherwise they operate
@@ -44,7 +44,7 @@ export async function probeServer(port: number, { timeoutMs = 500 }: { timeoutMs
 // server independently holds it in memory.
 //
 // What this guard does NOT cover: two direct-mode processes running at the
-// same time with no server at all (e.g. two `simon-dash ack` invocations
+// same time with no server at all (e.g. two `devhud ack` invocations
 // launched back to back from two terminals). Neither writes a pid file —
 // there's nothing for the other one to detect — so that's a plain
 // last-writer-wins race with no guard against it whatsoever. See

@@ -1,4 +1,4 @@
-// Tool handler functions for the simon-dash MCP server, kept separate from
+// Tool handler functions for the devhud MCP server, kept separate from
 // mcp/index.ts's stdio wiring so they're callable directly in tests without
 // spinning up a real MCP transport.
 //

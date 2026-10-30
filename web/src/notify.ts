@@ -88,7 +88,7 @@ export function showAttentionNotification(fire: AttentionCard[]): void {
     // One shared tag so a burst replaces itself instead of stacking N popups;
     // requireInteraction is deliberately off, since a triage nudge that has to
     // be dismissed is worse than one that fades.
-    const n = new Notification(title, { body, tag: 'simon-dash-attention' });
+    const n = new Notification(title, { body, tag: 'devhud-attention' });
     n.onclick = () => {
       window.focus();
       n.close();

@@ -22,9 +22,9 @@ import {
 // ticks — purely cosmetic, no network calls ride this interval.
 const RELATIVE_TIME_TICK_MS = 30_000;
 
-const THEME_KEY = 'simon-dash-theme';
+const THEME_KEY = 'devhud-theme';
 const LEGACY_THEME_KEY = 'jira-dash-theme';
-const NOTIFY_KEY = 'simon-dash-notify';
+const NOTIFY_KEY = 'devhud-notify';
 
 // No explicit user preference stored yet: fall back to the OS setting. Mirrors
 // the pre-paint script in index.html so the very first render already agrees

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// MCP server exposing the simon-dash board to Claude sessions over stdio.
+// MCP server exposing the devhud board to Claude sessions over stdio.
 //
-// Same config resolution as the rest of simon-dash: config.json is resolved
+// Same config resolution as the rest of devhud: config.json is resolved
 // relative to the repo root by server/config.ts itself (not relative to this
 // file), so this works whether it's invoked from anywhere on disk. If
 // config.json is missing, loadConfig()'s error is surfaced as a clear MCP
@@ -22,14 +22,14 @@ let config: Config;
 try {
   config = loadConfig(configPath);
 } catch (e) {
-  console.error(`simon-dash-mcp: failed to load config.json: ${(e as Error).message}`);
+  console.error(`devhud-mcp: failed to load config.json: ${(e as Error).message}`);
   process.exit(1);
 }
 const root = fileURLToPath(new URL('..', import.meta.url));
 const statePath = join(root, 'data', 'state.json');
 const ctx: Ctx = { config, statePath, configPath };
 
-const server = new McpServer({ name: 'simon-dash', version: '1.0.0' });
+const server = new McpServer({ name: 'devhud', version: '1.0.0' });
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
 const errorText = (message: string) => ({ content: [{ type: 'text' as const, text: message }], isError: true });

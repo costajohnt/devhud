@@ -257,7 +257,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
           // disk now diverge: the served snapshot shows the action applied,
           // but a restart silently reverts it (ack/move bounce back). Name
           // that explicitly instead of dying in the generic handler catch.
-          console.error(`simon-dash: action ${type} on ${String(key)} applied in memory but saveState failed — memory and disk have diverged:`, e);
+          console.error(`devhud: action ${type} on ${String(key)} applied in memory but saveState failed — memory and disk have diverged:`, e);
           return send(500, { error: 'action applied but could not be saved; it will revert on restart' });
         }
         // Actions (drag overrides, dismissals) mutate the snapshot in place;
@@ -489,7 +489,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   server.listen(config.port, '127.0.0.1', () => {
     writePidFile(pidPath, config.port);
-    console.log(`simon-dash on http://localhost:${config.port}`);
+    console.log(`devhud on http://localhost:${config.port}`);
   });
   const shutdown = () => {
     try { unlinkSync(pidPath); } catch {}
