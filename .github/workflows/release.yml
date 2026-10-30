@@ -17,35 +17,61 @@ jobs:
     permissions:
       contents: read
 
-  publish:
+  # Build and pack without the OIDC token: install and build scripts from
+  # dependencies run here, where they can't publish anything.
+  pack:
     needs: ci
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-      # npm trusted publishing (OIDC): no npm token is stored anywhere.
-      id-token: write
     steps:
       # Pinned to commit SHAs: a tag like v7 is a moving pointer its owner can
-      # repoint, and this job holds an OIDC token that can publish the package.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # repoint.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # Publish only commits already on master: a v* tag pushed on a side
       # branch must not ship unreviewed code.
       - run: git merge-base --is-ancestor "$GITHUB_SHA" origin/master
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # Node 26 bundles npm >= 11.5.1, all trusted publishing needs; no
-          # npm@latest upgrade (unpinned supply chain).
           node-version: '26'
           cache: npm
           cache-dependency-path: |
             package-lock.json
             web/package-lock.json
-          registry-url: 'https://registry.npmjs.org'
       - run: npm ci
       # prepack builds web/dist and dist/, so the web deps are needed too.
       - run: cd web && npm ci
-      - run: npm publish --provenance --access public
+      - run: npm pack
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball
+          path: devhud-*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Holds the publish token, so it runs no project or dependency code: it
+  # publishes the already-built tarball (npm runs no lifecycle scripts for a
+  # tarball argument).
+  publish:
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # npm trusted publishing (OIDC): no npm token is stored anywhere.
+      id-token: write
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Node 26 bundles npm >= 11.5.1, all trusted publishing needs; no
+          # npm@latest upgrade (unpinned supply chain).
+          node-version: '26'
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tarball
+      - run: npm publish ./devhud-*.tgz --provenance --access public
