@@ -9,7 +9,8 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { writePidFile } from './transport.ts';
+import { writePidFile, newApiToken, writeApiToken, TOKEN_HEADER } from './transport.ts';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config, State, Snapshot } from './types.ts';
 
 // Server-side poll cadence when config.json doesn't set refreshIntervalSeconds.
@@ -61,6 +62,21 @@ function bodyError(e: unknown): { status: number; error: string } {
 // guard at all — a read-only endpoint is exactly what rebinding targets
 // (confidentiality, not mutation), so it needs this check just as much as
 // the POST routes do.
+// Constant-time token comparison; length differs → not equal.
+const sameToken = (a: string | undefined, b: string): boolean => {
+  if (!a) return false;
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+const headerValue = (req: IncomingMessage, name: string): string | undefined => {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+};
+const headerToken = (req: IncomingMessage): string | undefined => headerValue(req, TOKEN_HEADER);
+const SESSION_HEADER = 'x-devhud-session';
+// Browser sessions held at once; the oldest is dropped past this.
+const MAX_SESSIONS = 32;
+
 function guardHost(req: IncomingMessage): { status: number; error: string } | null {
   const host = (req.headers.host ?? '').toLowerCase();
   const port = req.socket.localPort;
@@ -156,10 +172,35 @@ export function createSseFanout<C extends SseClient>() {
 // the scheduled loop (short interval + stub) without network or module
 // mocking — same convention as performWrite's refreshFn.
 // `autoTransitionFn` is injectable for the same reason (M5 ordering tests).
-export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh, autoTransitionFn = autoTransitionMergedCards }: {
+export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh, autoTransitionFn = autoTransitionMergedCards, apiToken }: {
   config: Config; statePath: string; webDist: string; configPath?: string; refreshFn?: typeof refresh;
   autoTransitionFn?: typeof autoTransitionMergedCards;
+  // When set, every /api/* request must carry it (x-devhud-token header or
+  // the devhud_token cookie) and the dashboard page needs the cookie. The
+  // real server always sets it (main below); omitted only by tests that
+  // exercise everything else.
+  apiToken?: string;
 }): http.Server {
+  // Browser sessions are separate random values, never the API token, and
+  // are sent as a header (not a cookie: cookies go to every port on
+  // localhost, so any local service the browser visits would receive one).
+  // The page keeps its session in localStorage, which is per origin and so
+  // per port. A browser gets one by trading a one-time login code that
+  // `devhud open` mints with the token; the token itself never goes into a
+  // URL, argv or a log. EventSource can't set headers, so /api/events also
+  // takes the session as a query parameter (the request log omits queries).
+  const sessions = new Set<string>();
+  const loginCodes = new Map<string, number>(); // code -> expiry (ms)
+  // Codes already traded, until they would have expired, with the session
+  // each produced. The code passes through the `open` command's argv, which
+  // other local users can read; if one races the browser and claims it
+  // first, the browser's own claim arrives here and revokes that session.
+  const spentCodes = new Map<string, { session: string; exp: number }>();
+  const LOGIN_CODE_TTL_MS = 60_000;
+  const isSession = (s: string | null | undefined): boolean => !!s && [...sessions].some(v => sameToken(s, v));
+  const authorized = (req: IncomingMessage, url: URL): boolean =>
+    !apiToken || sameToken(headerToken(req), apiToken) || isSession(headerValue(req, SESSION_HEADER))
+    || (url.pathname === '/api/events' && isSession(url.searchParams.get('session')));
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
   // once here (instead of per-request) avoids a lost-update race between
@@ -196,7 +237,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const start = Date.now();
     res.on('finish', () => {
-      console.log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - start}ms`);
+      console.log(`${req.method} ${(req.url ?? '').split('?')[0]} ${res.statusCode} ${Date.now() - start}ms`);
     });
     const send = (code: number, obj: unknown) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
@@ -204,6 +245,46 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       if (url.pathname.startsWith('/api/')) {
         const hostErr = guardHost(req);
         if (hostErr) return send(hostErr.status, { error: hostErr.error });
+      }
+      // The one /api route that needs no credential: the one-time code is the
+      // credential. Single use, 60 s, minted only with the token (below).
+      if (apiToken && url.pathname === '/api/session' && req.method === 'POST') {
+        const guardErr = guardMutation(req);
+        if (guardErr) return send(guardErr.status, { error: guardErr.error });
+        let body: Record<string, unknown>;
+        try { body = await readBody(req); } catch (e) { const be = bodyError(e); return send(be.status, { error: be.error }); }
+        const code = typeof body.code === 'string' ? body.code : '';
+        const now = Date.now();
+        for (const [c, s] of spentCodes) if (s.exp < now) spentCodes.delete(c);
+        const exp = loginCodes.get(code);
+        loginCodes.delete(code);
+        if (!exp || exp < now) {
+          const spent = spentCodes.get(code);
+          if (spent) {
+            spentCodes.delete(code);
+            sessions.delete(spent.session);
+            console.error('devhud: a login code was claimed twice; the first session is revoked (another local process may have read it)');
+            return send(409, { error: 'this login link was already used by another client, and that session has been revoked; run `devhud open` again' });
+          }
+          return send(401, { error: 'login code invalid or expired; run `devhud open` again' });
+        }
+        const session = randomBytes(32).toString('base64url');
+        sessions.add(session);
+        spentCodes.set(code, { session, exp });
+        if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.values().next().value!);
+        return send(200, { session });
+      }
+      if (url.pathname.startsWith('/api/')) {
+        if (!authorized(req, url)) return send(401, { error: 'missing or invalid devhud token; run `devhud open` for the dashboard (the CLI and MCP read it automatically)' });
+      }
+      // `devhud open` (holding the token) asks for a one-time login code.
+      if (apiToken && url.pathname === '/api/login-code' && req.method === 'POST') {
+        if (!sameToken(headerToken(req), apiToken)) return send(401, { error: 'login codes need the API token header' });
+        const now = Date.now();
+        for (const [c, exp] of loginCodes) if (exp < now) loginCodes.delete(c);
+        const code = randomBytes(24).toString('base64url');
+        loginCodes.set(code, now + LOGIN_CODE_TTL_MS);
+        return send(200, { code });
       }
       if (url.pathname === '/api/data' && req.method === 'GET') {
         return send(200, state.snapshot ?? emptySnapshot());
@@ -279,10 +360,10 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         // Explicit destructure, not `...body`: a spread would let a client
         // smuggle arbitrary keys (e.g. "config"/"state") into performWrite's
         // named parameters, potentially overriding config/state entirely.
-        const { type, key, repo, number, body: text, status } = body as {
-          type?: string; key?: string; repo?: string; number?: number; body?: string; status?: string;
+        const { type, key, repo, number, body: text, status, source } = body as {
+          type?: string; key?: string; repo?: string; number?: number; body?: string; status?: string; source?: unknown;
         };
-        const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath });
+        const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath, source: source === 'mcp' ? 'mcp' : undefined });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         // The write already happened in Jira/GitHub: a failed local save must
         // not turn into a 500 that invites a retry (and a double post). Same
@@ -472,7 +553,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(1);
   }
   if (bundle) console.warn(`\n!! ${bundle.message}\n`);
-  const server = createServer({ config, statePath: STATE_PATH, webDist: WEB_DIST, configPath });
+  // Rotated on every start, so a captured token doesn't outlive the process.
+  const apiToken = newApiToken();
+  const server = createServer({ config, statePath: STATE_PATH, webDist: WEB_DIST, configPath, apiToken });
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative
   // after a crash, or false-positive if the pid was reused).
@@ -484,8 +567,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     throw e;
   });
   server.listen(config.port, '127.0.0.1', () => {
+    writeApiToken(STATE_PATH, apiToken);
     writePidFile(pidPath, config.port);
-    console.log(`devhud on http://localhost:${config.port}`);
+    console.log(`devhud on http://localhost:${config.port} (open the dashboard with \`devhud open\`)`);
   });
   const shutdown = () => {
     try { unlinkSync(pidPath); } catch {}

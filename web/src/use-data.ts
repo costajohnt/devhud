@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { DashboardData } from './types.js';
 import { applyEvent } from './live-event.js';
+import { authHeaders, claimSession, eventsUrl, takeLoginCode } from './auth.js';
 
 // EventSource.CLOSED, spelled out so a stubbed EventSource without the
 // static constants (tests) still compares correctly.
@@ -16,6 +17,9 @@ export function useData() {
   const [connError, setConnError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
+  // The server refused this browser's session (none yet, expired, or the
+  // server restarted): the page shows how to sign in instead of retrying.
+  const [needsLogin, setNeedsLogin] = useState(false);
   const onRefreshed = useRef<(d: DashboardData) => void>(() => {});
   // Guards two manual refreshes from overlapping (rapid double-click).
   const refreshInFlight = useRef(false);
@@ -32,7 +36,7 @@ export function useData() {
 
   const get = async () => {
     const seq = ++requestSeq.current;
-    const d = await (await fetch('/api/data')).json();
+    const d = await (await fetch('/api/data', { headers: authHeaders() })).json();
     if (seq !== requestSeq.current) return; // superseded by a newer request
     setData(d);
     setLoading(false);
@@ -44,7 +48,7 @@ export function useData() {
     setRefreshing(true);
     const seq = ++requestSeq.current;
     try {
-      const res = await fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' } });
+      const res = await fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() } });
       if (!res.ok) throw new Error(`refresh ${res.status}`);
       const d: DashboardData = await res.json();
       if (seq === requestSeq.current) {
@@ -68,7 +72,7 @@ export function useData() {
   const act = async (body: object): Promise<boolean> => {
     setActionInFlight(true);
     try {
-      const res = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) });
       if (!res.ok) {
         let message = `action ${res.status}`;
         try {
@@ -110,7 +114,7 @@ export function useData() {
     const connect = () => {
       // Handlers close over this instance, not the outer es, so a late event
       // from a replaced source can't act on its successor.
-      const source = new EventSource('/api/events');
+      const source = new EventSource(eventsUrl());
       es = source;
       source.onopen = () => { retryDelay = SSE_RETRY_MIN_MS; };
       source.onmessage = (ev) => {
@@ -148,8 +152,13 @@ export function useData() {
           setConnError('connection lost — retrying');
           return;
         }
-        // The browser gave up on this EventSource; schedule a fresh one.
+        // The browser gave up on this EventSource. A 401 (no or stale session)
+        // won't fix itself by retrying, and EventSource doesn't expose the
+        // status, so ask /api/data once.
         source.close();
+        void fetch('/api/data', { headers: authHeaders() }).then(r => {
+          if (r.status === 401 && !disposed) { setNeedsLogin(true); if (retryTimer) clearTimeout(retryTimer); retryTimer = null; }
+        }, () => {});
         const delay = retryDelay;
         retryDelay = Math.min(retryDelay * 2, SSE_RETRY_MAX_MS);
         setConnError(`connection lost — reconnecting in ${Math.round(delay / 1000)}s`);
@@ -161,7 +170,10 @@ export function useData() {
       };
     };
 
-    connect();
+    // Opened by `devhud open`: trade the one-time code for a session first.
+    const code = takeLoginCode();
+    if (code === null) connect();
+    else void claimSession(code).then(ok => { if (disposed) return; if (ok) connect(); else setNeedsLogin(true); });
     return () => {
       disposed = true;
       if (retryTimer) clearTimeout(retryTimer);
@@ -171,5 +183,5 @@ export function useData() {
 
   const clearActionError = () => setActionError(null);
 
-  return { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed, clearActionError };
+  return { data, loading, refreshing, connError, actionError, actionInFlight, needsLogin, refresh, act, onRefreshed, clearActionError };
 }

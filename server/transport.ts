@@ -5,6 +5,7 @@
 // directly on disk via the same server/*.ts modules the server itself uses
 // (loadState/saveState/refresh/applyAction), so behavior is identical
 // either way.
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { saveState, writeFilePrivate } from './state.ts';
@@ -22,9 +23,9 @@ export function writePidFile(pidPath: string, port: number): void {
 
 // ~500ms budget: long enough that a live server on loopback always answers,
 // short enough that "no server running" doesn't make every command feel stuck.
-export async function probeServer(port: number, { timeoutMs = 500 }: { timeoutMs?: number } = {}): Promise<boolean> {
+export async function probeServer(port: number, { timeoutMs = 500, token }: { timeoutMs?: number; token?: string | null } = {}): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs), headers: tokenHeaders(token) });
     return res.ok;
   } catch {
     return false;
@@ -83,3 +84,28 @@ export function saveStateGuarded(statePath: string, state: State): void {
   if (blockingPid) throw new Error(splitBrainError(blockingPid));
   saveState(statePath, state);
 }
+
+// The local API token (audit M3). Loopback alone let any local principal
+// that can reach the port read the board and, with writeEnabled, write to
+// Jira/GitHub as the user. The server makes a fresh token each start and
+// writes it 0600 next to the state file once it holds its port; the CLI and
+// MCP read it from there and send it on every /api/* request. Browsers never
+// see it: they get a separate session (server/index.ts).
+export const apiTokenPath = (statePath: string): string => join(dirname(statePath), 'api-token');
+
+export function readApiToken(statePath: string): string | null {
+  try { return readFileSync(apiTokenPath(statePath), 'utf8').trim() || null; } catch { return null; }
+}
+
+// A fresh token for each server start, so a captured one doesn't outlive
+// the process. Generated in memory and written only once the server holds
+// its port (writeApiToken): a second start that fails on "port in use" must
+// not replace the running server's token.
+export const newApiToken = (): string => randomBytes(32).toString('base64url');
+
+export function writeApiToken(statePath: string, token: string): void {
+  writeFilePrivate(apiTokenPath(statePath), token);
+}
+
+export const TOKEN_HEADER = 'x-devhud-token';
+export const tokenHeaders = (token: string | null | undefined): Record<string, string> => (token ? { [TOKEN_HEADER]: token } : {});
