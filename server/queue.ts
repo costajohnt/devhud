@@ -3,7 +3,7 @@
 // snapshot's bucket items, so it is rebuilt after every refresh and every
 // action and can never drift from the badges the board shows.
 import { ROUTING_REASONS, primaryStatus, sameStatus } from './classify.ts';
-import type { Bucket, Item, JiraStatuses, QueueEntry, ReviewRequest, Snapshot } from './types.ts';
+import type { Bucket, Item, JiraStatuses, QueueEntry, ReviewRequest, Snapshot, UnlinkedPr } from './types.ts';
 
 // Every reason the queue knows how to render. Also the allowlist for a
 // per-reason ack (actions.ts), so an ack can't name something the queue
@@ -66,8 +66,23 @@ function entry(item: Item, reason: string, statuses: JiraStatuses): QueueEntry |
 
 // Highest priority first; within a priority, whoever has waited longest
 // first (entries with no timestamp last).
-export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatuses, reviewRequests: ReviewRequest[] = []): QueueEntry[] {
+export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatuses, reviewRequests: ReviewRequest[] = [], unlinkedPrs: UnlinkedPr[] = []): QueueEntry[] {
   const out: QueueEntry[] = [];
+  // The user's PRs with no card: the same PR reasons a card's PR produces,
+  // rendered through the same entry() as an item keyed by the PR ref.
+  for (const u of unlinkedPrs) {
+    if (!u.pr) continue;
+    const key = `${u.repo}#${u.number}`;
+    const asItem: Item = {
+      key, summary: u.title, jiraStatus: '', jiraUrl: u.url, bucket: 'in_progress', attention: u.attention ?? [],
+      newComments: u.newComments ?? [], comments: [], pr: u.pr, createdAt: null, updatedAt: u.updatedAt ?? null,
+      daysSinceActivity: null, pinned: false, pinnedAt: null,
+    };
+    for (const reason of asItem.attention) {
+      const e = entry(asItem, reason, statuses);
+      if (e) out.push({ ...e, kind: 'pr', summary: `${key} ${u.title}` });
+    }
+  }
   // Someone else's PR waiting on your review: no card, keyed by the PR ref.
   for (const rr of reviewRequests) {
     if (rr.dismissed) continue;
@@ -95,7 +110,7 @@ export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatus
 }
 
 export const rebuildQueue = (snap: Snapshot, statuses: JiraStatuses): void => {
-  snap.queue = buildQueue(snap.buckets, statuses, snap.reviewRequests);
+  snap.queue = buildQueue(snap.buckets, statuses, snap.reviewRequests, snap.unlinkedPrs);
 };
 
 // Whether an item's remaining attention still earns needs_attention, using

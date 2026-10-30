@@ -94,7 +94,8 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
   lastCards: <last successful Jira fetch, or null>,
   lastPrs: <last successful GitHub fetch, or null>,
   prLog: { [id]: { id, repo, openedAt, mergedAt, closedAt } },
-  prs: { ["owner/repo#n"]: { dismissedAt } }   // dismissed review requests (optional)
+  prs: { ["owner/repo#n"]: { dismissedAt } },  // dismissed review requests (optional)
+  ownPrs: { ["owner/repo#n"]: { lastSeenPr, ackedReasons } }  // card-less PRs' seen horizon + acks (optional)
 }
 ```
 

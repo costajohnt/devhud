@@ -1,7 +1,7 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { buildQueue } from './queue.ts';
-import { classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
+import { prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest } from './types.ts';
@@ -95,6 +95,19 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   // acks a healthy refresh would have kept.
   const degraded = degradedPrRepos ?? (errors.github ? 'all' : null);
 
+  // One seen-comment horizon and set of PR acks per open PR, whether or not
+  // a card links it: state.ownPrs[ref] is kept for every open PR and synced
+  // both ways with the linking card's CardState, so a PR that gains or loses
+  // its card (reassigned, relinked) keeps what was already seen and acked.
+  // The first refresh after state.ownPrs existed treats existing comments on
+  // card-less PRs as seen instead of flooding the queue with their history.
+  const firstOwnPrs = state.ownPrs === undefined;
+  const ownPrs = (state.ownPrs ??= {});
+  const buildTime = new Date().toISOString();
+  const later = (a: string | null | undefined, b: string | null | undefined): string | null =>
+    !a ? b ?? null : !b ? a : Date.parse(b) > Date.parse(a) ? b : a;
+  const PR_ACK_REASONS = ['ci_failing', 'changes_requested', 'ready_to_merge'];
+
   for (const card of cards) {
     // Canceled work is neither active nor complete — drop it from every bucket,
     // the Todo list, the Done page, and all counts.
@@ -144,9 +157,20 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
 
     // A card with no PR under any degradation is treated as degraded too: we
     // can't tell whether its PR vanished or simply belongs to a failed repo.
+    const prRef = pr && `${pr.repo}#${pr.number}`;
+    const own = prRef ? ownPrs[prRef] : undefined;
+    if (own) {
+      cs.lastSeenPr = later(cs.lastSeenPr, own.lastSeenPr);
+      const merged = [...new Set([...(cs.ackedReasons ?? []), ...(own.ackedReasons ?? [])])];
+      cs.ackedReasons = merged.length ? merged : null;
+    }
     const prDegraded = degraded === 'all'
       || (degraded !== null && (pr ? degraded.has(pr.repo) : degraded.size > 0));
     const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, usernames, ignoreAuthors, prDegraded, postedCommentIds: state.postedCommentIds ?? [] });
+    if (prRef && pr?.state === 'open') {
+      const acks = (cs.ackedReasons ?? []).filter(r => PR_ACK_REASONS.includes(r));
+      ownPrs[prRef] = { lastSeenPr: cs.lastSeenPr, ackedReasons: acks.length ? acks : null };
+    }
     const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
@@ -232,6 +256,27 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       }
     }
   }
+  // The user's open PRs with no card still need them: same PR reasons as a
+  // card's PR, with their own seen horizon and acks in state.ownPrs.
+  const selfNames = new Set((usernames ?? [username]).map(u => u.toLowerCase()));
+  const unlinkedPrs = unlinked(prs, linked).filter(p => p.state === 'open').map(p => {
+    const ref = `${p.repo}#${p.number}`;
+    const ps = (ownPrs[ref] ??= { lastSeenPr: firstOwnPrs ? buildTime : null });
+    const raw = prAttention(p, ps.lastSeenPr, selfNames, ignoreAuthors);
+    const { visible, acked } = applyAcks(raw.attention, ps.ackedReasons, degraded === 'all' || !!degraded?.has(p.repo));
+    ps.ackedReasons = acked;
+    return {
+      repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state,
+      attention: visible, newComments: visible.includes('new_pr_comments') ? raw.newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')) : [],
+      pr: prView(p)!, updatedAt: p.updatedAt,
+    };
+  });
+  const openRefs = new Set(prs.filter(p => p.state === 'open').map(p => `${p.repo}#${p.number}`));
+  for (const ref of Object.keys(ownPrs)) {
+    const repo = ref.slice(0, ref.lastIndexOf('#'));
+    if (!openRefs.has(ref) && degraded !== 'all' && !degraded?.has(repo)) delete ownPrs[ref];
+  }
+
   // A dismissed review request stays hidden until the PR changes after the
   // dismissal (a new push, comment or re-request bumps updatedAt).
   const requests = reviewRequests.map(rr => {
@@ -244,9 +289,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   return {
     updatedAt: new Date().toISOString(),
     errors: { jira: errors.jira ?? null, github: errors.github ?? null },
-    buckets, queue: buildQueue(buckets, statuses, requests), reviewRequests: requests, todo, blocked,
-    unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
-      .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
+    buckets, queue: buildQueue(buckets, statuses, requests, unlinkedPrs), reviewRequests: requests, todo, blocked,
+    unlinkedPrs,
     // Done page and counter both come from the lifetime ledger, so they agree
     // by construction. Deriving the count from a single refresh made it shrink
     // as cards aged out of the fetch window; deriving it from the old
@@ -440,7 +484,9 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     // with no enrichedAt at all (state written before the stamp existed)
     // takes the same one-time re-fetch.
     const toEnrich: Pr[] = [];
-    for (const p of new Set(linked.values())) {
+    // Open card-less PRs are enriched too: their comments and reviews feed
+    // the TODO queue. Closed/merged card-less PRs never show, so they skip it.
+    for (const p of new Set([...linked.values(), ...unlinked(prs, linked).filter(u => u.state === 'open')])) {
       const last = previous.get(`${p.repo}#${p.number}`);
       if (!last?.enriched || last.updatedAt !== p.updatedAt) { toEnrich.push(p); continue; }
       // Same updatedAt as last time: either re-check it once, or reuse it.
@@ -539,7 +585,7 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   if (githubOk) state.lastPrs = prs;
   if (!quiet) {
     console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
-    console.log(`refresh: github ${formatGithubStats()}, ${reused} linked PRs reused unchanged`);
+    console.log(`refresh: github ${formatGithubStats()}, ${reused} PRs reused unchanged`);
   }
   return payload;
 }
