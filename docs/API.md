@@ -137,6 +137,8 @@ Gate semantics:
 
 On a real success (`writeEnabled: true`, not demo, the write succeeded), the server immediately runs the same refresh pipeline `/api/refresh` uses (so the board reflects the change without waiting for the next poll), persists `data/state.json`, and responds `{ "ok": true, ...writeSpecificFields }` — e.g. `{ "ok": true, "transitionedTo": "In Review" }` for a transition.
 
+If the write succeeded but saving local state afterwards failed, the response is still `200`, with `saveBlockedError` set: the Jira/GitHub change already happened, so retrying would post it twice. The board snapshot in memory is current; it is what fails to persist.
+
 The CLI (`devhud transition|comment|pr-comment`) and the MCP write tools (`transition_card`/`comment_card`/`comment_pr`) both go through this same endpoint when a server is running, and through the same `performWrite()` function directly on disk when one isn't — so gate semantics and the post-write refresh can't drift between the three surfaces.
 
 ### Config notes

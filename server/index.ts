@@ -284,9 +284,18 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         };
         const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
-        if (!('demo' in result && result.demo)) saveState(statePath, state);
+        // The write already happened in Jira/GitHub: a failed local save must
+        // not turn into a 500 that invites a retry (and a double post). Same
+        // treatment as direct mode in ops.ts.
+        let saveBlockedError: string | undefined;
+        if (!('demo' in result && result.demo)) {
+          try { saveState(statePath, state); } catch (e) {
+            saveBlockedError = (e as Error).message;
+            console.error('devhud: write succeeded but saveState failed:', e);
+          }
+        }
         if (state.snapshot) broadcast(state.snapshot, { force: true });
-        return send(200, result);
+        return send(200, saveBlockedError ? { ...result, saveBlockedError } : result);
       }
       if (url.pathname.startsWith('/api/')) {
         return send(404, { error: 'not found' });
