@@ -45,6 +45,20 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 
 Set `"demo": true` in `config.json` (or run with `DEVHUD_DEMO=1`; `SIMON_DASH_DEMO=1` and `JIRA_DASH_DEMO=1` still work as deprecated aliases) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
 
+## Install
+
+From npm (Node >= 22.18):
+
+```bash
+npm i -g devhud
+devhud init        # asks for Jira/GitHub details, writes ~/.devhud/config.json (mode 600)
+devhud serve       # http://localhost:3010
+devhud todo        # the same TODO list in the terminal
+claude mcp add devhud --scope user -- devhud-mcp   # optional: let Claude work the list
+```
+
+Or `npx devhud init` without installing. The rest of this section covers running from a git checkout, which is the development setup.
+
 ## Setup
 
 **Where files live:** from a git checkout, `config.json` sits at the repo root and state in `data/`, as below. An installed package (`npm i -g devhud`, or `npx devhud init`) can't write next to its code, so it uses `~/.devhud/config.json` and `~/.devhud/data/`; run `devhud init` to create the config there. `DEVHUD_HOME=/some/dir` overrides both. `npm run pack:check` builds the package, installs the tarball into a scratch prefix and runs the installed `devhud` and `devhud-mcp` end to end.
@@ -162,7 +176,13 @@ Also runnable as `npm run cli -- status`, or (once linked/installed) as the
 
 `mcp/` is a stdio MCP server exposing the board to Claude sessions, so you can ask Claude about your board directly instead of switching to the dashboard or the CLI. It uses the same dual transport as the CLI: proxies through a running server if one's up on the configured port, otherwise operates directly on `data/state.json`. `board_status` and `card_comments` both carry an `_note` field (and matching tool-description text) flagging that card summaries and comment bodies are third-party Jira/GitHub text, not instructions — worth knowing if you're piping tool output somewhere else.
 
-Register it with the Claude Code CLI:
+Register it with the Claude Code CLI. Installed from npm:
+
+```bash
+claude mcp add devhud --scope user -- devhud-mcp
+```
+
+From a checkout:
 
 ```bash
 claude mcp add devhud --scope user -- node /path/to/devhud/mcp/index.ts
@@ -183,9 +203,10 @@ Or add it directly to `.mcp.json`:
 
 Tools exposed:
 
+- `todo_list`: the ranked TODO queue, the main tool. Each entry has a url to act on and a `reason`; dismiss one with `ack_card` and that reason.
 - `board_status`: the full current board snapshot (same payload as `GET /api/data`).
 - `refresh`: fetch fresh Jira/GitHub data and return a summary (bucket counts, errors, newly Done cards).
-- `ack_card`: acknowledge a card's attention flags.
+- `ack_card`: acknowledge a card's attention flags, or with `reason` dismiss one TODO entry (PR-only entries take the PR ref, `owner/repo#n`).
 - `move_card`: pin a card to a bucket.
 - `unpin_card`: release a pin and return the card to classifier control.
 - `card_comments`: one card's comment history and unseen comments.
