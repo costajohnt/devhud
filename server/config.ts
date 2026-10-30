@@ -40,8 +40,13 @@ interface RawConfig {
   ignoreAuthors?: string[];
 }
 
+// https, or plain http to this machine only (a Jira Data Center reached
+// over localhost or an SSH tunnel): cleartext that never leaves the host.
 export const isHttpsUrl = (u: string): boolean => {
-  try { return new URL(u).protocol === 'https:'; } catch { return false; }
+  try {
+    const url = new URL(u);
+    return url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname));
+  } catch { return false; }
 };
 
 export function loadConfig(path: string = CONFIG_PATH): Config {
@@ -103,7 +108,7 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     // Every Jira request carries Basic email:apiToken; over http that is the
     // token in cleartext on every refresh.
     if (!isHttpsUrl(jira.baseUrl!)) {
-      throw new Error(`config at ${path} has an invalid "jira.baseUrl" (${JSON.stringify(jira.baseUrl)}); must be an https:// URL`);
+      throw new Error(`config at ${path} has an invalid "jira.baseUrl" (${JSON.stringify(jira.baseUrl)}); must be an https:// URL (http:// is allowed only for localhost)`);
     }
   }
   // These values flow unescaped into query/path languages downstream —

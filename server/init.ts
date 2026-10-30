@@ -80,7 +80,7 @@ export async function runInit({ prompter, configPath, fetchFn = fetch, force = f
     const baseUrl = (await prompter.ask('Jira site URL, e.g. https://yourcompany.atlassian.net')).replace(/\/+$/, '');
     // Checked before the token is asked for or sent anywhere: the /myself
     // probe below would send it as Basic auth over whatever scheme this is.
-    if (!isHttpsUrl(baseUrl)) return { code: 1, err: `Jira site URL must start with https:// (got ${JSON.stringify(baseUrl)})` };
+    if (!isHttpsUrl(baseUrl)) return { code: 1, err: `Jira site URL must start with https:// (http:// only for localhost; got ${JSON.stringify(baseUrl)})` };
     const email = await prompter.ask('Jira account email');
     log('Create a Jira API token at https://id.atlassian.com/manage-profile/security/api-tokens');
     const apiToken = await prompter.secret('Jira API token');
