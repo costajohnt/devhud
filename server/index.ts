@@ -9,7 +9,7 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { writePidFile, rotateApiToken, TOKEN_HEADER } from './transport.ts';
+import { writePidFile, newApiToken, writeApiToken, TOKEN_HEADER } from './transport.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config, State, Snapshot } from './types.ts';
 
@@ -68,20 +68,14 @@ const sameToken = (a: string | undefined, b: string): boolean => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 };
-const COOKIE = 'devhud_token';
-const cookieToken = (req: IncomingMessage): string | undefined =>
-  (req.headers.cookie ?? '').split(';').map(c => c.trim()).find(c => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
-const headerToken = (req: IncomingMessage): string | undefined => {
-  const v = req.headers[TOKEN_HEADER];
+const headerValue = (req: IncomingMessage, name: string): string | undefined => {
+  const v = req.headers[name];
   return Array.isArray(v) ? v[0] : v;
 };
-
-// Served at / instead of the dashboard when the browser has no auth cookie.
-// The dashboard itself holds no data, but loading it without the cookie
-// would just show "server unreachable"; this says what to do instead.
-const GATE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>devhud</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:15vh auto;padding:0 1rem;color:#cbd5e1;background:#0b1020}code{background:#1e293b;padding:.1rem .35rem;border-radius:4px}</style></head>
-<body><h1>devhud</h1><p>Open the dashboard with <code>devhud open</code> (or <code>node server/cli.ts open</code> from a checkout). It signs this browser in with a one-time link.</p></body></html>`;
+const headerToken = (req: IncomingMessage): string | undefined => headerValue(req, TOKEN_HEADER);
+const SESSION_HEADER = 'x-devhud-session';
+// Browser sessions held at once; the oldest is dropped past this.
+const MAX_SESSIONS = 32;
 
 function guardHost(req: IncomingMessage): { status: number; error: string } | null {
   const host = (req.headers.host ?? '').toLowerCase();
@@ -187,20 +181,21 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   // exercise everything else.
   apiToken?: string;
 }): http.Server {
-  // Browser sessions are separate random values, never the API token: a
-  // leaked cookie is then not a CLI/MCP credential, and it dies with the
-  // process. One-time login codes (minted for `devhud open` over the
-  // token-authenticated API) are how a browser gets one; the token itself
-  // never goes into a URL, argv or a log.
+  // Browser sessions are separate random values, never the API token, and
+  // are sent as a header (not a cookie: cookies go to every port on
+  // localhost, so any local service the browser visits would receive one).
+  // The page keeps its session in localStorage, which is per origin and so
+  // per port. A browser gets one by trading a one-time login code that
+  // `devhud open` mints with the token; the token itself never goes into a
+  // URL, argv or a log. EventSource can't set headers, so /api/events also
+  // takes the session as a query parameter (the request log omits queries).
   const sessions = new Set<string>();
   const loginCodes = new Map<string, number>(); // code -> expiry (ms)
   const LOGIN_CODE_TTL_MS = 60_000;
-  const hasSession = (req: IncomingMessage): boolean => {
-    const s = cookieToken(req);
-    return !!s && [...sessions].some(v => sameToken(s, v));
-  };
-  const authorized = (req: IncomingMessage): boolean =>
-    !apiToken || sameToken(headerToken(req), apiToken) || hasSession(req);
+  const isSession = (s: string | null | undefined): boolean => !!s && [...sessions].some(v => sameToken(s, v));
+  const authorized = (req: IncomingMessage, url: URL): boolean =>
+    !apiToken || sameToken(headerToken(req), apiToken) || isSession(headerValue(req, SESSION_HEADER))
+    || (url.pathname === '/api/events' && isSession(url.searchParams.get('session')));
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
   // once here (instead of per-request) avoids a lost-update race between
@@ -237,7 +232,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const start = Date.now();
     res.on('finish', () => {
-      console.log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - start}ms`);
+      console.log(`${req.method} ${(req.url ?? '').split('?')[0]} ${res.statusCode} ${Date.now() - start}ms`);
     });
     const send = (code: number, obj: unknown) => { if (!res.headersSent) res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     try {
@@ -245,7 +240,25 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       if (url.pathname.startsWith('/api/')) {
         const hostErr = guardHost(req);
         if (hostErr) return send(hostErr.status, { error: hostErr.error });
-        if (!authorized(req)) return send(401, { error: 'missing or invalid devhud token; run `devhud open` for the dashboard (the CLI and MCP read it automatically)' });
+      }
+      // The one /api route that needs no credential: the one-time code is the
+      // credential. Single use, 60 s, minted only with the token (below).
+      if (apiToken && url.pathname === '/api/session' && req.method === 'POST') {
+        const guardErr = guardMutation(req);
+        if (guardErr) return send(guardErr.status, { error: guardErr.error });
+        let body: Record<string, unknown>;
+        try { body = await readBody(req); } catch (e) { const be = bodyError(e); return send(be.status, { error: be.error }); }
+        const code = typeof body.code === 'string' ? body.code : '';
+        const exp = loginCodes.get(code);
+        loginCodes.delete(code);
+        if (!exp || exp < Date.now()) return send(401, { error: 'login code invalid or expired; run `devhud open` again' });
+        const session = randomBytes(32).toString('base64url');
+        sessions.add(session);
+        if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.values().next().value!);
+        return send(200, { session });
+      }
+      if (url.pathname.startsWith('/api/')) {
+        if (!authorized(req, url)) return send(401, { error: 'missing or invalid devhud token; run `devhud open` for the dashboard (the CLI and MCP read it automatically)' });
       }
       // `devhud open` (holding the token) asks for a one-time login code.
       if (apiToken && url.pathname === '/api/login-code' && req.method === 'POST') {
@@ -255,19 +268,6 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         const code = randomBytes(24).toString('base64url');
         loginCodes.set(code, now + LOGIN_CODE_TTL_MS);
         return send(200, { code });
-      }
-      // The browser lands here with that code: single use, short-lived,
-      // traded for a session cookie, then dropped from the address bar.
-      if (apiToken && url.searchParams.has('login') && req.method === 'GET') {
-        const code = url.searchParams.get('login') ?? '';
-        const exp = loginCodes.get(code);
-        loginCodes.delete(code);
-        if (exp && exp >= Date.now()) {
-          const session = randomBytes(32).toString('base64url');
-          sessions.add(session);
-          res.writeHead(302, { location: '/', 'set-cookie': `${COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/` });
-          return res.end();
-        }
       }
       if (url.pathname === '/api/data' && req.method === 'GET') {
         return send(200, state.snapshot ?? emptySnapshot());
@@ -374,12 +374,6 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         if (!stat.isFile() || file === '') throw new Error();
       } catch {
         p = resolve(root, 'index.html');
-      }
-      // Assets carry no data and stay public; the page that would call the
-      // API is replaced by instructions until the browser has the cookie.
-      if (p === resolve(root, 'index.html') && !authorized(req)) {
-        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" });
-        return res.end(GATE_HTML);
       }
       const buf = readFileSync(p);
       // Response-side hardening. 'unsafe-inline' is required by the
@@ -543,7 +537,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   if (bundle) console.warn(`\n!! ${bundle.message}\n`);
   // Rotated on every start, so a captured token doesn't outlive the process.
-  const apiToken = rotateApiToken(STATE_PATH);
+  const apiToken = newApiToken();
   const server = createServer({ config, statePath: STATE_PATH, webDist: WEB_DIST, configPath, apiToken });
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative
@@ -556,6 +550,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     throw e;
   });
   server.listen(config.port, '127.0.0.1', () => {
+    writeApiToken(STATE_PATH, apiToken);
     writePidFile(pidPath, config.port);
     console.log(`devhud on http://localhost:${config.port} (open the dashboard with \`devhud open\`)`);
   });

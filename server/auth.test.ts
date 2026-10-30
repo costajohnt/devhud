@@ -7,7 +7,7 @@ import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createServer } from './index.ts';
 import { saveState, emptyState } from './state.ts';
-import { loadOrCreateApiToken, readApiToken, apiTokenPath, probeServer } from './transport.ts';
+import { newApiToken, writeApiToken, readApiToken, apiTokenPath, probeServer } from './transport.ts';
 import { run } from './cli.ts';
 import { performWrite } from './writeback.ts';
 import type { Config } from './types.ts';
@@ -29,19 +29,21 @@ async function start(apiToken?: string) {
   mkdirSync(join(webDist, 'assets'), { recursive: true });
   writeFileSync(join(webDist, 'index.html'), '<html><title>devhud</title>app</html>');
   writeFileSync(join(webDist, 'assets', 'app.js'), 'console.log(1)');
-  const token = apiToken ?? loadOrCreateApiToken(statePath);
+  const token = apiToken ?? newApiToken();
+  writeApiToken(statePath, token);
   server = createServer({ config: { ...config }, statePath, webDist, apiToken: token });
   await new Promise<void>(r => server!.listen(0, '127.0.0.1', () => r()));
   const port = (server!.address() as AddressInfo).port;
   return { base: `http://127.0.0.1:${port}`, port, token, statePath };
 }
 
-test('the token file is created 0600 once and reused', () => {
+test('the token file is written 0600 and read back', () => {
   const statePath = join(mkdtempSync(join(tmpdir(), 'devhud-tok-')), 'data', 'state.json');
-  const a = loadOrCreateApiToken(statePath);
+  const a = newApiToken();
   expect(a).toMatch(/^[\w-]{40,}$/);
+  expect(newApiToken()).not.toBe(a);
+  writeApiToken(statePath, a);
   expect(statSync(apiTokenPath(statePath)).mode & 0o777).toBe(0o600);
-  expect(loadOrCreateApiToken(statePath)).toBe(a);
   expect(readApiToken(statePath)).toBe(a);
 });
 
@@ -50,8 +52,8 @@ test('/api/* needs the token header (or a session cookie, see below)', async () 
   expect((await fetch(`${base}/api/data`)).status).toBe(401);
   expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-token': 'wrong' } })).status).toBe(401);
   expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-token': token } })).status).toBe(200);
-  // The cookie carries a session value, never the API token itself.
-  expect((await fetch(`${base}/api/data`, { headers: { cookie: `other=1; devhud_token=${token}` } })).status).toBe(401);
+  // Not a cookie: cookies are not credentials here at all.
+  expect((await fetch(`${base}/api/data`, { headers: { cookie: `devhud_token=${token}` } })).status).toBe(401);
   expect((await fetch(`${base}/api/action`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(401);
   // The Host guard still runs first.
   const { request } = await import('node:http');
@@ -63,47 +65,58 @@ test('/api/* needs the token header (or a session cookie, see below)', async () 
   expect(status).toBe(403);
 });
 
-test('the dashboard page needs a session; assets do not; a one-time login code creates one', async () => {
-  const { base, token } = await start();
-  const gate = await fetch(`${base}/`);
-  expect(gate.status).toBe(401);
-  expect(await gate.text()).toContain('devhud open');
-  expect((await fetch(`${base}/assets/app.js`)).status).toBe(200);
-  // The raw token is never accepted in a URL.
-  expect((await fetch(`${base}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' })).status).toBe(401);
-  // Login codes are minted only with the token header.
-  expect((await fetch(`${base}/api/login-code`, { method: 'POST' })).status).toBe(401);
-  const mint = () => fetch(`${base}/api/login-code`, { method: 'POST', headers: { 'x-devhud-token': token } }).then(r => r.json() as Promise<{ code: string }>);
-  const { code } = await mint();
+const mintCode = (base: string, token: string) =>
+  fetch(`${base}/api/login-code`, { method: 'POST', headers: { 'x-devhud-token': token } }).then(r => r.json() as Promise<{ code: string }>).then(j => j.code);
+const claim = (base: string, code: string) =>
+  fetch(`${base}/api/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
 
-  const opened = await fetch(`${base}/?login=${encodeURIComponent(code)}`, { redirect: 'manual' });
-  expect(opened.status).toBe(302);
-  expect(opened.headers.get('location')).toBe('/');
-  const cookie = opened.headers.get('set-cookie') ?? '';
-  expect(cookie).toMatch(/^devhud_token=[\w-]+; HttpOnly; SameSite=Strict; Path=\//);
-  const session = cookie.split(';')[0]!;
-  // The session is its own value, not the API token.
-  expect(session).not.toContain(token);
-  const page = await fetch(`${base}/`, { headers: { cookie: session } });
-  expect(page.status).toBe(200);
-  expect(await page.text()).toContain('app');
-  expect((await fetch(`${base}/api/data`, { headers: { cookie: session } })).status).toBe(200);
-  // A browser session can't mint login codes: only the token holder can.
-  expect((await fetch(`${base}/api/login-code`, { method: 'POST', headers: { cookie: session } })).status).toBe(401);
-  // Single use: the same code can't make a second session.
-  expect((await fetch(`${base}/?login=${encodeURIComponent(code)}`, { redirect: 'manual' })).status).toBe(401);
+// PR #140 review: a cookie is sent to every port on localhost, so a session
+// cookie leaked to any local service the browser visited. Sessions are now
+// a header (the page keeps them in per-origin localStorage), never a cookie.
+test('a one-time login code becomes a header session; nothing is set as a cookie', async () => {
+  const { base, token } = await start();
+  // The page itself and assets carry no data: always served.
+  expect((await fetch(`${base}/`)).status).toBe(200);
+  expect((await fetch(`${base}/assets/app.js`)).status).toBe(200);
+  // Login codes: token header only.
+  expect((await fetch(`${base}/api/login-code`, { method: 'POST' })).status).toBe(401);
+  const code = await mintCode(base, token);
+  const r = await claim(base, code);
+  expect(r.status).toBe(200);
+  expect(r.headers.get('set-cookie')).toBeNull();
+  const { session } = await r.json() as { session: string };
+  expect(session).not.toBe(token);
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': session } })).status).toBe(200);
+  // EventSource can't set headers: the stream (and only the stream) takes it as a query.
+  const ev = await fetch(`${base}/api/events?session=${encodeURIComponent(session)}`);
+  expect(ev.status).toBe(200);
+  await ev.body?.cancel();
+  expect((await fetch(`${base}/api/data?session=${encodeURIComponent(session)}`)).status).toBe(401);
+  // A session can't mint codes; a cookie is not a credential at all.
+  expect((await fetch(`${base}/api/login-code`, { method: 'POST', headers: { 'x-devhud-session': session } })).status).toBe(401);
+  expect((await fetch(`${base}/api/data`, { headers: { cookie: `devhud_token=${session}` } })).status).toBe(401);
+  // Single use.
+  expect((await claim(base, code)).status).toBe(401);
 });
 
 test('login codes expire after a minute', async () => {
   const { base, token } = await start();
-  const { code } = await fetch(`${base}/api/login-code`, { method: 'POST', headers: { 'x-devhud-token': token } }).then(r => r.json() as Promise<{ code: string }>);
+  const code = await mintCode(base, token);
   const realNow = Date.now;
   vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
   try {
-    expect((await fetch(`${base}/?login=${encodeURIComponent(code)}`, { redirect: 'manual' })).status).toBe(401);
+    expect((await claim(base, code)).status).toBe(401);
   } finally {
     vi.restoreAllMocks();
   }
+});
+
+test('sessions are capped: the oldest is dropped past 32', async () => {
+  const { base, token } = await start();
+  const sessions: string[] = [];
+  for (let i = 0; i < 33; i++) sessions.push(((await (await claim(base, await mintCode(base, token))).json()) as { session: string }).session);
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': sessions[0]! } })).status).toBe(401);
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': sessions[32]! } })).status).toBe(200);
 });
 
 test('the CLI reads the token from next to the state file and goes via the server', async () => {
@@ -128,4 +141,18 @@ test('MCP-sourced writes need mcpWriteEnabled; CLI writes need only writeEnabled
   expect(await write(false, 'mcp')).toMatchObject({ status: 403, error: expect.stringMatching(/mcpWriteEnabled/) });
   expect(await write(true, 'mcp')).toMatchObject({ ok: true });
   expect(await write(false)).toMatchObject({ ok: true });
+});
+
+test('the request log never records query strings (the event stream carries the session there)', async () => {
+  const { base, token } = await start();
+  const lines: string[] = [];
+  const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(String(a[0])); });
+  try {
+    await fetch(`${base}/api/data?session=SECRET123`, { headers: { 'x-devhud-token': token } });
+    await new Promise(r => setTimeout(r, 20));
+  } finally {
+    spy.mockRestore();
+  }
+  expect(lines.some(l => l.startsWith('GET /api/data '))).toBe(true);
+  expect(lines.join('\n')).not.toContain('SECRET123');
 });

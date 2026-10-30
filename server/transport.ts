@@ -97,18 +97,14 @@ export function readApiToken(statePath: string): string | null {
   try { return readFileSync(apiTokenPath(statePath), 'utf8').trim() || null; } catch { return null; }
 }
 
-export function rotateApiToken(statePath: string): string {
-  const token = randomBytes(32).toString('base64url');
-  writeFilePrivate(apiTokenPath(statePath), token);
-  return token;
-}
+// A fresh token for each server start, so a captured one doesn't outlive
+// the process. Generated in memory and written only once the server holds
+// its port (writeApiToken): a second start that fails on "port in use" must
+// not replace the running server's token.
+export const newApiToken = (): string => randomBytes(32).toString('base64url');
 
-export function loadOrCreateApiToken(statePath: string): string {
-  const existing = readApiToken(statePath);
-  if (existing) return existing;
-  const token = randomBytes(32).toString('base64url');
+export function writeApiToken(statePath: string, token: string): void {
   writeFilePrivate(apiTokenPath(statePath), token);
-  return token;
 }
 
 export const TOKEN_HEADER = 'x-devhud-token';

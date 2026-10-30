@@ -63,3 +63,31 @@ test('serve forwards SIGINT to the server: the port closes and the CLI exits 0',
     } catch { /* already gone */ }
   }
 }, 20_000);
+
+// PR #140 review: the token used to be rotated before listen(), so a second
+// start that failed on "port in use" overwrote the running server's token and
+// locked the CLI, MCP and `devhud open` out until a restart.
+test('a second start on a taken port leaves the running server\'s token alone', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'jd-serve2-'));
+  const port = await freePort();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({
+    jira: { projectKey: 'DEMO', accountId: 'me' }, github: { org: 'acme', username: 'me', repos: [] }, demo: true, port,
+  }));
+  mkdirSync(join(home, 'data'));
+  const index = fileURLToPath(new URL('./index.ts', import.meta.url));
+  const env = { ...process.env, DEVHUD_HOME: home };
+  const first = spawn(process.execPath, [index], { env, stdio: 'ignore' });
+  try {
+    let ready = false;
+    for (let i = 0; i < 100 && !ready; i++) { await sleep(100); ready = await up(port, home); }
+    expect(ready, 'first server up').toBe(true);
+    const token = readFileSync(join(home, 'data', 'api-token'), 'utf8');
+    const second = spawn(process.execPath, [index], { env, stdio: 'ignore' });
+    const code = await new Promise<number | null>(r => second.on('exit', c => r(c)));
+    expect(code).toBe(1);
+    expect(readFileSync(join(home, 'data', 'api-token'), 'utf8')).toBe(token);
+    expect(await up(port, home)).toBe(true);
+  } finally {
+    first.kill('SIGKILL');
+  }
+}, 20_000);

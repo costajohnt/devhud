@@ -65,11 +65,12 @@ try {
     const data = await (await fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-token': token } })).json() as { queue?: unknown[] };
     assert.ok(Array.isArray(data.queue), 'api/data has a queue');
     // `devhud open`'s flow: a one-time login code (minted with the token)
-    // becomes a session cookie.
+    // becomes a header session for the page.
     const { code } = await (await fetch(`http://127.0.0.1:${port}/api/login-code`, { method: 'POST', headers: { 'x-devhud-token': token } })).json() as { code: string };
-    const opened = await fetch(`http://127.0.0.1:${port}/?login=${encodeURIComponent(code)}`, { redirect: 'manual' });
-    assert.equal(opened.status, 302);
-    assert.match(opened.headers.get('set-cookie') ?? '', /devhud_token=.*HttpOnly.*SameSite=Strict/);
+    const claimed = await fetch(`http://127.0.0.1:${port}/api/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+    assert.equal(claimed.status, 200);
+    const { session } = await claimed.json() as { session: string };
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-session': session } })).status, 200);
   } finally {
     server.kill();
     await serverExited;

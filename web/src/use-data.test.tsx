@@ -4,7 +4,7 @@
 // EventSource, so the wiring the pure applyEvent() tests can't reach —
 // onmessage → setData/loading/connError, onRefreshed firing, cleanup on
 // unmount — is exercised against the actual hook.
-import { test, expect, vi, beforeEach } from 'vitest';
+import { test, expect, vi, beforeEach, afterEach, describe } from 'vitest';
 import { h, render } from 'preact';
 import { act } from 'preact/test-utils';
 import { useData } from './use-data.js';
@@ -215,4 +215,46 @@ test('unmount closes a reopened EventSource, not just the first one', () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+// PR #140: sessions are header-based (per-origin localStorage), obtained by
+// trading the one-time ?login= code `devhud open` puts in the URL.
+describe('sign-in', () => {
+  const remount = async (url: string, fetchImpl: (...a: unknown[]) => Promise<unknown>) => {
+    act(() => { render(null, host); });
+    StubEventSource.instances.length = 0;
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } });
+    history.replaceState(null, '', url);
+    const fetchMock = vi.fn(fetchImpl);
+    vi.stubGlobal('fetch', fetchMock);
+    await act(async () => { render(h(Probe, null), host); });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    return { fetchMock, store };
+  };
+  afterEach(() => { history.replaceState(null, '', '/'); });
+
+  test('?login= is traded for a session, dropped from the URL, and used on the stream', async () => {
+    const { fetchMock, store } = await remount('/?login=abc', () => Promise.resolve({ ok: true, json: () => Promise.resolve({ session: 's1' }) }));
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toBe('/api/session');
+    expect(JSON.parse(init.body)).toEqual({ code: 'abc' });
+    expect(location.search).toBe('');
+    expect(store.get('devhud-session')).toBe('s1');
+    expect(es().url).toBe('/api/events?session=s1');
+    expect(hook.needsLogin).toBe(false);
+  });
+
+  test('a refused code asks for `devhud open` instead of connecting', async () => {
+    await remount('/?login=used', () => Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) }));
+    expect(hook.needsLogin).toBe(true);
+    expect(StubEventSource.instances).toHaveLength(0);
+  });
+
+  test('a stream that closes with a 401 asks for `devhud open` and stops retrying', async () => {
+    await remount('/', () => Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) }));
+    act(() => { es().failPermanently(); });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    expect(hook.needsLogin).toBe(true);
+  });
 });
