@@ -70,6 +70,8 @@ Acknowledges a card's attention flags:
 
 With an optional `reason` (one of the queue reasons below), the ack dismisses just that one TODO entry: `{ "type": "ack", "key": "PROJ-123", "reason": "new_pr_comments" }`. `new_pr_comments` advances only `lastSeenPr`, `new_jira_comments` only `lastSeenJira`, and any other reason is added to `cardState.ackedReasons` (muted while it stays continuously true). The card's other attention reasons and its other source's comments are untouched. If the card was in `needs_attention` and nothing left on it routes there, it moves out the same way a full ack moves it. `reason` on any other action type, or an unknown reason, is a `400`.
 
+`reason: "review_requested"` takes a PR ref instead of a Jira key (`{ "type": "ack", "key": "acme/api#12", "reason": "review_requested" }`, `400` if it is not `owner/repo#n`). It records `state.prs[key].dismissedAt` = the PR's `updatedAt`, and the request stays off the queue until the PR's `updatedAt` moves past that (a push, comment or re-request). Dismissals are pruned to the PRs still requesting review on each clean fetch.
+
 Every action rebuilds `queue` from the edited snapshot before it is saved and broadcast.
 
 ### `type: "move"`
@@ -164,6 +166,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
     needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], mergeable: Item[], qa_ready: Item[], in_qa: Item[]
   },
   queue: QueueEntry[],              // the ranked TODO queue, see below
+  reviewRequests: ReviewRequest[],  // open PRs in your repos requesting your review (incl. dismissed ones)
   todo: TodoItem[],                 // Jira To Do cards with no PR (the "Backlog" section)
   blocked: TodoItem[],              // Jira Blocked cards, split out like todo
   unlinkedPrs: UnlinkedPr[],
@@ -229,8 +232,9 @@ Built by `server/queue.ts` from every board item's `attention` list: one entry p
 ```
 {
   id: string,            // "<key>:<reason>"
+  kind: 'card' | 'pr',   // 'pr': key is a PR ref "owner/repo#n" with no card (review requests)
   key: string, summary: string,
-  reason: 'ci_failing' | 'changes_requested' | 'new_pr_comments' | 'new_jira_comments'
+  reason: 'ci_failing' | 'changes_requested' | 'review_requested' | 'new_pr_comments' | 'new_jira_comments'
         | 'merged_not_in_test' | 'ready_to_merge' | 'missing_qa_instructions' | 'missing_fix_version',
   priority: 1 | 2 | 3,   // 1 broken or blocking someone, 2 waiting on a reply, 3 housekeeping
   title: string,         // e.g. "2 new PR comments from amy, bob"
@@ -241,6 +245,10 @@ Built by `server/queue.ts` from every board item's `attention` list: one entry p
 ```
 
 Sorted by priority, then `at` ascending (longest waiting first, missing timestamps last), then reason order (the order of the union above), then key. `new_jira_comments` is priority 1 on a card in the In Test status, otherwise 2.
+
+### ReviewRequest
+
+`{ id: "owner/repo#n", repo, number, url, title, author, requestedAt: string | null, updatedAt, dismissed: boolean }`. Fetched by `fetchReviewRequests` (one GitHub search per configured identity: open, non-draft PRs in your repos with `review-requested:<you>`, which includes team requests). `requestedAt` is the latest review-request event. A request leaves the list once you submit the review. On a failed fetch the previous list is kept.
 
 ### TodoItem
 

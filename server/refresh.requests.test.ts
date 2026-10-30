@@ -53,6 +53,10 @@ function fakeGithub() {
     const ok = (body: unknown) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve(body) });
     if (u.endsWith('/graphql')) {
       const q = String((JSON.parse(init?.body ?? '{}') as { variables?: { q?: string } }).variables?.q ?? '');
+      if (q.includes('review-requested:')) {
+        calls.push('graphql review-requests');
+        return ok({ data: { search: { nodes: [] } } });
+      }
       const repo = q.match(/repo:example-org\/(\S+)/)?.[1] ?? '';
       calls.push(`graphql ${repo}`);
       const repoIdx = REPOS.indexOf(repo);
@@ -70,6 +74,8 @@ function fakeGithub() {
 }
 
 const LINKED = REPOS.length * LINKED_PER_REPO;
+// One PR search per repo plus one review-request search per identity.
+const SEARCHES = REPOS.length + 1;
 
 test('cold, warm, and one-changed-PR refreshes stay inside their request bounds', async () => {
   const gh = fakeGithub();
@@ -83,8 +89,8 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
   // hits, and no check-runs request (CI rides on the search).
   await refresh({ config, state, quiet: true });
   const cold = githubStats();
-  expect(cold.requests).toBe(REPOS.length + 3 * LINKED);
-  expect(cold.byFamily).toEqual({ graphql: REPOS.length, issue_comments: LINKED, review_comments: LINKED, reviews: LINKED });
+  expect(cold.requests).toBe(SEARCHES + 3 * LINKED);
+  expect(cold.byFamily).toEqual({ graphql: SEARCHES, issue_comments: LINKED, review_comments: LINKED, reviews: LINKED });
   expect(gh.calls.filter(c => c.includes('/pulls/') && !c.includes('/comments') && !c.includes('/reviews'))).toEqual([]);
   expect(gh.calls.some(c => c.includes('check-runs'))).toBe(false);
   const board = Object.values(state.snapshot!.buckets).flat();
@@ -97,8 +103,8 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
   gh.calls.length = 0;
   await refresh({ config, state, quiet: true });
   const warm = githubStats();
-  expect(warm.requests).toBe(REPOS.length);
-  expect(warm.byFamily).toEqual({ graphql: REPOS.length });
+  expect(warm.requests).toBe(SEARCHES);
+  expect(warm.byFamily).toEqual({ graphql: SEARCHES });
   const warmBoard = Object.values(state.snapshot!.buckets).flat();
   expect(warmBoard.every(i => i.pr?.reviewState === 'approved' && i.comments.length === 1)).toBe(true);
 
@@ -108,7 +114,7 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
   gh.calls.length = 0;
   await refresh({ config, state, quiet: true });
   const changed = githubStats();
-  expect(changed.requests).toBe(REPOS.length + 3);
+  expect(changed.requests).toBe(SEARCHES + 3);
   expect(gh.calls.filter(c => c.startsWith('/repos/'))).toEqual([
     '/repos/example-org/beta/issues/1/comments?per_page=100',
     '/repos/example-org/beta/pulls/1/comments?per_page=100&sort=created&direction=desc',
@@ -118,7 +124,7 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
   // An unlinked PR changing costs nothing beyond discovery.
   gh.touch('gamma', 40, '2026-07-02T00:00:00Z');
   await refresh({ config, state, quiet: true });
-  expect(githubStats().requests).toBe(REPOS.length);
+  expect(githubStats().requests).toBe(SEARCHES);
 });
 
 test('a PR that becomes linked after being seen unlinked is enriched, not served an empty comment list', async () => {
@@ -129,12 +135,12 @@ test('a PR that becomes linked after being seen unlinked is enriched, not served
   vi.mocked(fetchJiraCards).mockResolvedValueOnce([]);
   const state = emptyState();
   await refresh({ config, state, quiet: true });
-  expect(githubStats().requests).toBe(REPOS.length);
+  expect(githubStats().requests).toBe(SEARCHES);
   // Second refresh: the cards arrive; the PRs are unchanged but were never
   // enriched, so the linked ones must be fetched now.
   vi.mocked(fetchJiraCards).mockResolvedValueOnce(cards);
   await refresh({ config, state, quiet: true });
-  expect(githubStats().requests).toBe(REPOS.length + 3 * LINKED);
+  expect(githubStats().requests).toBe(SEARCHES + 3 * LINKED);
   expect(Object.values(state.snapshot!.buckets).flat().every(i => i.comments.length === 1)).toBe(true);
 });
 
@@ -151,8 +157,8 @@ test('a refresh logs its GitHub request count and endpoint breakdown', async () 
     log.mockRestore();
   }
   const line = lines.find(l => l.includes('github ') && l.includes('requests'));
-  expect(line).toContain(`${REPOS.length + 3 * LINKED} requests`);
-  expect(line).toContain(`graphql ${REPOS.length}`);
+  expect(line).toContain(`${SEARCHES + 3 * LINKED} requests`);
+  expect(line).toContain(`graphql ${SEARCHES}`);
   expect(line).toContain(`reviews ${LINKED}`);
   expect(line).toContain('0 linked PRs reused unchanged');
 });

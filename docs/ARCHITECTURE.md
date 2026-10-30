@@ -9,6 +9,7 @@
 - **state.ts**: `data/state.json` load/save, migrations (`celebrated` string→object, `prLog` backfill), and `cardState` (per-card override/seen-horizon lookup, created lazily).
 - **jira.ts**: Jira Cloud REST client: JQL search, ADF-to-plain-text flattening, comment pagination fallback for cards with more comments than the search endpoint embeds.
 - **github.ts**: GitHub client. PR discovery is one GraphQL search per configured repo (the author's 50 most recently updated PRs with branch, state, draft flag, pending review requests and the head commit's CI rollup in a single response, #72); comments and reviews for PRs linked to a card come from REST. Every request goes through one `send()` helper that counts it into per-refresh stats (total, per endpoint family, 304s, retries, last `x-ratelimit-remaining`) and carries the secondary-rate-limit backoff: a 403/429 that names the secondary limit or carries `Retry-After`/an exhausted `x-ratelimit-remaining` is retried up to 3 times (Retry-After, else the reset timestamp, else exponential backoff from 1s, capped at 60s) before it throws (#69). REST GETs add a conditional-request (ETag) cache. Refresh paces its enrich batches for the same reason — the limit is rate-shaped, so concurrency caps alone don't hold it.
+  `fetchReviewRequests()` is the second discovery search: one per identity (repo: qualifiers OR together), returning open non-draft PRs requesting the user's review for the queue.
 - **link.ts**: Matches PRs to Jira cards by branch name, PR title, PR body (`/browse/KEY` link), or card description (containing the PR URL); returns the unlinked leftovers.
 - **classify.ts**: Given a card + its linked PR + its stored `cardState`, decides the bucket and attention flags.
 - **queue.ts**: `buildQueue()` turns every board item's attention reasons into the ranked TODO queue (`snapshot.queue`), one entry per (card, reason). Pure and derived only from bucket items, so `buildSnapshot` and every action (`applyAction` rebuilds it after mutating) produce it the same way and it can never disagree with the badges. Also `routesToAttention()`, the one rule for whether an item's remaining reasons keep it in `needs_attention`, shared by the per-reason ack and `classifierDest`.
@@ -92,7 +93,8 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
   snapshot: <last full payload, or null>,
   lastCards: <last successful Jira fetch, or null>,
   lastPrs: <last successful GitHub fetch, or null>,
-  prLog: { [id]: { id, repo, openedAt, mergedAt, closedAt } }
+  prLog: { [id]: { id, repo, openedAt, mergedAt, closedAt } },
+  prs: { ["owner/repo#n"]: { dismissedAt } }   // dismissed review requests (optional)
 }
 ```
 

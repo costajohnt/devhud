@@ -4,6 +4,10 @@ import { QUEUE_REASONS, rebuildQueue, routesToAttention } from './queue.ts';
 import { KEY_RE } from './writeback.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
+// "owner/repo#123". Has a slash and a '#', so it can never be __proto__ and
+// friends when used as a State.prs key.
+export const PR_REF_RE = /^[\w.-]+\/[\w.-]+#\d+$/;
+
 export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 
 // Union of already-acked reasons and the state-based reasons currently shown
@@ -92,6 +96,16 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
   // exploitable through a plain object today.
   if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
     return { error: `key "${key}" is not allowed`, status: 400 };
+  }
+  // A review request has no card: it is keyed by its PR ref and dismissed
+  // until the PR next changes (State.prs, applied in buildSnapshot).
+  if (type === 'ack' && reason === 'review_requested') {
+    if (!PR_REF_RE.test(key)) return { error: 'review_requested acks take a PR ref like owner/repo#123', status: 400 };
+    const rr = state.snapshot?.reviewRequests?.find(r => r.id === key);
+    if (!rr) return { ok: true, bucket: null };
+    rr.dismissed = true;
+    (state.prs ??= {})[key] = { dismissedAt: rr.updatedAt };
+    return { ok: true, bucket: null };
   }
   // Everything else is validated before cardState() too: it creates a
   // state.cards entry on first touch, so a bad type, bucket or a key that is
