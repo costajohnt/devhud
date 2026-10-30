@@ -111,7 +111,7 @@ export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatus
     || a.key.localeCompare(b.key));
 }
 
-export const rebuildQueue = (snap: Snapshot, statuses: JiraStatuses, seen?: Record<string, string>): void => {
+export const rebuildQueue = (snap: Snapshot, statuses: JiraStatuses, seen: Record<string, string> | undefined): void => {
   snap.queue = buildQueue(snap.buckets, statuses, snap.reviewRequests, snap.unlinkedPrs, seen);
 };
 

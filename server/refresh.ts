@@ -7,6 +7,9 @@ import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest, DoneCard, QueueEntry } from './types.ts';
 
+// Stateful reasons classify derives from the Jira card alone.
+const JIRA_ONLY_REASONS = new Set<string>(['missing_qa_instructions', 'missing_fix_version']);
+
 const DAY = 86400000;
 
 // How long a doneCelebrated entry is kept after its card stops appearing in
@@ -125,8 +128,12 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   const firstQueueSeen = state.queueSeen === undefined;
   state.queueSeen ??= {};
   const unstamped = buildQueue(buckets, statuses, requests, unlinkedPrs);
+  // A card that just linked a card-less PR carries on that PR's wait.
+  const prRef = new Map(Object.values(buckets).flat().flatMap(i => i.pr ? [[i.key, `${i.pr.repo}#${i.pr.number}`] as const] : []));
   for (const e of unstamped) {
-    if (isReason(e.reason) && REASONS[e.reason].stateful) state.queueSeen[e.id] ??= firstQueueSeen ? (e.at ?? nowIso) : nowIso;
+    if (!isReason(e.reason) || !REASONS[e.reason].stateful) continue;
+    const ref = prRef.get(e.key);
+    state.queueSeen[e.id] ??= (ref && state.queueSeen[`${ref}:${e.reason}`]) || (firstQueueSeen ? (e.at ?? nowIso) : nowIso);
   }
 
   pruneState({ state, cards, prs, nowIso, jiraFailed: !!errors.jira, doneCards: board.doneCards, degraded, reviewRequests, degradedRequestRepos, queue: unstamped, buckets });
@@ -419,15 +426,20 @@ function pruneState({ state, cards, prs, nowIso, jiraFailed, doneCards, degraded
   // entry missing only because a source failed keeps its time: nothing on a
   // Jira failure, and on a GitHub failure nothing whose PR data is degraded,
   // using classifyCards' rule (a card with no PR counts as degraded under
-  // any degradation, and so does a card no longer on the board).
+  // any degradation, and so does a card no longer on the board). Jira-only
+  // reasons and cards Jira no longer returns never depend on GitHub, so one
+  // permanently broken repo can't keep them forever.
   if (!jiraFailed && degraded !== 'all') {
     const live = new Set(queue.map(e => e.id));
     const boardPr = new Map(Object.values(buckets).flat().map(i => [i.key, i.pr?.repo ?? null]));
     for (const id of Object.keys(state.queueSeen!)) {
       if (live.has(id)) continue;
       const key = id.slice(0, id.lastIndexOf(':'));
-      const repo = key.includes('#') ? key.slice(0, key.lastIndexOf('#')) : boardPr.get(key);
-      if (degraded?.size && (repo ? degraded.has(repo) : true)) continue;
+      const reason = id.slice(id.lastIndexOf(':') + 1);
+      if (degraded?.size) {
+        if (key.includes('#') ? degraded.has(key.slice(0, key.lastIndexOf('#'))) : fetchedKeys.has(key) && !JIRA_ONLY_REASONS.has(reason)
+          && (boardPr.get(key) ? degraded.has(boardPr.get(key)!) : true)) continue;
+      }
       delete state.queueSeen![id];
     }
   }

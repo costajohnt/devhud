@@ -271,3 +271,30 @@ test('a partly degraded GitHub fetch keeps first-seen only where the PR repo is 
   expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
   expect(state.queueSeen['o/healthy#9:ci_failing']).toBeUndefined();
 });
+
+// #150 review: under a permanent partial outage, Jira-only reasons and cards
+// Jira no longer returns kept their first-seen times forever.
+test('a partial GitHub outage still prunes Jira-only reasons and vanished cards', () => {
+  const state = upgraded();
+  state.queueSeen = { 'P-1:ci_failing': OLD, 'P-1:missing_fix_version': OLD, 'P-9:ci_failing': OLD };
+  state.snapshot = buildSnapshot({ cards: [card()], prs: [], state, config, errors: { github: 'o/r failed' }, degradedPrRepos: new Set(['o/r']) });
+  expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
+  expect(state.queueSeen['P-1:missing_fix_version']).toBeUndefined();
+  expect(state.queueSeen['P-9:ci_failing']).toBeUndefined();
+});
+
+test('a card-less PR that gains a card keeps its wait', () => {
+  const state = upgraded();
+  state.queueSeen = { 'o/r#4:ready_to_merge': OLD };
+  build(state, [card()], [pr({ reviewState: 'approved' })]);
+  expect(at(state, 'P-1:ready_to_merge')).toBe(OLD);
+});
+
+test('an action keeps first-seen times on the rebuilt queue', () => {
+  const state = upgraded();
+  state.queueSeen = { 'P-1:ci_failing': OLD, 'P-2:ci_failing': OLD };
+  const red = (n: number, key: string) => pr({ number: n, branch: `${key}-fix`, url: `https://gh/o/r/${n}`, ciStatus: 'failing' });
+  build(state, [card(), card({ key: 'P-2', url: 'https://j/P-2' })], [red(4, 'P-1'), red(5, 'P-2')]);
+  applyAction({ state, config, type: 'ack', key: 'P-2', reason: 'ci_failing' });
+  expect(at(state, 'P-1:ci_failing')).toBe(OLD);
+});
