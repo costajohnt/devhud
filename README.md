@@ -236,6 +236,7 @@ Manual moves, pins and acknowledgements are stored locally in `data/state.json`.
 ```bash
 git pull
 npm ci && (cd web && npm ci)                          # only if a lockfile changed
+npm run build                                         # only if you npm-linked the devhud bin (it runs dist/)
 ./bin/start.sh                                        # or reload the launchd agent
 ```
 

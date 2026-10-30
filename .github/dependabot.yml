@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # Three independent npm packages, each with its own lockfile; CI runs
-  # `npm ci` for all three, so each needs its own entry to stay current.
+  # Two npm packages, each with its own lockfile (root, which also carries
+  # the MCP server's deps, and web/); CI runs `npm ci` for both.
   - package-ecosystem: npm
     directory: /
     schedule:

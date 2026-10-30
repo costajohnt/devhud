@@ -7,9 +7,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
-const root = new URL('..', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a path with a space is %20-encoded there.
+const root = fileURLToPath(new URL('..', import.meta.url));
 const tmp = mkdtempSync(join(tmpdir(), 'devhud-pack-'));
 const sh = (cmd: string, args: string[], env: Record<string, string> = {}) =>
   execFileSync(cmd, args, { cwd: root, encoding: 'utf8', env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -38,6 +40,7 @@ try {
 
   // The server: serves the built SPA and the API from the installed package.
   const server = spawn(bin('devhud'), ['serve'], { env: { ...process.env, ...env }, stdio: 'ignore' });
+  const serverExited = new Promise(r => server.on('exit', r));
   try {
     let page = '';
     for (let i = 0; i < 50 && !page; i++) {
@@ -49,19 +52,27 @@ try {
     assert.ok(Array.isArray(data.queue), 'api/data has a queue');
   } finally {
     server.kill();
+    await serverExited;
   }
+  // `serve` forwards SIGTERM to the real server: nothing is left listening.
+  assert.equal(await fetch(`http://127.0.0.1:${port}/api/data`).then(() => 'up', () => 'down'), 'down', 'server stopped with serve');
 
   // The MCP server answers an initialize request over stdio.
   const mcp = spawn(bin('devhud-mcp'), [], { env: { ...process.env, ...env } });
-  const reply = await new Promise<string>((res, rej) => {
-    let buf = '';
-    mcp.stdout.on('data', d => { buf += d; if (buf.includes('\n')) res(buf); });
-    mcp.on('error', rej);
-    setTimeout(() => rej(new Error(`no MCP reply; got: ${buf}`)), 10_000);
-    mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'pack-check', version: '0' } } }) + '\n');
-  });
-  mcp.kill();
-  assert.match(reply, /"name":"devhud"/);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const reply = await new Promise<string>((res, rej) => {
+      let buf = '';
+      mcp.stdout.on('data', d => { buf += d; if (buf.includes('\n')) res(buf); });
+      mcp.on('error', rej);
+      timer = setTimeout(() => rej(new Error(`no MCP reply; got: ${buf}`)), 10_000);
+      mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'pack-check', version: '0' } } }) + '\n');
+    });
+    assert.match(reply, /"name":"devhud"/);
+  } finally {
+    clearTimeout(timer);
+    mcp.kill();
+  }
 
   console.log(`pack-check ok: ${tarball} installs; devhud --help/init hint/refresh/todo/serve and devhud-mcp all run`);
 } finally {

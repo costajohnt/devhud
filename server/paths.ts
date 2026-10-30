@@ -12,7 +12,9 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 // server/ in a checkout, dist/server/ in a built package: the package root is
 // whichever ancestor holds package.json.
 export const PACKAGE_ROOT = existsSync(resolve(here, '..', 'package.json')) ? resolve(here, '..') : resolve(here, '..', '..');
-export const IS_CHECKOUT = existsSync(join(PACKAGE_ROOT, '.git'));
+// By source presence, not .git: a ZIP download or an rsync without .git is
+// still a source tree. server/paths.ts is never in the package's files list.
+export const IS_CHECKOUT = existsSync(join(PACKAGE_ROOT, 'server', 'paths.ts'));
 export const HOME = process.env.DEVHUD_HOME ? resolve(process.env.DEVHUD_HOME) : IS_CHECKOUT ? PACKAGE_ROOT : join(homedir(), '.devhud');
 export const CONFIG_PATH = join(HOME, 'config.json');
 export const STATE_PATH = join(HOME, 'data', 'state.json');

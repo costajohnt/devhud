@@ -7,8 +7,10 @@
 import { stripTypeScriptTypes } from 'node:module';
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('..', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a path with a space is %20-encoded there.
+const root = fileURLToPath(new URL('..', import.meta.url));
 const out = join(root, 'dist');
 rmSync(out, { recursive: true, force: true });
 
