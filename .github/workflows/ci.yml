@@ -20,18 +20,24 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         # 22.18 is the floor package.json's engines field claims (the first
         # release with unflagged type stripping, which the whole repo runs
         # on); testing only the newest release let that claim rot.
         node-version: ['22.18', '26']
+        # devhud is macOS-first (launchd, `open`, chmod, realpath bin guard).
+        include:
+          - os: macos-latest
+            node-version: '26'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      # SHA-pinned: release.yml runs this workflow as its publish gate.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
