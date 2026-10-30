@@ -11,7 +11,7 @@ const emptyBuckets = (): Record<Bucket, Item[]> => ({
 const done = (key: string, doneAt: string | null) =>
   ({ key, summary: `Summary ${key}`, jiraStatus: 'Done', jiraUrl: `https://j/browse/${key}`, pr: null, doneAt });
 const data = (doneCards: DashboardData['doneCards']): DashboardData => ({
-  updatedAt: null, errors: { jira: null, github: null }, queue: [], buckets: emptyBuckets(),
+  updatedAt: null, errors: { jira: null, github: null }, queue: [], reviewRequests: [], buckets: emptyBuckets(),
   todo: [], blocked: [], filed: [], unlinkedPrs: [], doneCards, doneTotal: doneCards.length,
   newlyDone: [], recentActivity: [], prLog: [],
 });

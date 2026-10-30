@@ -1,4 +1,4 @@
-import type { Card, Pr, JiraComment, JiraConfig, GithubConfig, FiledCard } from './types.ts';
+import type { Card, Pr, JiraComment, JiraConfig, GithubConfig, FiledCard, ReviewRequest } from './types.ts';
 
 // Canned cards/PRs for demo mode (config.demo). Shapes match jira.ts's
 // mapIssue and github.ts's mapPr post-enrichment, so refresh() runs the real
@@ -111,5 +111,18 @@ export function demoFiled(cfg: JiraConfig): FiledCard[] {
     filed('PLAT-311', 'Staging DB snapshot job silently skips weekends', 'In Progress', 4),
     filed('DEMO-104', 'Add rate limiting to public API', 'In Progress', 10),
     filed('PLAT-287', 'Rotate CI runner tokens quarterly', 'Done', 40),
+  ];
+}
+
+// Teammates' PRs waiting on your review: the queue's review_requested source.
+export function demoReviewRequests(cfg: GithubConfig): ReviewRequest[] {
+  const org = cfg.org || 'acme';
+  const rr = (repo: string, number: number, title: string, author: string, days: number): ReviewRequest => ({
+    id: `${org}/${repo}#${number}`, repo: `${org}/${repo}`, number, url: `https://github.com/${org}/${repo}/pull/${number}`,
+    title, author, requestedAt: iso(days), updatedAt: iso(days), dismissed: false,
+  });
+  return [
+    rr('api-gateway', 501, 'Retry webhook deliveries with jitter', 'sarah-dev', 1.5),
+    rr('webapp', 503, 'Fix date picker timezone drift', 'mike-ui', 0.3),
   ];
 }

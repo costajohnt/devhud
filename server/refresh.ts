@@ -3,8 +3,8 @@ import { linkPrsToCards, unlinked } from './link.ts';
 import { buildQueue } from './queue.ts';
 import { classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
-import { fetchPrs, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
-import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta } from './types.ts';
+import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest } from './types.ts';
 
 const DAY = 86400000;
 
@@ -55,8 +55,9 @@ function upsertPrLog(state: State, prs: Pr[]): void {
   }
 }
 
-export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, filed }: {
+export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, filed, reviewRequests = [] }: {
   cards: Card[]; prs: Pr[]; state: State; config: Config; errors: { jira?: string; github?: string };
+  reviewRequests?: ReviewRequest[];
   // Cards this user reported (jira.ts fetchFiledCards). Optional so callers
   // that don't fetch them (tests, direct use) get an empty list.
   filed?: FiledCard[];
@@ -231,13 +232,19 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       }
     }
   }
+  // A dismissed review request stays hidden until the PR changes after the
+  // dismissal (a new push, comment or re-request bumps updatedAt).
+  const requests = reviewRequests.map(rr => {
+    const d = state.prs?.[rr.id]?.dismissedAt;
+    return { ...rr, dismissed: !!d && !(Date.parse(rr.updatedAt) > Date.parse(d)) };
+  });
   const recentActivity = [...mergedActivity, ...closedActivity, ...commentActivity]
     .sort((a, b) => b.date.localeCompare(a.date));
 
   return {
     updatedAt: new Date().toISOString(),
     errors: { jira: errors.jira ?? null, github: errors.github ?? null },
-    buckets, queue: buildQueue(buckets, statuses), todo, blocked,
+    buckets, queue: buildQueue(buckets, statuses, requests), reviewRequests: requests, todo, blocked,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     // Done page and counter both come from the lifetime ledger, so they agree
@@ -355,10 +362,10 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   let cards: Card[], prs: Pr[];
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
-    const { demoCards, demoPrs, demoFiled } = await import('./demo.ts');
+    const { demoCards, demoPrs, demoFiled, demoReviewRequests } = await import('./demo.ts');
     cards = demoCards(config.jira);
     prs = demoPrs(config.github);
-    const payload = buildSnapshot({ cards, prs, state, config, errors, filed: demoFiled(config.jira) });
+    const payload = buildSnapshot({ cards, prs, state, config, errors, filed: demoFiled(config.jira), reviewRequests: demoReviewRequests(config.github) });
     state.snapshot = payload;
     state.lastRefreshAt = payload.updatedAt;
     if (!quiet) console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
@@ -498,11 +505,32 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   // one calm sentence instead of pasting a URL and a JSON blob at the user
   // (#69). Any non-throttle failure keeps its own message — that one still
   // needs reading.
+  // Review requests are their own search, isolated per identity like
+  // fetchPrs is per repo: a repo whose search failed keeps its last-known
+  // entries and dismissals, every other repo gets this refresh's answer.
+  let reviewRequests: ReviewRequest[];
+  const previousRequests = state.snapshot?.reviewRequests ?? [];
+  try {
+    const rr = await fetchReviewRequests(config.github);
+    githubErrors.push(...rr.errors);
+    const failed = new Set(rr.failedRepos.map(r => r.toLowerCase()));
+    const isFailed = (repo: string) => failed.has(repo.toLowerCase());
+    reviewRequests = [...rr.requests, ...previousRequests.filter(r => isFailed(r.repo))];
+    if (state.prs) {
+      const live = new Set(reviewRequests.map(r => r.id));
+      for (const id of Object.keys(state.prs)) {
+        if (!live.has(id) && !isFailed(id.slice(0, id.lastIndexOf('#')))) delete state.prs[id];
+      }
+    }
+  } catch (e) {
+    githubErrors.push(`review requests: ${(e as Error).message}`);
+    reviewRequests = previousRequests;
+  }
   const throttled = githubErrors.filter(isThrottleMessage);
   const realFailures = githubErrors.filter(m => !isThrottleMessage(m));
   if (throttled.length) realFailures.unshift('GitHub throttled this refresh (rate limit) — showing last known data.');
   if (realFailures.length) errors.github = realFailures.join('; ');
-  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos, filed });
+  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos, filed, reviewRequests });
   state.snapshot = payload;
   state.lastRefreshAt = payload.updatedAt;
   // The last-known-good caches are the outage fallback; only a source that

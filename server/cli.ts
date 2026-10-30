@@ -31,6 +31,7 @@ Usage:
   devhud status [--json]               Show the board snapshot
   devhud refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
   devhud ack <KEY> [reason] [--json]   Acknowledge a card's attention flags, or one TODO entry
+                                       (review requests: devhud ack owner/repo#12 review_requested)
   devhud move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
   devhud unpin <KEY> [--json]          Release a pin, returning the card to the classifier
   devhud transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status

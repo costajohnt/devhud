@@ -47,7 +47,7 @@ function tempConfigFile(overrides: { demo?: boolean; writeEnabled?: boolean }): 
 function seedSnapshot(statePath: string) {
   const state = emptyState();
   const snapshot: Snapshot = {
-    updatedAt: '2026-07-01T00:00:00Z', errors: { jira: null, github: null }, queue: [],
+    updatedAt: '2026-07-01T00:00:00Z', errors: { jira: null, github: null }, queue: [], reviewRequests: [],
     buckets: {
       needs_attention: [{
         key: 'P-1', summary: 'Fix it', jiraStatus: 'In Progress', jiraUrl: 'https://x/browse/P-1', bucket: 'needs_attention',

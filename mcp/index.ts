@@ -61,7 +61,8 @@ server.registerTool(
     description:
       'Returns the prioritized TODO queue: one entry per thing on an in-progress card that needs the ' +
       'developer (CI failing, changes requested, unread PR or Jira comments, merged PR whose card is not ' +
-      'in test, approved PR ready to merge, missing QA instructions or fix version). Sorted by priority ' +
+      'in test, approved PR ready to merge, missing QA instructions or fix version), plus review requests ' +
+      'on other people\'s PRs (kind "pr", key "owner/repo#n"). Sorted by priority ' +
       '(1 = broken or blocking someone, 2 = waiting on a reply, 3 = housekeeping), then by how long it ' +
       'has waited. Each entry has a url to act on and a reason; once handled, call `ack_card` with the ' +
       'key and that reason to dismiss just that entry. Reads the last snapshot; call `refresh` first for ' +
@@ -103,7 +104,7 @@ server.registerTool(
       'that showed up in needs_attention and there is nothing further to do right now. Pass `reason` ' +
       '(from a `todo_list` entry) to dismiss only that one TODO entry and leave the card\'s others.',
     inputSchema: {
-      key: z.string().describe('Jira issue key, e.g. "PROJ-123"'),
+      key: z.string().describe('Jira issue key, e.g. "PROJ-123", or for a review_requested entry the PR ref, e.g. "acme/api#12"'),
       reason: z.string().optional().describe('Optional TODO entry reason to dismiss, e.g. "new_pr_comments"'),
     },
   },

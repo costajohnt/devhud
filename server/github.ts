@@ -1,4 +1,4 @@
-import type { Pr, PrComment, GithubConfig, CiStatus, ReviewState } from './types.ts';
+import type { Pr, PrComment, GithubConfig, CiStatus, ReviewState, ReviewRequest } from './types.ts';
 
 // Minimal shapes for the slices of the GitHub responses this file actually
 // reads — not full API types, just what's used below. PR discovery is one
@@ -419,6 +419,87 @@ fragment Checks on StatusCheckRollup {
 }`;
 
 interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
+
+const REVIEW_REQUEST_SEARCH = `query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number url title updatedAt
+        author { login }
+        repository { nameWithOwner }
+        timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
+          nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on User { login } } } }
+        }
+      }
+    }
+  }
+}`;
+
+interface ReviewRequestNode {
+  number?: number; url?: string; title?: string; updatedAt?: string;
+  author?: { login?: string } | null;
+  repository?: { nameWithOwner?: string } | null;
+  timelineItems?: { nodes?: ({ createdAt?: string; requestedReviewer?: { __typename?: string; login?: string } | null } | null)[] | null } | null;
+}
+
+// When this user's review was asked for: the newest request naming them,
+// else (a team request) the newest team request, else unknown. The newest
+// request to *anyone* would reset the clock whenever a second reviewer is
+// added, which breaks the queue's longest-waiting-first order.
+export function requestedAtFor(node: ReviewRequestNode, username: string): string | null {
+  const events = (node.timelineItems?.nodes ?? []).filter((e): e is NonNullable<typeof e> => !!e?.createdAt);
+  const mine = events.filter(e => e.requestedReviewer?.login?.toLowerCase() === username.toLowerCase());
+  const team = events.filter(e => e.requestedReviewer?.__typename === 'Team');
+  return (mine.length ? mine : team).at(-1)?.createdAt ?? null;
+}
+
+// Open, non-draft PRs in the configured repos that request this user's
+// review (directly or via a team). One search per identity, not per repo:
+// repo: qualifiers OR together, so the extra cost is one request a refresh.
+// failedRepos lists every repo whose search did not answer, so the caller
+// can keep last-known entries for exactly those and trust the rest.
+export async function fetchReviewRequests(cfg: GithubConfig): Promise<{ requests: ReviewRequest[]; errors: string[]; failedRepos: string[] }> {
+  // Keyed by token, not username: one account with two fine-grained tokens
+  // (one per org) needs both searches. GitHub search silently drops a repo:
+  // the token can't see, so sharing the first token would lose the other
+  // org's requests with no error.
+  const groups = new Map<string, { username: string; token: string; repos: string[] }>();
+  const errors: string[] = [];
+  const failedRepos: string[] = [];
+  for (const repo of cfg.repos) {
+    const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
+    try {
+      const id = resolveIdentity(cfg, full);
+      const k = `${id.username}\0${id.token}`;
+      const g = groups.get(k) ?? { ...id, repos: [] };
+      g.repos.push(full);
+      groups.set(k, g);
+    } catch (e) {
+      errors.push(`review requests ${full}: ${(e as Error).message}`);
+      failedRepos.push(full);
+    }
+  }
+  const requests: ReviewRequest[] = [];
+  for (const g of groups.values()) {
+    try {
+      const q = `is:pr is:open draft:false review-requested:${g.username} ${g.repos.map(r => `repo:${r}`).join(' ')} sort:updated-desc`;
+      const data = await graphql<{ search?: { nodes?: (ReviewRequestNode | null)[] | null } | null }>(REVIEW_REQUEST_SEARCH, { q }, g.token);
+      for (const n of data.search?.nodes ?? []) {
+        if (!n || typeof n.number !== 'number' || !n.repository?.nameWithOwner) continue;
+        const repo = n.repository.nameWithOwner;
+        requests.push({
+          id: `${repo}#${n.number}`, repo, number: n.number, url: n.url ?? '', title: n.title ?? '',
+          author: n.author?.login ?? '', requestedAt: requestedAtFor(n, g.username),
+          updatedAt: n.updatedAt ?? '', dismissed: false,
+        });
+      }
+    } catch (e) {
+      errors.push(`review requests (${g.username}): ${(e as Error).message}`);
+      failedRepos.push(...g.repos);
+    }
+  }
+  return { requests, errors, failedRepos };
+}
 
 // Returns the identity (username + token) that owns fullRepo ("owner/repo").
 // An identity whose repos list contains the repo owns it; bare names in that

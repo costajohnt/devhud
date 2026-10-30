@@ -243,10 +243,29 @@ export interface Item {
   pinnedAt: string | null;
 }
 
+// Someone else's open PR waiting on this user's review. id is the PR ref
+// "owner/repo#n", which is also the key a dismissal (ack) uses.
+export interface ReviewRequest {
+  id: string;
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  author: string;
+  // When the review was requested (latest request event), else null.
+  requestedAt: string | null;
+  updatedAt: string;
+  // Dismissed from the queue until the PR changes again (State.prs).
+  dismissed: boolean;
+}
+
 // One entry in the TODO queue (server/queue.ts): a single pending thing on
 // one card, e.g. CI failing or unread PR comments. id is `${key}:${reason}`.
 export interface QueueEntry {
   id: string;
+  // 'card': key is a Jira key on the board. 'pr': key is a PR ref
+  // ("owner/repo#n") with no card, e.g. a review request.
+  kind: 'card' | 'pr';
   key: string;
   summary: string;
   reason: string;
@@ -323,6 +342,9 @@ export interface Snapshot {
   // Ranked TODO queue derived from buckets (server/queue.ts). Absent in
   // snapshots persisted before it existed; migrateSnapshot backfills [].
   queue: QueueEntry[];
+  // Open PRs requesting this user's review. Absent in older snapshots;
+  // migrateSnapshot backfills [].
+  reviewRequests: ReviewRequest[];
   todo: TodoItem[];
   // Jira "Blocked" cards, split out of the board the same way as todo.
   // Not a Bucket: the classifier never sees them, and they are not a
@@ -425,6 +447,11 @@ export interface State {
   // own-reply watermark so an automated post does not read as the user
   // answering a question (L3). Optional; loadState defaults it to [].
   postedCommentIds?: string[];
+  // Per-PR local state for PRs with no card, keyed by "owner/repo#n".
+  // dismissedAt: the PR's updatedAt when its review request was dismissed;
+  // the entry comes back once the PR changes. Optional; pruned to the PRs
+  // still requesting review on each successful fetch.
+  prs?: Record<string, { dismissedAt: string | null }>;
 }
 
 // --- Action / write-back results ---
