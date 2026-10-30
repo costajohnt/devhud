@@ -95,6 +95,19 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   // acks a healthy refresh would have kept.
   const degraded = degradedPrRepos ?? (errors.github ? 'all' : null);
 
+  // One seen-comment horizon and set of PR acks per open PR, whether or not
+  // a card links it: state.ownPrs[ref] is kept for every open PR and synced
+  // both ways with the linking card's CardState, so a PR that gains or loses
+  // its card (reassigned, relinked) keeps what was already seen and acked.
+  // The first refresh after state.ownPrs existed treats existing comments on
+  // card-less PRs as seen instead of flooding the queue with their history.
+  const firstOwnPrs = state.ownPrs === undefined;
+  const ownPrs = (state.ownPrs ??= {});
+  const buildTime = new Date().toISOString();
+  const later = (a: string | null | undefined, b: string | null | undefined): string | null =>
+    !a ? b ?? null : !b ? a : Date.parse(b) > Date.parse(a) ? b : a;
+  const PR_ACK_REASONS = ['ci_failing', 'changes_requested', 'ready_to_merge'];
+
   for (const card of cards) {
     // Canceled work is neither active nor complete — drop it from every bucket,
     // the Todo list, the Done page, and all counts.
@@ -144,9 +157,20 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
 
     // A card with no PR under any degradation is treated as degraded too: we
     // can't tell whether its PR vanished or simply belongs to a failed repo.
+    const prRef = pr && `${pr.repo}#${pr.number}`;
+    const own = prRef ? ownPrs[prRef] : undefined;
+    if (own) {
+      cs.lastSeenPr = later(cs.lastSeenPr, own.lastSeenPr);
+      const merged = [...new Set([...(cs.ackedReasons ?? []), ...(own.ackedReasons ?? [])])];
+      cs.ackedReasons = merged.length ? merged : null;
+    }
     const prDegraded = degraded === 'all'
       || (degraded !== null && (pr ? degraded.has(pr.repo) : degraded.size > 0));
     const { bucket, attention, newComments } = classifyCard({ card, pr, cs, statuses, username, usernames, ignoreAuthors, prDegraded, postedCommentIds: state.postedCommentIds ?? [] });
+    if (prRef && pr?.state === 'open') {
+      const acks = (cs.ackedReasons ?? []).filter(r => PR_ACK_REASONS.includes(r));
+      ownPrs[prRef] = { lastSeenPr: cs.lastSeenPr, ackedReasons: acks.length ? acks : null };
+    }
     const lastTs = [card.updatedAt, pr?.updatedAt].filter((x): x is string => Boolean(x)).sort().pop();
     buckets[bucket].push({
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
@@ -235,10 +259,9 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   // The user's open PRs with no card still need them: same PR reasons as a
   // card's PR, with their own seen horizon and acks in state.ownPrs.
   const selfNames = new Set((usernames ?? [username]).map(u => u.toLowerCase()));
-  const ownPrs = (state.ownPrs ??= {});
   const unlinkedPrs = unlinked(prs, linked).filter(p => p.state === 'open').map(p => {
     const ref = `${p.repo}#${p.number}`;
-    const ps = (ownPrs[ref] ??= { lastSeenPr: null });
+    const ps = (ownPrs[ref] ??= { lastSeenPr: firstOwnPrs ? buildTime : null });
     const raw = prAttention(p, ps.lastSeenPr, selfNames, ignoreAuthors);
     const { visible, acked } = applyAcks(raw.attention, ps.ackedReasons, degraded === 'all' || !!degraded?.has(p.repo));
     ps.ackedReasons = acked;
@@ -248,7 +271,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       pr: prView(p)!, updatedAt: p.updatedAt,
     };
   });
-  const openRefs = new Set(unlinkedPrs.map(p => `${p.repo}#${p.number}`));
+  const openRefs = new Set(prs.filter(p => p.state === 'open').map(p => `${p.repo}#${p.number}`));
   for (const ref of Object.keys(ownPrs)) {
     const repo = ref.slice(0, ref.lastIndexOf('#'));
     if (!openRefs.has(ref) && degraded !== 'all' && !degraded?.has(repo)) delete ownPrs[ref];

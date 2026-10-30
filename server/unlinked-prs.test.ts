@@ -2,7 +2,7 @@ import { test, expect } from 'vitest';
 import { buildSnapshot } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { emptyState } from './state.ts';
-import type { Config, Pr } from './types.ts';
+import type { Card, Config, Pr } from './types.ts';
 
 const config: Config = {
   jira: { projectKey: 'P', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
@@ -19,11 +19,16 @@ const pr = (o: Partial<Pr> = {}): Pr => ({
   ],
   ...o,
 });
-const build = (state: ReturnType<typeof emptyState>, prs: Pr[], errors: { github?: string } = {}) =>
-  (state.snapshot = buildSnapshot({ cards: [], prs, state, config, errors }));
+const build = (state: ReturnType<typeof emptyState>, prs: Pr[], errors: { github?: string } = {}, cards: Card[] = []) =>
+  (state.snapshot = buildSnapshot({ cards, prs, state, config, errors }));
+// A state that already went through the upgrade: card-less PRs first seen
+// from here on count every third-party comment as new.
+const upgraded = () => { const s = emptyState(); s.ownPrs = {}; return s; };
+const card = (o: Partial<Card> = {}): Card => ({ key: 'P-1', summary: 'S', status: 'In Progress', description: '', url: 'https://j/P-1',
+  createdAt: null, updatedAt: null, myAccountId: 'me', comments: [], ...o });
 
 test('a card-less open PR feeds the queue with its own reasons, keyed by PR ref', () => {
-  const state = emptyState();
+  const state = upgraded();
   const snap = build(state, [pr(), pr({ number: 5, state: 'merged', mergedAt: '2026-07-04T00:00:00Z' })]);
   expect(snap.unlinkedPrs.map(u => u.number)).toEqual([4]);
   expect(snap.queue.map(e => [e.kind, e.key, e.reason, e.priority])).toEqual([
@@ -37,7 +42,7 @@ test('a card-less open PR feeds the queue with its own reasons, keyed by PR ref'
 });
 
 test('acking a card-less PR entry dismisses just that reason and survives the next refresh', () => {
-  const state = emptyState();
+  const state = upgraded();
   build(state, [pr()]);
   expect(applyAction({ state, config, type: 'ack', key: 'o/r#4', reason: 'new_pr_comments' })).toEqual({ ok: true, bucket: null });
   expect(applyAction({ state, config, type: 'ack', key: 'o/r#4', reason: 'changes_requested' })).toEqual({ ok: true, bucket: null });
@@ -52,7 +57,7 @@ test('acking a card-less PR entry dismisses just that reason and survives the ne
 });
 
 test('a reason the PR does not show, or an unknown PR, records nothing', () => {
-  const state = emptyState();
+  const state = upgraded();
   build(state, [pr({ ciStatus: 'passing', reviewState: 'none', comments: [] })]);
   expect(applyAction({ state, config, type: 'ack', key: 'o/r#4', reason: 'ci_failing' })).toEqual({ ok: true, bucket: null });
   expect(applyAction({ state, config, type: 'ack', key: 'o/r#99', reason: 'ci_failing' })).toEqual({ ok: true, bucket: null });
@@ -61,11 +66,38 @@ test('a reason the PR does not show, or an unknown PR, records nothing', () => {
 });
 
 test('ownPrs is pruned when a PR closes, but kept while its repo is degraded', () => {
-  const state = emptyState();
+  const state = upgraded();
   build(state, [pr()]);
   expect(Object.keys(state.ownPrs!)).toEqual(['o/r#4']);
   build(state, [], { github: 'o/r: 500' });
   expect(Object.keys(state.ownPrs!)).toEqual(['o/r#4']);
   build(state, []);
   expect(state.ownPrs).toEqual({});
+});
+
+// Review finding: the first refresh after the upgrade flagged every comment
+// ever left on every card-less PR.
+test('first refresh after the upgrade treats existing card-less PR comments as seen', () => {
+  const state = emptyState();
+  const snap = build(state, [pr()]);
+  expect(snap.queue.map(e => e.reason)).toEqual(['ci_failing', 'changes_requested']);
+});
+
+// Review finding: acked comments came back when a PR gained or lost its card.
+test('a PR keeps its seen comments and acks when it loses or gains a card', () => {
+  const linkedPr = pr({ branch: 'P-1-fix' });
+  const state = upgraded();
+  build(state, [linkedPr], {}, [card()]);
+  expect(state.snapshot!.queue.map(e => e.id)).toContain('P-1:new_pr_comments');
+  applyAction({ state, config, type: 'ack', key: 'P-1', reason: 'new_pr_comments' });
+  applyAction({ state, config, type: 'ack', key: 'P-1', reason: 'changes_requested' });
+  build(state, [linkedPr], {}, [card()]); // mirrors the card's horizon to the PR
+
+  // The card is reassigned away: the PR is now card-less, nothing re-flags.
+  expect(build(state, [linkedPr]).queue.map(e => e.id)).toEqual(['o/r#4:ci_failing']);
+
+  // And back: acks made while card-less carry over to the card.
+  applyAction({ state, config, type: 'ack', key: 'o/r#4', reason: 'ci_failing' });
+  build(state, [linkedPr]);
+  expect(build(state, [linkedPr], {}, [card()]).queue).toEqual([]);
 });
