@@ -9,6 +9,7 @@
 // human mode.
 import { parseArgs } from 'node:util';
 import { existsSync, realpathSync } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import { spawn } from 'node:child_process';
 import { join, dirname, extname } from 'node:path';
 import { CONFIG_PATH, STATE_PATH } from './paths.ts';
@@ -177,9 +178,14 @@ export async function run(argv: string[], { config, statePath, configPath, probe
     // server, still listening on its port.
     const self = fileURLToPath(import.meta.url);
     const child = spawn(process.execPath, [join(dirname(self), `index${extname(self)}`)], { stdio: 'inherit' });
-    const forward = (sig: NodeJS.Signals) => () => { child.kill(sig); };
+    const forwarded = new Set<string>();
+    const forward = (sig: NodeJS.Signals) => () => { forwarded.add(sig); child.kill(sig); };
     for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, forward(sig));
-    const code = await new Promise<number>(res => child.on('exit', (c, sig) => res(c ?? (sig ? 0 : 1))));
+    // A signal we forwarded is a requested stop (exit 0). Any other signal
+    // death (SIGKILL, SIGSEGV, an OOM kill) is a failure a supervisor must
+    // see, reported the shell way as 128 + the signal number.
+    const code = await new Promise<number>(res => child.on('exit', (c, sig) =>
+      res(c ?? (!sig ? 1 : forwarded.has(sig) ? 0 : 128 + (osConstants.signals[sig] ?? 0)))));
     return { code, out: '', err: '' };
   }
   if (cmd === 'open') {

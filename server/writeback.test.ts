@@ -697,14 +697,15 @@ test('autoTransitionMergedCards: live status GET fails -> no POST, no ledger ent
 
 test('getIssueStatus reads fields=status and maps statusCategory like jira.ts', async () => {
   const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
-  const fetchMock = vi.fn((_url: URL, _init: RequestInit) => Promise.resolve({ ok: true, json: () => Promise.resolve({ fields: { status: { name: 'Done', statusCategory: { key: 'done' } } } }) }));
+  const issueOr = (body: unknown) => (url: URL | string) => Promise.resolve({ ok: true, json: () => Promise.resolve(String(url).includes('/changelog') ? { total: 0, values: [] } : body) });
+  const fetchMock = vi.fn((url: URL, _init: RequestInit) => issueOr({ fields: { status: { name: 'Done', statusCategory: { key: 'done' } } } })(url));
   vi.stubGlobal('fetch', fetchMock);
-  expect(await getIssueStatus(cfg, 'PROJ-1')).toEqual({ status: 'Done', statusCategory: 'done' });
+  expect(await getIssueStatus(cfg, 'PROJ-1')).toEqual({ status: 'Done', statusCategory: 'done', statusChanges: [] });
   const [url, init] = fetchMock.mock.calls[0]!;
   expect(String(url)).toBe('https://x.atlassian.net/rest/api/3/issue/PROJ-1?fields=status');
   expect((init.headers as Record<string, string>).Authorization).toMatch(/^Basic /);
-  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ fields: { status: { name: 'Odd', statusCategory: { key: 'weird' } } } }) })));
-  expect(await getIssueStatus(cfg, 'PROJ-1')).toEqual({ status: 'Odd', statusCategory: '' });
+  vi.stubGlobal('fetch', vi.fn(issueOr({ fields: { status: { name: 'Odd', statusCategory: { key: 'weird' } } } })));
+  expect(await getIssueStatus(cfg, 'PROJ-1')).toEqual({ status: 'Odd', statusCategory: '', statusChanges: [] });
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('down') })));
   await expect(getIssueStatus(cfg, 'PROJ-1')).rejects.toThrow('Jira 503: down');
 });
@@ -771,4 +772,71 @@ test('commentPr refuses a repo no identity owns and never posts (#108)', async (
   };
   await expect(commentPr(cfg, 'acme/other', 7, 'hi')).rejects.toThrow(/no GitHub identity owns "acme\/other"/);
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+// Audit 2026-10-29 M2: a card moved In Test -> back to In Progress between two
+// refreshes left no reachedTestAt stamp, so auto-transition re-moved it on the
+// old merge. The live check reads the changelog: a trip through In Test/Done
+// after the merge is a skip, recorded in the ledger. Other edits after the
+// merge (comments, automation) don't block it (PR #137 review).
+test('autoTransitionMergedCards: skips a card that already went through QA after its PR merged', async () => {
+  const run = async (statusChanges: { to: string; at: string }[]) => {
+    const state = stateWithMergedCard('PROJ-1');
+    state.lastPrs = [{ repo: 'o/r', number: 1, url: '', title: '', body: '', branch: 'PROJ-1-x', state: 'merged', createdAt: '', updatedAt: '', mergedAt: '2026-07-01T12:00:00Z', closedAt: null, ciStatus: 'passing', reviewState: 'approved', comments: [] }];
+    const transitionCardFn = vi.fn().mockResolvedValue(undefined);
+    const getIssueStatusFn = vi.fn().mockResolvedValue({ status: 'In Progress', statusCategory: 'indeterminate', statusChanges });
+    const result = await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+    return { result, transitionCardFn, ledger: state.autoTransitioned! };
+  };
+  const rejected = await run([
+    { to: 'In Progress', at: '2026-06-30T09:00:00.000+0000' },
+    { to: 'In Test', at: '2026-07-01T15:00:00.000+0000' },
+    { to: 'In Progress', at: '2026-07-02T09:00:00.000+0000' },
+  ]);
+  expect(rejected.transitionCardFn).not.toHaveBeenCalled();
+  expect(rejected.result).toEqual({ attempted: 1, succeeded: 0, failed: 0 });
+  expect(Object.values(rejected.ledger)[0]).toMatchObject({ ok: false, skipped: true, error: expect.stringMatching(/already went to In Test after the merge/) });
+  // Only status moves before the merge: transition as before.
+  const fresh = await run([{ to: 'In Progress', at: '2026-06-30T09:00:00.000+0000' }]);
+  expect(fresh.transitionCardFn).toHaveBeenCalledTimes(1);
+});
+
+test('getIssueStatus reads the newest changelog page for status changes', async () => {
+  const cfg: JiraConfig = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } };
+  const urls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: URL | string) => {
+    const u = String(url); urls.push(u);
+    const body = !u.includes('/changelog') ? { fields: { status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } } }
+      : u.includes('startAt=0') ? { total: 130, values: [] }
+      : { total: 130, values: [{ created: '2026-07-02T09:00:00.000+0000', items: [{ field: 'assignee', toString: 'x' }, { field: 'status', toString: 'In Test' }] }] };
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  }));
+  const live = await getIssueStatus(cfg, 'PROJ-1');
+  expect(live.statusChanges).toEqual([{ to: 'In Test', at: '2026-07-02T09:00:00.000+0000' }]);
+  expect(urls.some(u => u.includes('/changelog?startAt=30&maxResults=100'))).toBe(true);
+});
+
+// PR #137 round 2: the changelog carries names only, so matching just the
+// configured In Test/Done names missed Closed, Released, a jump straight to a
+// post-test status, and Canceled. Any post-merge non-pre-test move counts.
+test('autoTransitionMergedCards: any post-merge move outside the pre-test statuses counts as a QA trip', async () => {
+  for (const to of ['Closed', 'Ready for Release', 'Canceled', 'QA']) {
+    const state = stateWithMergedCard('PROJ-1');
+    state.lastPrs = [{ repo: 'o/r', number: 1, url: '', title: '', body: '', branch: 'PROJ-1-x', state: 'merged', createdAt: '', updatedAt: '', mergedAt: '2026-07-01T12:00:00Z', closedAt: null, ciStatus: 'passing', reviewState: 'approved', comments: [] }];
+    const transitionCardFn = vi.fn().mockResolvedValue(undefined);
+    const getIssueStatusFn = vi.fn().mockResolvedValue({ status: 'In Progress', statusCategory: 'indeterminate', statusChanges: [
+      { to, at: '2026-07-01T15:00:00.000+0000' }, { to: 'In Progress', at: '2026-07-02T09:00:00.000+0000' },
+    ] });
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+    expect(transitionCardFn, to).not.toHaveBeenCalled();
+  }
+  // Moves among pre-test statuses after the merge (In Progress <-> Code Review) still transition.
+  const state = stateWithMergedCard('PROJ-1');
+  state.lastPrs = [{ repo: 'o/r', number: 1, url: '', title: '', body: '', branch: 'PROJ-1-x', state: 'merged', createdAt: '', updatedAt: '', mergedAt: '2026-07-01T12:00:00Z', closedAt: null, ciStatus: 'passing', reviewState: 'approved', comments: [] }];
+  const transitionCardFn = vi.fn().mockResolvedValue(undefined);
+  const getIssueStatusFn = vi.fn().mockResolvedValue({ status: 'In Progress', statusCategory: 'indeterminate', statusChanges: [
+    { to: 'Code Review', at: '2026-07-01T15:00:00.000+0000' }, { to: 'In Progress', at: '2026-07-02T09:00:00.000+0000' },
+  ] });
+  await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+  expect(transitionCardFn).toHaveBeenCalledTimes(1);
 });

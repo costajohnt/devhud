@@ -81,6 +81,10 @@ export function applyAcks(attention: string[], acked: string[] | null | undefine
   return { visible: attention.filter(r => !kept.includes(r)), acked: kept.length ? kept : null };
 }
 
+// How long per-card state survives unseen (refresh.ts prunes after this), and
+// so how old a merge can be and still raise merged_not_in_test.
+export const CARD_STATE_RETENTION_DAYS = 90;
+
 export interface ClassifyResult {
   bucket: Bucket;
   attention: string[];
@@ -149,7 +153,11 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // like "Ready for Release"), and not seen In Test or Done since the PR
   // merged. The second check is what stops a QA rejection back to In
   // Progress from re-flagging (and auto-transitioning) on the old merge (H1).
-  if (pr?.state === 'merged' && isPreTest(card, statuses) && !reachedTestSinceMerge(cs, pr)) {
+  // Merges older than the card-state retention window never flag: a card
+  // whose state was pruned (Done, quiet for 90 days) and then reopened has
+  // lost its reachedTestAt, and its months-old merge is not news.
+  const recentMerge = !pr?.mergedAt || Date.parse(now) - Date.parse(pr.mergedAt) < CARD_STATE_RETENTION_DAYS * 86_400_000;
+  if (pr?.state === 'merged' && recentMerge && isPreTest(card, statuses) && !reachedTestSinceMerge(cs, pr)) {
     attention.push('merged_not_in_test');
   }
 
