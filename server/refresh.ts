@@ -1,11 +1,14 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { buildQueue } from './queue.ts';
-import { PR_ACK_REASONS } from './reasons.ts';
+import { PR_ACK_REASONS, REASONS, isReason } from './reasons.ts';
 import { CARD_STATE_RETENTION_DAYS, prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
-import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest, DoneCard } from './types.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest, DoneCard, QueueEntry } from './types.ts';
+
+// Stateful reasons classify derives from the Jira card alone.
+const JIRA_ONLY_REASONS = new Set<string>(['missing_qa_instructions', 'missing_fix_version']);
 
 const DAY = 86400000;
 
@@ -116,14 +119,30 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     return { ...rr, dismissed: !!d && !(Date.parse(rr.updatedAt) > Date.parse(d)) };
   });
 
-  pruneState({ state, cards, prs, nowIso, jiraFailed: !!errors.jira, doneCards: board.doneCards, degraded, reviewRequests, degradedRequestRepos });
-
   const { buckets, todo, blocked, newlyDone } = board;
+  const statuses = config.jira.statuses;
+
+  // Stamp state-reason entries the queue shows for the first time. The first
+  // refresh after state.queueSeen existed seeds from the old `at` (updatedAt)
+  // so nothing on an upgraded board jumps to "just now".
+  const firstQueueSeen = state.queueSeen === undefined;
+  state.queueSeen ??= {};
+  const unstamped = buildQueue(buckets, statuses, requests, unlinkedPrs);
+  // A card that just linked a card-less PR carries on that PR's wait.
+  const prRef = new Map(Object.values(buckets).flat().flatMap(i => i.pr ? [[i.key, `${i.pr.repo}#${i.pr.number}`] as const] : []));
+  for (const e of unstamped) {
+    if (!isReason(e.reason) || !REASONS[e.reason].stateful) continue;
+    const ref = prRef.get(e.key);
+    state.queueSeen[e.id] ??= (ref && state.queueSeen[`${ref}:${e.reason}`]) || (firstQueueSeen ? (e.at ?? nowIso) : nowIso);
+  }
+
+  pruneState({ state, cards, prs, nowIso, jiraFailed: !!errors.jira, doneCards: board.doneCards, degraded, reviewRequests, degradedRequestRepos, queue: unstamped, buckets });
+
   return {
     updatedAt: new Date().toISOString(),
     dataAsOf,
     errors: { jira: errors.jira ?? null, github: errors.github ?? null },
-    buckets, queue: buildQueue(buckets, config.jira.statuses, requests, unlinkedPrs), reviewRequests: requests, todo, blocked,
+    buckets, queue: buildQueue(buckets, statuses, requests, unlinkedPrs, state.queueSeen), reviewRequests: requests, todo, blocked,
     unlinkedPrs,
     // Done page and counter both come from the lifetime ledger, so they agree
     // by construction. Deriving the count from a single refresh made it shrink
@@ -339,9 +358,10 @@ function buildUnlinkedPrs({ prs, linked, state, config, degraded, initialSeen }:
 // Every retention rule for per-entity state, run once after the snapshot is
 // built. Each one skips whatever a failed source can't vouch for this
 // refresh, so an outage never reads as "gone".
-function pruneState({ state, cards, prs, nowIso, jiraFailed, doneCards, degraded, reviewRequests, degradedRequestRepos }: {
+function pruneState({ state, cards, prs, nowIso, jiraFailed, doneCards, degraded, reviewRequests, degradedRequestRepos, queue, buckets }: {
   state: State; cards: Card[]; prs: Pr[]; nowIso: string; jiraFailed: boolean; doneCards: DoneCard[];
   degraded: Degraded; reviewRequests: ReviewRequest[]; degradedRequestRepos: Set<string> | 'all';
+  queue: QueueEntry[]; buckets: Record<Bucket, Item[]>;
 }): void {
   // state.cards used to grow forever: every card ever classified, plus any
   // key an ack or move named. Stamp the cards this fetch returned, give
@@ -398,6 +418,29 @@ function pruneState({ state, cards, prs, nowIso, jiraFailed, doneCards, degraded
     const live = new Set(reviewRequests.map(r => r.id));
     for (const id of Object.keys(state.prs)) {
       if (!live.has(id) && !degradedRequestRepos.has(id.slice(0, id.lastIndexOf('#')).toLowerCase())) delete state.prs[id];
+    }
+  }
+
+  // Queue first-seen times live while their entry is in the queue, so a
+  // reason that leaves (cleared or acked) and comes back starts over. An
+  // entry missing only because a source failed keeps its time: nothing on a
+  // Jira failure, and on a GitHub failure nothing whose PR data is degraded,
+  // using classifyCards' rule (a card with no PR counts as degraded under
+  // any degradation, and so does a card no longer on the board). Jira-only
+  // reasons and cards Jira no longer returns never depend on GitHub, so one
+  // permanently broken repo can't keep them forever.
+  if (!jiraFailed && degraded !== 'all') {
+    const live = new Set(queue.map(e => e.id));
+    const boardPr = new Map(Object.values(buckets).flat().map(i => [i.key, i.pr?.repo ?? null]));
+    for (const id of Object.keys(state.queueSeen!)) {
+      if (live.has(id)) continue;
+      const key = id.slice(0, id.lastIndexOf(':'));
+      const reason = id.slice(id.lastIndexOf(':') + 1);
+      if (degraded?.size) {
+        if (key.includes('#') ? degraded.has(key.slice(0, key.lastIndexOf('#'))) : fetchedKeys.has(key) && !JIRA_ONLY_REASONS.has(reason)
+          && (boardPr.get(key) ? degraded.has(boardPr.get(key)!) : true)) continue;
+      }
+      delete state.queueSeen![id];
     }
   }
 }

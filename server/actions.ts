@@ -76,7 +76,7 @@ export function applyAction(args: {
   const result = applyActionToSnapshot(args);
   // Every action can change attention or buckets, so the queue is rebuilt
   // from the edited snapshot rather than patched alongside it.
-  if (!('error' in result) && args.state.snapshot) rebuildQueue(args.state.snapshot, args.config.jira.statuses);
+  if (!('error' in result) && args.state.snapshot) rebuildQueue(args.state.snapshot, args.config.jira.statuses, args.state.queueSeen);
   return result;
 }
 

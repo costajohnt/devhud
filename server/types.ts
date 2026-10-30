@@ -278,8 +278,10 @@ export interface QueueEntry {
   detail: string | null;
   // Where to go to address it (the PR or the Jira card).
   url: string;
-  // How long it has been waiting: the oldest unread comment, else the card's
-  // last update.
+  // How long it has been waiting: the oldest unread comment for a comment
+  // reason, the request time for a review request, and for a state reason
+  // when the entry first appeared (State.queueSeen), else the card's last
+  // update.
   at: string | null;
 }
 
@@ -478,6 +480,15 @@ export interface State {
   // PRs, keyed by "owner/repo#n" (the card equivalent is CardState). Pruned
   // to the open card-less PRs on each refresh that fetched their repo.
   ownPrs?: Record<string, { lastSeenPr: string | null; ackedReasons?: string[] | null }>;
+  // When each state-reason queue entry (QueueEntry.id, e.g.
+  // "KEY-1:ci_failing" or "owner/repo#n:ready_to_merge") first appeared,
+  // used as its `at` so "waiting" counts from the reason, not the card's
+  // last edit. Stamped with the refresh time on first sighting; dropped once
+  // the entry leaves the queue (an ack hides it too), so a reason that comes
+  // back starts over. Pruning skips ids a failed fetch can't vouch for.
+  // Optional: absent in older state files, and the first refresh after that
+  // seeds each live entry from its old `at` (updatedAt) instead of now.
+  queueSeen?: Record<string, string>;
 }
 
 // --- Action / write-back results ---
