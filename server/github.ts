@@ -549,9 +549,9 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   return { prs, errors };
 }
 
-// Detail-fetch only PRs that got linked to a card (keeps API calls bounded),
-// and only when the PR changed since the last refresh: refresh.ts reuses the
-// last-known enrichment for a linked PR whose updatedAt is unchanged (#72).
+// Detail-fetch only PRs the queue needs (linked to a card, or the user's own
+// open card-less PRs), and only when the PR changed since the last refresh:
+// refresh.ts reuses the last-known enrichment when updatedAt is unchanged (#72).
 // CI is not fetched here — it arrives with discovery (mapPr).
 export async function enrichPr(pr: Pr, cfg: GithubConfig): Promise<Pr> {
   const [owner, repo] = pr.repo.split('/');

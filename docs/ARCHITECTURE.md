@@ -2,7 +2,7 @@
 
 ## Module map
 
-### Server (`server/`, TypeScript, erasable-syntax only, no build step — Node's native type stripping runs `.ts` files directly)
+### Server (`server/`, TypeScript, erasable-syntax only — Node's native type stripping runs `.ts` files directly in a checkout; `scripts/build.ts` strips them to `dist/` for the npm package, since Node won't strip types under `node_modules`)
 
 - **index.ts**: HTTP server (`node:http`). Routes `/api/data`, `/api/events` (SSE), `/api/refresh`, `/api/action`, and `/api/write`, and falls back to static file serving + SPA fallback for everything else. Owns the single in-memory `state` object, the scheduled refresh loop (which also runs the opt-in `autoTransitionMergedCards` after each tick), the SSE broadcast set (with a per-stream buffer cap: a stream with more than 4 MB of unsent events is disconnected, so it reconnects for a fresh snapshot instead of buffering without limit), and the single-instance guard.
 - **config.ts**: Loads and validates `config.json`. Fills defaults (port 3010, default Jira statuses; each status may be one name or a list, validated non-empty), reads `GITHUB_TOKEN` env var as a token fallback.
@@ -19,10 +19,12 @@
 - **transport.ts**: Dual-transport primitives shared by the CLI and MCP server: `probeServer()` (is a real server answering on the configured port), `writePidFile()` (the writer half of the pid-file contract), `serverAppearsRunning()`/`saveStateGuarded()` (the split-brain guard for direct-mode writes — see Concurrency below).
 - **ops.ts**: The dual-transport OPERATIONS built on those primitives — `opSnapshot`/`opRefresh`/`opAction`/`opWrite`, each deciding once between the HTTP proxy path (a live server's in-memory state is the source of truth) and the direct-disk path with the split-brain guards. The CLI and MCP handlers both consume these; callers own presentation only.
 - **writeback.ts**: `performWrite()` — the single entry point for every write-back path (`POST /api/write`, the CLI's `transition`/`comment`/`pr-comment` commands, the MCP write tools). Builds the minimal ADF doc for Jira comments, re-reads `config.json` fresh on every call so `writeEnabled` takes effect without a restart, and refreshes the board after a successful write. Also `autoTransitionMergedCards()`, the opt-in (`autoTransitionMerged`, requires `writeEnabled`) tick-time transition of `merged_not_in_test` cards to In Test. It shares `performWrite`'s fail-closed config re-read, demo refusal and project-prefix gates, but calls `transitionCard()` directly so it doesn't trigger a re-entrant refresh. See the README's Write-back section for its guards.
-- **cli.ts**: `devhud` CLI (`status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Argv parsing and output formatting only — the actual operations come from `ops.ts`, so the CLI and MCP server can't drift on transport semantics.
+- **init.ts**: `devhud init`: interactive setup that looks up the Jira accountId, the project's status names and the GitHub login, guesses the status mapping, and writes `config.json` through `writeFilePrivate` (0600). Prompt and fetch are injectable for tests.
+- **paths.ts**: where files live. A source checkout keeps `config.json` and `data/` in the repo; an installed package uses `~/.devhud`; `DEVHUD_HOME` overrides. Also `PACKAGE_ROOT` and `WEB_DIST`.
+- **cli.ts**: `devhud` CLI (`init`/`todo`/`status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open`). Argv parsing and output formatting only — the actual operations come from `ops.ts`, so the CLI and MCP server can't drift on transport semantics.
 - **types.ts**: Shared types (Card, Pr, Item, Snapshot, State, Config, ActionResult, WriteResult) mirroring `web/src/types.ts`'s payload shapes.
 
-### MCP (`mcp/`, TypeScript, erasable-syntax only, no build step)
+### MCP (`mcp/`, TypeScript, erasable-syntax only, built to `dist/mcp` like the server)
 
 A stdio MCP server exposing the board to Claude sessions, using the exact same dual-transport rule as the CLI (see `transport.ts` above and the Concurrency section below — MCP direct-mode writes go through the same split-brain guard).
 
@@ -33,7 +35,7 @@ A stdio MCP server exposing the board to Claude sessions, using the exact same d
 
 - **main.tsx**: Entry point: mounts `<App>` wrapped in an `<ErrorBoundary>`.
 - **app.tsx**: Top-level shell: live-update/refresh wiring, theme state (OS-aware), route branching (`/`, `/done`, `/filed`, 404), header, banners, toast. Fires the completion confetti and toast when a refresh reports `newlyDone` cards (a card reaching Done). Acknowledging a Needs Attention card auto-advances the selection to the next such card. Successful actions (move/ack/unpin) are announced through an always-mounted, visually hidden polite live region; the toast lives in an always-mounted `role="status"` wrapper. Closing the detail panel returns focus to the row button that opened it.
-- **notify.ts**: Desktop-notification rules for cards entering Needs Attention. Split like live-event.ts — `decideNotification()` is pure (keyed on card identity, not bucket length; skips the connect replay; only fires while the tab is hidden; always advances its baseline even when suppressed) and the Notification API calls sit below it.
+- **notify.ts**: Desktop-notification rules for new TODO queue entries. Split like live-event.ts — `decideNotification()` is pure (keyed on card identity, not bucket length; skips the connect replay; only fires while the tab is hidden; always advances its baseline even when suppressed) and the Notification API calls sit below it.
 - **live-event.ts**: Pure decision for each incoming SSE snapshot: whether it is a new refresh (fire `onRefreshed`, which drives confetti) or a connect replay / re-broadcast of the same snapshot (don't).
 - **use-data.ts**: `useData()` hook: holds an `EventSource` on `/api/events` for all data (initial render included), exposes `refresh()` for the manual button and `act()` for `/api/action` calls with error handling.
 - **board.tsx**: `useBoardFilter()` hook (search/status/repo filter state, drag-and-drop handlers) plus `BoardStats`, `BoardFilterBar`, `BoardList` components. Each board row is a plain draggable container; its selectable part is a real `<button class="pr-row-main">` (key + summary, Enter/Space select), and the PR link is a sibling tab stop, never nested inside the button.
@@ -57,7 +59,7 @@ config.json ──► loadConfig()
                     │
 POST /api/refresh   ▼
      │        fetchJiraCards() / fetchPrs()+enrichPr()   (or demo.ts in demo mode)
-     │            enrichPr only for linked PRs whose updatedAt changed since
+     │            enrichPr only for linked and open card-less PRs whose updatedAt changed since
      │            state.lastPrs; concurrent refreshes serialize per State (#72)
      │                    │
      │                    ▼
@@ -85,7 +87,7 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
 
 ```
 {
-  cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt, ackedReasons, lastStatus } },
+  cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt, ackedReasons, lastStatus, reachedTestAt } },
   celebrated: [{ id: "org/repo#num", at: isoString | null }],  // legacy, load-only (see below)
   doneCelebrated: [{ id: "jiraKey", at: isoString | null }],
   doneLedger: DoneCard[],  // lifetime Done list, newest first (optional in older files)
@@ -95,7 +97,10 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
   lastPrs: <last successful GitHub fetch, or null>,
   prLog: { [id]: { id, repo, openedAt, mergedAt, closedAt } },
   prs: { ["owner/repo#n"]: { dismissedAt } },  // dismissed review requests (optional)
-  ownPrs: { ["owner/repo#n"]: { lastSeenPr, ackedReasons } }  // card-less PRs' seen horizon + acks (optional)
+  ownPrs: { ["owner/repo#n"]: { lastSeenPr, ackedReasons } },  // card-less PRs' seen horizon + acks (optional)
+  filedMeta: { fullFetchAt, accountId, baseUrl },  // provenance of snapshot.filed (optional)
+  autoTransitioned: { ["KEY@owner/repo#n"]: { at, ok, error?, skipped? } },  // autoTransitionMerged ledger (optional)
+  postedCommentIds: string[]  // Jira comments write-back posted, excluded from the own-reply watermark (optional)
 }
 ```
 
@@ -147,7 +152,7 @@ where it already is.
 | `changes_requested` | badge | Linked PR is open and its review state is changes requested. |
 | `ready_to_merge` | badge | Linked PR is open, not a draft, approved, and its CI is passing (not while pending or red). |
 | `new_pr_comments` | badge | One or more GitHub PR comments from someone other than the configured username, newer than `cardState.lastSeenPr`. Renders as the "N new comments" pill. |
-| `new_jira_comments` | badge | One or more Jira comments from someone other than the card's own author, newer than `cardState.lastSeenJira`. Same pill — except on an In Test card, where it routes to `needs_attention` (see the bucket table above). |
+| `new_jira_comments` | badge | One or more Jira comments from someone other than you (the configured `accountId`), and posted after your own latest reply on the card, newer than `cardState.lastSeenJira`. Same pill — except on an In Test card, where it routes to `needs_attention` (see the bucket table above). |
 | `missing_qa_instructions` | badge | Card is in the configured "In Test" status and its description has no QA/test instructions. Renders as the "No QA Instructions" pill. |
 | `missing_fix_version` | badge | Card is in the configured "In Test" status and has no fix version set. Renders as the "No Fix Version" pill, or "No Fix Version or QA" when both hand-off reasons fire. |
 

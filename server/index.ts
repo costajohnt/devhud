@@ -330,9 +330,9 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   // holding the process (or a test run) alive on its own.
   const intervalMs = (config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS) * 1000;
   // Self-rescheduling timeout, not setInterval: a sweep slower than the
-  // interval (many repos, cold ETag cache) must not overlap itself — the
-  // seq gate in refresh() protects snapshot ordering but not the doubled
-  // API spend. The next tick arms only after the current one completes.
+  // interval (many repos, cold ETag cache) must not overlap itself — refresh()
+  // serializes concurrent calls per state, which protects snapshot ordering
+  // but would still double the API spend. The next tick arms only after the current one completes.
   let timer: NodeJS.Timeout;
   let closed = false;
   const tick = async () => {
