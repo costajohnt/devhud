@@ -175,19 +175,15 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   const { visible, acked } = applyAcks(attention, cs.ackedReasons, prDegraded);
   cs.ackedReasons = acked;
 
-  // Auto-clear a stale override once the card reaches In Test or Done:
-  // the card's lifecycle has moved past developer-side bucketing.
-  if (cs.override && (sameStatus(card.status, statuses.inTest) || sameStatus(card.status, statuses.done))) {
-    cs.override = null;
-    cs.overrideAt = null;
-  }
-
   // A pin is a statement about the card as it stood when it was dragged; a
   // Jira status transition supersedes it. Without this, a card pinned to In
   // Progress while addressing review feedback stayed pinned after the
   // In Progress → Code Review transition instead of falling back to the
   // classifier's Waiting in Review (#53). lastStatus is absent in
   // pre-existing state files, so the first refresh only records it.
+  // This transition rule is the only auto-clear: a status check ("is the card
+  // In Test") used to run here too and wiped every pin on an In Test card on
+  // each refresh, so a card dragged to In QA bounced back to QA Ready.
   if (cs.override && cs.lastStatus != null && cs.lastStatus !== card.status) {
     cs.override = null;
     cs.overrideAt = null;

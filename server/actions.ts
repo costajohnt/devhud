@@ -8,6 +8,14 @@ import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 // friends when used as a State.prs key.
 export const PR_REF_RE = /^[\w.-]+\/[\w.-]+#\d+$/;
 
+// The time the current snapshot's data was read (Snapshot.dataAsOf). Not
+// updatedAt: that is stamped after every fetch finishes, so a comment that
+// landed mid-refresh would sit before it, be missing from the snapshot, and
+// be silently treated as seen once acked. Older snapshots fall back to
+// updatedAt.
+const dataHorizon = (state: State): string =>
+  state.snapshot?.dataAsOf ?? state.snapshot?.updatedAt ?? new Date().toISOString();
+
 export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 
 // Union of already-acked reasons and the state-based reasons currently shown
@@ -115,7 +123,7 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     if (!u?.attention?.includes(reason)) return { ok: true, bucket: null };
     const ps = ((state.ownPrs ??= {})[key] ??= { lastSeenPr: null });
     if (reason === 'new_pr_comments') {
-      ps.lastSeenPr = state.snapshot?.updatedAt ?? new Date().toISOString();
+      ps.lastSeenPr = dataHorizon(state);
       u.newComments = [];
     } else {
       ps.ackedReasons = ackReasons(ps.ackedReasons, [reason]);
@@ -143,10 +151,9 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     }
     return null;
   };
-  // "Seen" horizon is the data horizon (last snapshot's updatedAt), not
-  // wall-clock time — a comment that arrived between the last refresh and
-  // this ack must still be treated as new on the next refresh.
-  const horizon = state.snapshot?.updatedAt ?? new Date().toISOString();
+  // "Seen" horizon is the data horizon, not wall-clock time — a comment that
+  // arrived after the data was read must still be treated as new.
+  const horizon = dataHorizon(state);
 
   // Per-reason ack: dismisses one TODO entry and leaves the card's other
   // entries alone. Comment reasons advance only their own source's seen
