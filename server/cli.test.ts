@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll, vi } from 'vitest';
-import { run, formatStatus, probeServer, parseCli, qualifyRepo } from './cli.ts';
+import { run, formatStatus, probeServer, parseCli, qualifyRepo, wantsHelp } from './cli.ts';
 import { createServer } from './index.ts';
 import { loadState, saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -451,4 +451,13 @@ test('todo in direct mode rebuilds the queue from a pre-queue snapshot', async (
   expect(code).toBe(0);
   expect(out).toContain('P1  P-1  CI failing on o/r#4');
   expect(out).toContain('devhud ack P-1 ci_failing');
+});
+
+test('wantsHelp: flag-position help only, never inside free text', () => {
+  expect(wantsHelp([])).toBe(true);
+  expect(wantsHelp(['--help'])).toBe(true);
+  expect(wantsHelp(['status', '--help'])).toBe(true);
+  expect(wantsHelp(['comment', 'PROJ-1', 'rerun with', '--help'])).toBe(false);
+  expect(wantsHelp(['pr-comment', 'acme/x#1', '-h'])).toBe(false);
+  expect(wantsHelp(['todo'])).toBe(false);
 });

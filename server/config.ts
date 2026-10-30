@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { CONFIG_PATH } from './paths.ts';
 import type { Config, JiraStatuses, GithubIdentity } from './types.ts';
 
 const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled', blocked: 'Blocked' };
@@ -40,7 +40,7 @@ interface RawConfig {
   ignoreAuthors?: string[];
 }
 
-export function loadConfig(path: string = fileURLToPath(new URL('../config.json', import.meta.url))): Config {
+export function loadConfig(path: string = CONFIG_PATH): Config {
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
   catch { throw new Error(`config not found at ${path} — copy config.example.json to config.json and fill it in`); }

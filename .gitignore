@@ -5,3 +5,4 @@ data/*
 !data/.gitkeep
 web/dist/
 .superpowers/
+dist/

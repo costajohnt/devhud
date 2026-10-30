@@ -3,7 +3,8 @@
 // status names, the GitHub login) so the only things typed are the site,
 // credentials, project and repos. The prompt/fetch seams are injectable so
 // the flow is testable without a TTY or network.
-import { chmodSync, existsSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { loadConfig } from './config.ts';
@@ -115,6 +116,7 @@ export async function runInit({ prompter, configPath, fetchFn = fetch, force = f
       autoTransitionMerged: false,
     };
     // 0600: the file holds live credentials (loadConfig warns otherwise).
+    mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
     chmodSync(configPath, 0o600); // mode only applies on create; --force reuses the file
 
@@ -125,7 +127,7 @@ export async function runInit({ prompter, configPath, fetchFn = fetch, force = f
     } catch (e) {
       return { code: 1, err: `Saved, but the config is not valid yet: ${(e as Error).message}` };
     }
-    log('Next: ./bin/start.sh, then open http://localhost:3010');
+    log('Next: `devhud serve` (or ./bin/start.sh from a checkout), then open http://localhost:3010');
     return { code: 0 };
   } finally {
     prompter.close();

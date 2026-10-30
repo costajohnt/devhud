@@ -1,7 +1,8 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
-import { join, extname, normalize, resolve, sep } from 'node:path';
+import { join, dirname, extname, normalize, resolve, sep } from 'node:path';
+import { CONFIG_PATH, PACKAGE_ROOT, STATE_PATH, WEB_DIST } from './paths.ts';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
 import { loadState, saveState, emptySnapshot } from './state.ts';
@@ -444,10 +445,10 @@ export function bundleStatus(webSrc: string, webDist: string, extraFiles: string
 
 // main
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+  const configPath = CONFIG_PATH;
   const config = loadConfig(configPath);
-  const root = fileURLToPath(new URL('..', import.meta.url));
-  const pidPath = join(root, 'data', 'server.pid');
+  const root = PACKAGE_ROOT;
+  const pidPath = join(dirname(STATE_PATH), 'server.pid');
   // ponytail: a stale bundle only warns rather than refusing to start —
   // serving an old UI knowingly is a legitimate thing to want, and a hard
   // block would be worse than the noise. Escalate to an exit if the warning
@@ -459,7 +460,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(1);
   }
   if (bundle) console.warn(`\n!! ${bundle.message}\n`);
-  const server = createServer({ config, statePath: join(root, 'data', 'state.json'), webDist: join(root, 'web', 'dist'), configPath });
+  const server = createServer({ config, statePath: STATE_PATH, webDist: WEB_DIST, configPath });
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative
   // after a crash, or false-positive if the pid was reused).
