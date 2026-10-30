@@ -103,6 +103,25 @@ test('ackCard clears attention and moves the card out of needs_attention (direct
   expect(persisted.snapshot!.buckets.in_progress[0]!.key).toBe('P-1');
 });
 
+// M9: `reason` must reach opAction. Dropping it turns a per-entry dismissal
+// into a whole-card ack (every flag cleared, every TODO entry gone).
+test('ackCard with a reason dismisses only that TODO entry and leaves the card\'s others', async () => {
+  const statePath = tempStatePath();
+  const state = seedSnapshot(statePath);
+  const seeded = state.snapshot!.buckets.needs_attention[0]!;
+  seeded.attention = ['new_pr_comments', 'new_jira_comments'];
+  seeded.newComments.push({ source: 'jira', author: 'qa', body: 'repro?', createdAt: '2026-07-01T00:00:00Z' });
+  saveState(statePath, state);
+  const result = await ackCard({ config, statePath, key: 'P-1', reason: 'new_pr_comments' });
+  expect(result).toEqual({ ok: true, bucket: 'in_progress' });
+  const persisted = loadState(statePath);
+  const item = persisted.snapshot!.buckets.in_progress[0]!;
+  expect(item.attention).toEqual(['new_jira_comments']);
+  expect(item.newComments.map(c => c.source)).toEqual(['jira']);
+  expect(persisted.cards['P-1']!.lastSeenJira).toBeNull();
+  expect(persisted.snapshot!.queue.map(e => e.reason)).toEqual(['new_jira_comments']);
+});
+
 test('moveCard pins the card to the requested bucket and persists the override', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);

@@ -87,7 +87,7 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
 
 ```
 {
-  cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt, ackedReasons, lastStatus, reachedTestAt } },
+  cards: { [jiraKey]: { lastSeenPr, lastSeenJira, override, overrideAt, ackedReasons, lastStatus, reachedTestAt, lastSeenAt } },  // pruned after 90 days unseen
   celebrated: [{ id: "org/repo#num", at: isoString | null }],  // legacy, load-only (see below)
   doneCelebrated: [{ id: "jiraKey", at: isoString | null }],
   doneLedger: DoneCard[],  // lifetime Done list, newest first (optional in older files)

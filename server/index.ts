@@ -443,7 +443,10 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       } catch (e) {
         console.error('scheduled refresh saved nothing (memory is fresh, disk is stale):', e);
       }
-      broadcast(snapshot);
+      // state.snapshot, not the local: a /api/refresh or action that landed
+      // while auto-transition awaited Jira already replaced it, and
+      // broadcasting the older local regressed every tab.
+      broadcast(state.snapshot ?? snapshot);
     } catch (e) {
       // Keep the loop alive: a transient Jira/GitHub outage shouldn't kill
       // live updates for the rest of the process lifetime. Full error object
