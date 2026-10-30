@@ -23,20 +23,14 @@ import {
 const RELATIVE_TIME_TICK_MS = 30_000;
 
 const THEME_KEY = 'devhud-theme';
-const LEGACY_THEME_KEY = 'jira-dash-theme';
 const NOTIFY_KEY = 'devhud-notify';
 
 // No explicit user preference stored yet: fall back to the OS setting. Mirrors
 // the pre-paint script in index.html so the very first render already agrees
-// with what that script painted (no flash of the wrong theme). One-time
-// migration from the pre-rename key: read it as a fallback and write it
-// forward under the new key so nobody's saved theme choice resets.
+// with what that script painted (no flash of the wrong theme).
 function getInitialTheme(): string {
-  const stored = readStorage(THEME_KEY) ?? readStorage(LEGACY_THEME_KEY);
-  if (stored) {
-    if (!readStorage(THEME_KEY)) writeStorage(THEME_KEY, stored);
-    return stored;
-  }
+  const stored = readStorage(THEME_KEY);
+  if (stored) return stored;
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 

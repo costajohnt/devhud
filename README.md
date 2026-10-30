@@ -43,7 +43,7 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 
 ## Demo mode
 
-Set `"demo": true` in `config.json` (or run with `DEVHUD_DEMO=1`; `SIMON_DASH_DEMO=1` and `JIRA_DASH_DEMO=1` still work as deprecated aliases) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
+Set `"demo": true` in `config.json` (or run with `DEVHUD_DEMO=1`) to feed canned cards and PRs through the real pipeline with no network calls. Useful for trying the UI before adding real credentials. Set it back to `false` once your tokens are in.
 
 ## Install
 

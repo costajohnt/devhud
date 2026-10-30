@@ -286,17 +286,17 @@ export async function run(argv: string[], { config, statePath, configPath, probe
     const result = await opWrite(ctx, { type, key, repo: repoRef, number, body, status });
 
     if (values.json) {
-      return { code: result.error ? 1 : 0, out: JSON.stringify(result), err };
+      return { code: 'error' in result ? 1 : 0, out: JSON.stringify(result), err };
     }
-    if (result.error) return { code: 1, out: '', err: [err, `Error: ${result.error as string}`].join('\n') };
-    if (result.demo) return { code: 0, out: result.message as string, err };
-    const out = result.transitionedTo ? `${key} -> ${result.transitionedTo as string}` : `${cmd} ok`;
+    if ('error' in result) return { code: 1, out: '', err: [err, `Error: ${result.error}`].join('\n') };
+    if ('demo' in result) return { code: 0, out: result.message, err };
+    const out = result.transitionedTo ? `${key} -> ${result.transitionedTo}` : `${cmd} ok`;
     // The write itself succeeded even if the post-write refresh failed, or
     // the local save got blocked — warnings, not errors: exit 0, success on
     // stdout, warning(s) on stderr.
     const warnings: string[] = [];
-    if (result.refreshError) warnings.push(`Warning: board refresh after write failed: ${result.refreshError as string}`);
-    if (result.saveBlockedError) warnings.push(`Warning: local board save skipped: ${result.saveBlockedError as string}`);
+    if (result.refreshError) warnings.push(`Warning: board refresh after write failed: ${result.refreshError}`);
+    if (result.saveBlockedError) warnings.push(`Warning: local board save skipped: ${result.saveBlockedError}`);
     const finalErr = warnings.length ? [err, ...warnings].join('\n') : err;
     return { code: 0, out, err: finalErr };
   }

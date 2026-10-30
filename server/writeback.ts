@@ -201,16 +201,6 @@ export const KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 export interface PerformWriteArgs {
-  // Accepted but never read in the body below: every write path re-reads a
-  // fresh `liveConfig` from disk (see the comment above that re-read) as the
-  // sole source of truth for the gate, so a possibly-stale in-memory config
-  // is deliberately not trusted here. Kept in the signature only so callers
-  // (server/index.ts, cli.ts, mcp/handlers.ts) can pass their already-loaded
-  // config without a special case, mirroring applyAction's calling
-  // convention. Typed `unknown` rather than `Config` to reflect that
-  // honestly instead of demanding callers (and tests) construct a full
-  // Config just to satisfy a parameter nothing here looks at.
-  config: unknown;
   state: State;
   type: string;
   key?: string;
@@ -241,11 +231,8 @@ export interface PerformWriteArgs {
 //     went through), refreshError is a warning for the caller to surface,
 //     not a reason to report the whole call as failed
 //   - { error, status } — validation failure, gate refusal, or write failure
-// `config` is deliberately absent from this destructure even though
-// PerformWriteArgs still requires it — see that field's comment: the gate
-// reads a fresh config from disk instead, and destructuring a binding this
-// body never touches only invited the reader (and the linter) to assume
-// otherwise.
+// There is no `config` argument: the gate reads a fresh config from disk
+// instead of trusting a possibly-stale in-memory one.
 export async function performWrite({
   state, type, key, repo, number, body, status,
   refreshFn = refresh, configPath, loadConfigFn = loadConfig, source,

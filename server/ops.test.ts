@@ -47,9 +47,9 @@ test('opWrite direct mode: successful external write + blocked save returns ok w
   );
 
   expect(externalWriteHappened).toBe(true);
-  expect(result.error).toBeUndefined();
-  expect(result.ok).toBe(true);
-  expect(String(result.saveBlockedError)).toContain('appears to be running');
+  expect(result).not.toHaveProperty('error');
+  expect(result).toHaveProperty('ok', true);
+  expect(result).toHaveProperty('saveBlockedError', expect.stringContaining('appears to be running'));
 });
 
 // The via-server branch used to collapse every non-'move' action to

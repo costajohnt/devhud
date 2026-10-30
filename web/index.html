@@ -8,18 +8,13 @@
     <script>
       // Pre-paint theme: explicit choice wins, otherwise fall back to the OS
       // preference so there's no flash of the wrong theme before main.tsx's
-      // getInitialTheme() (app.tsx) runs the same logic. One-time migration
-      // from the pre-rename key: read it as a fallback and write it forward
-      // under the new key so nobody's saved theme choice resets. Storage
-      // access is guarded (blocked site data throws), matching storage.ts.
+      // getInitialTheme() (app.tsx) runs the same logic. Storage access is
+      // guarded (blocked site data throws), matching storage.ts.
       {
-        const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
-        const saved = get('devhud-theme');
-        const t = saved
-          || get('jira-dash-theme')
+        let saved = null;
+        try { saved = localStorage.getItem('devhud-theme'); } catch { /* blocked */ }
+        document.documentElement.dataset.theme = saved
           || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-        if (!saved) { try { localStorage.setItem('devhud-theme', t); } catch { /* blocked */ } }
-        document.documentElement.dataset.theme = t;
       }
     </script>
   </head>

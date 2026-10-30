@@ -128,50 +128,46 @@ test('checkWriteGate: writeEnabled true and not demo is unblocked', () => {
 });
 
 test('performWrite rejects an unknown type before touching the gate', async () => {
-  const result = await performWrite({ config: { demo: false, writeEnabled: false }, state: emptyState(), type: 'delete' });
+  const result = await performWrite({ state: emptyState(), type: 'delete' });
   expect(result).toEqual({ error: 'unknown write type "delete"', status: 400 });
 });
 
 test('performWrite validates required fields per type', async () => {
-  const config = { demo: false, writeEnabled: true };
   const state = emptyState();
-  expect(await performWrite({ config, state, type: 'transition', key: 'P-1', configPath: NO_CONFIG })).toEqual({ error: 'transition requires key and status', status: 400 });
-  expect(await performWrite({ config, state, type: 'comment', key: 'P-1', configPath: NO_CONFIG })).toEqual({ error: 'comment requires key and body', status: 400 });
-  expect(await performWrite({ config, state, type: 'pr_comment', repo: 'o/r', configPath: NO_CONFIG })).toEqual({ error: 'pr_comment requires repo, number, and body', status: 400 });
+  expect(await performWrite({ state, type: 'transition', key: 'P-1', configPath: NO_CONFIG })).toEqual({ error: 'transition requires key and status', status: 400 });
+  expect(await performWrite({ state, type: 'comment', key: 'P-1', configPath: NO_CONFIG })).toEqual({ error: 'comment requires key and body', status: 400 });
+  expect(await performWrite({ state, type: 'pr_comment', repo: 'o/r', configPath: NO_CONFIG })).toEqual({ error: 'pr_comment requires repo, number, and body', status: 400 });
 });
 
 test('performWrite: demo mode returns a stub success shape without dispatching a network write', async () => {
   const config = { demo: true, writeEnabled: false, jira: {}, github: {} };
-  const result = await performWrite({ config, state: emptyState(), type: 'transition', key: 'P-1', status: 'Done', loadConfigFn: stubLoadConfig(config) });
+  const result = await performWrite({ state: emptyState(), type: 'transition', key: 'P-1', status: 'Done', loadConfigFn: stubLoadConfig(config) });
   expect(result).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
 
 test('performWrite: writeEnabled false (non-demo) refuses with a real error, not a stub', async () => {
   const config = { demo: false, writeEnabled: false };
-  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', loadConfigFn: stubLoadConfig(config) });
+  const result = await performWrite({ state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', loadConfigFn: stubLoadConfig(config) });
   expect(result).toEqual({ error: 'write-back disabled; set writeEnabled: true in config.json', status: 403 });
 });
 
 test('performWrite rejects a Jira key that looks like a path-traversal attempt', async () => {
-  const config = { demo: false, writeEnabled: true };
-  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'PROJ-1/../x', body: 'hi', configPath: NO_CONFIG });
+  const result = await performWrite({ state: emptyState(), type: 'comment', key: 'PROJ-1/../x', body: 'hi', configPath: NO_CONFIG });
   expect(result).toEqual({ error: 'invalid Jira issue key "PROJ-1/../x"', status: 400 });
 });
 
 test('performWrite rejects a malformed repo for pr_comment', async () => {
-  const config = { demo: false, writeEnabled: true };
-  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'not-a-repo', number: 1, body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
+  const result = await performWrite({ state: emptyState(), type: 'pr_comment', repo: 'not-a-repo', number: 1, body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
   expect(result.status).toBe(400);
   expect(result.error).toContain('invalid repo');
 });
 
 test('performWrite rejects a non-integer PR number for pr_comment', async () => {
-  const config = { demo: false, writeEnabled: true };
-  const result = await performWrite({ config, state: emptyState(), type: 'pr_comment', repo: 'o/r', number: '1; rm -rf' as unknown as number, body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
+  const result = await performWrite({ state: emptyState(), type: 'pr_comment', repo: 'o/r', number: '1; rm -rf' as unknown as number, body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
   expect(result.status).toBe(400);
 });
 
-test('performWrite re-reads the gate from disk: an in-memory config claiming writeEnabled honors a config.json flip to false, no restart', async () => {
+test('performWrite re-reads the gate from disk: a config.json flip to false takes effect with no restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-writeback-'));
   const configPath = join(dir, 'config.json');
   writeFileSync(configPath, JSON.stringify({
@@ -179,23 +175,18 @@ test('performWrite re-reads the gate from disk: an in-memory config claiming wri
     github: { org: 'o', repos: ['r'], username: 'u' },
     writeEnabled: false, // the on-disk truth
   }));
-  // The in-memory config a long-lived process loaded before the file was
-  // edited — stale, claims writeEnabled: true.
-  const staleInMemoryConfig = { demo: false, writeEnabled: true, jira: {}, github: {} };
   const result = await performWrite({
-    config: staleInMemoryConfig, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath,
+    state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath,
   });
   expect(result).toEqual({ error: 'write-back disabled; set writeEnabled: true in config.json', status: 403 });
 });
 
-test('performWrite fails CLOSED when the config re-read throws, even if the in-memory config would have allowed the write', async () => {
-  // In-memory config says writes are allowed — but that must not matter:
-  // if the on-disk config can't be read (deleted, permissions, mid-edit),
-  // the write must refuse, not silently trust a possibly-stale in-memory
-  // config. This is what stops a long-running process from continuing to
-  // write after config.json is deleted or made briefly unreadable.
-  const config = { demo: false, writeEnabled: true, jira: {}, github: {} };
-  const result = await performWrite({ config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
+test('performWrite fails CLOSED when the config re-read throws', async () => {
+  // If the on-disk config can't be read (deleted, permissions, mid-edit),
+  // the write must refuse. This is what stops a long-running process from
+  // continuing to write after config.json is deleted or made briefly
+  // unreadable.
+  const result = await performWrite({ state: emptyState(), type: 'comment', key: 'P-1', body: 'hi', configPath: NO_CONFIG }) as LooseWrite;
   expect(result.status).toBe(403);
   expect(result.error).toContain('config re-read failed');
   expect(result.error).toContain('refusing write');
@@ -209,7 +200,7 @@ test('performWrite: a successful write with a failing post-write refresh is stil
   global.fetch = fetchMock;
   try {
     const result = await performWrite({
-      config, state: emptyState(), type: 'comment', key: 'P-1', body: 'hi',
+      state: emptyState(), type: 'comment', key: 'P-1', body: 'hi',
       refreshFn: () => { throw new Error('jira down mid-refresh'); },
       loadConfigFn: stubLoadConfig(config),
     }) as LooseWrite;
@@ -338,7 +329,7 @@ const scopedConfig = {
 
 test('performWrite refuses a well-formed Jira key outside the configured project', async () => {
   const result = await performWrite({
-    config: scopedConfig, state: emptyState(), type: 'comment', key: 'OTHER-1', body: 'hi',
+    state: emptyState(), type: 'comment', key: 'OTHER-1', body: 'hi',
     loadConfigFn: stubLoadConfig(scopedConfig),
   }) as LooseWrite;
   expect(result.status).toBe(403);
@@ -347,7 +338,7 @@ test('performWrite refuses a well-formed Jira key outside the configured project
 
 test('performWrite refuses a well-formed repo not in the configured github.repos list', async () => {
   const result = await performWrite({
-    config: scopedConfig, state: emptyState(), type: 'pr_comment', repo: 'o/not-mine', number: 1, body: 'hi',
+    state: emptyState(), type: 'pr_comment', repo: 'o/not-mine', number: 1, body: 'hi',
     loadConfigFn: stubLoadConfig(scopedConfig),
   }) as LooseWrite;
   expect(result.status).toBe(403);
@@ -358,7 +349,7 @@ test('performWrite allows in-scope targets through the scope check', async () =>
   const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
   vi.stubGlobal('fetch', fetchMock);
   const result = await performWrite({
-    config: scopedConfig, state: emptyState(), type: 'pr_comment', repo: 'o/r', number: 1, body: 'hi',
+    state: emptyState(), type: 'pr_comment', repo: 'o/r', number: 1, body: 'hi',
     loadConfigFn: stubLoadConfig(scopedConfig),
     refreshFn: (async ({ state: s }: { state: { snapshot: unknown } }) => s.snapshot) as never,
   }) as LooseWrite;
@@ -726,7 +717,7 @@ test('performWrite records the posted comment id in state before the post-write 
   const state = emptyState();
   let seenInRefresh: string[] | undefined;
   const result = await performWrite({
-    config: baseAutoConfig, state, type: 'comment', key: 'PROJ-1', body: 'automated note',
+    state, type: 'comment', key: 'PROJ-1', body: 'automated note',
     loadConfigFn: stubLoadConfig(baseAutoConfig),
     refreshFn: (async ({ state: s }: { state: State }) => { seenInRefresh = [...(s.postedCommentIds ?? [])]; return s.snapshot; }) as never,
   }) as LooseWrite;

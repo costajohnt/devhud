@@ -45,6 +45,13 @@ test('init refuses to overwrite an existing config without --force', async () =>
   expect(readFileSync(configPath, 'utf8')).toBe('{}');
 });
 
+test('guessStatuses with no project statuses writes the full default template', () => {
+  expect(Object.entries(guessStatuses([]))).toEqual([
+    ['todo', 'To Do'], ['inProgress', 'In Progress'], ['review', 'Code Review'], ['inTest', 'In Test'],
+    ['done', 'Done'], ['blocked', 'Blocked'], ['canceled', 'Canceled'],
+  ]);
+});
+
 test('guessStatuses maps obvious names and keeps defaults otherwise', () => {
   const s = guessStatuses(['Backlog', 'In Progress', 'Code Review', 'Peer Review', 'Testing', 'Ready for Testing', 'Done']);
   expect(s.review).toEqual(['Code Review', 'Peer Review']);

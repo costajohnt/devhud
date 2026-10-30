@@ -10,7 +10,7 @@ export function emptyState(): State {
   // to an inherited accessor like Object.prototype.__proto__ in the first
   // place — cardState()'s `??=` sees a real missing key and assigns
   // normally, no matter what string reaches it.
-  return { cards: Object.create(null) as State['cards'], celebrated: [], doneCelebrated: [], lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {}, autoTransitioned: {}, postedCommentIds: [] };
+  return { cards: Object.create(null) as State['cards'], doneCelebrated: [], lastRefreshAt: null, snapshot: null, lastCards: null, lastPrs: null, prLog: {}, autoTransitioned: {}, postedCommentIds: [] };
 }
 
 // JSON.parse always produces normal-prototype objects, so the `cards` field
@@ -42,27 +42,23 @@ function withNullProtoCards(state: State): State {
   return state;
 }
 
-// Legacy state files stored `celebrated` as plain id strings ("org/repo#42").
-// Migrate them to `{ id, at }` objects so buildSnapshot can report a merge
-// timestamp alongside the id; `at: null` marks entries with no known merge
-// time (pre-migration merges).
-function migrateCelebrated(state: State): State {
-  state.celebrated = (state.celebrated ?? []).map((e: CelebratedEntry | string) => (
-    typeof e === 'string' ? { id: e, at: null } : e
-  ));
-  return state;
-}
-
-// Older states predate the prLog field: synthesize a minimal entry for every
-// celebrated merge so the charts don't lose merge history that predates this
-// field. Real PR lifecycle data (openedAt/closedAt) stays unknown for these —
-// only mergedAt is recoverable from the celebrated timestamp.
-function migratePrLog(state: State): State {
+// Older states carry a `celebrated` list of merged PRs (plain "org/repo#42"
+// strings in the oldest files, `{ id, at }` later) and a `mergedTotal`, and
+// may predate the prLog field. Synthesize a minimal prLog entry for every
+// celebrated merge so the charts don't lose merge history, then drop both
+// legacy keys so the next save stops writing them. Real PR lifecycle data
+// (openedAt/closedAt) stays unknown for these — only mergedAt is
+// recoverable from the celebrated timestamp.
+type LegacyState = State & { celebrated?: (CelebratedEntry | string)[]; mergedTotal?: unknown };
+function migratePrLog(state: LegacyState): State {
   state.prLog = state.prLog ?? {};
-  for (const e of state.celebrated) {
-    if (state.prLog[e.id]) continue;
-    state.prLog[e.id] = { id: e.id, repo: e.id.split('#')[0] ?? e.id, openedAt: null, mergedAt: e.at, closedAt: null };
+  for (const e of state.celebrated ?? []) {
+    const { id, at } = typeof e === 'string' ? { id: e, at: null } : e;
+    if (state.prLog[id]) continue;
+    state.prLog[id] = { id, repo: id.split('#')[0] ?? id, openedAt: null, mergedAt: at, closedAt: null };
   }
+  delete state.celebrated;
+  delete state.mergedTotal;
   return state;
 }
 
@@ -104,7 +100,7 @@ function migrateWritebackLedgers(state: State): State {
 // rotating .bak written by saveState, rather than silently losing overrides.
 export function loadState(path: string): State {
   const hydrate = (json: string): State =>
-    withNullProtoCards(migrateWritebackLedgers(migrateSnapshot(migratePrLog(migrateCelebrated({ ...emptyState(), ...JSON.parse(json) })))));
+    withNullProtoCards(migrateWritebackLedgers(migrateSnapshot(migratePrLog({ ...emptyState(), ...JSON.parse(json) }))));
   const fromBak = (): State | null => {
     try { return hydrate(readFileSync(path + '.bak', 'utf8')); }
     catch { return null; }
