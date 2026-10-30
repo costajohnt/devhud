@@ -370,6 +370,29 @@ test('GET /api/data with the correct Host still returns 200', async () => {
   expect(res.status).toBe(200);
 });
 
+// M8: guardHost is an exact match on two strings. Each spoofed form below is
+// one a looser check (prefix/startsWith, hostname-only, port-agnostic) would
+// let through. [::1] is refused on purpose: the server binds 127.0.0.1 only,
+// so no browser reaches it under an IPv6 Host.
+test('guardHost accepts exactly 127.0.0.1:<port> and localhost:<port>, nothing near them', async () => {
+  const port = (server.address() as AddressInfo).port;
+  for (const host of [`localhost:${port}`, `LOCALHOST:${port}`]) {
+    expect((await requestWithHost(port, '/api/data', host, 'GET')).status, host).toBe(200);
+  }
+  for (const host of [
+    `localhost:${port + 1}`,
+    `localhost.evil.test:${port}`,
+    `127.0.0.1.evil.test:${port}`,
+    `localhost`,
+    `127.0.0.1`,
+    `[::1]:${port}`,
+  ]) {
+    const res = await requestWithHost(port, '/api/data', host, 'GET');
+    expect(res.status, host).toBe(403);
+    expect((res.json() as { error: string }).error, host).toBe('invalid Host header');
+  }
+});
+
 test('POST /api/* with correct Content-Type and Host passes the guard (reaches normal handling)', async () => {
   // /api/action with a real body still 200s; /api/refresh and /api/write
   // with an empty body reach their own validation past the guard (not a
