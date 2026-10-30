@@ -138,7 +138,7 @@ test('MCP-sourced writes need mcpWriteEnabled; CLI writes need only writeEnabled
   const write = (mcpWriteEnabled: boolean, source?: 'mcp') => {
     const configPath = join(dir, `c-${mcpWriteEnabled}-${source ?? 'cli'}.json`);
     writeFileSync(configPath, JSON.stringify({ ...base, mcpWriteEnabled }));
-    return performWrite({ config: {}, state: emptyState(), type: 'comment', key: 'PROJ-1', body: 'hi', configPath, source, refreshFn: (async () => emptyState().snapshot) as never });
+    return performWrite({ state: emptyState(), type: 'comment', key: 'PROJ-1', body: 'hi', configPath, source, refreshFn: (async () => emptyState().snapshot) as never });
   };
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ id: 'c1' }), { status: 201, headers: { 'content-type': 'application/json' } }))));
   expect(await write(false, 'mcp')).toMatchObject({ status: 403, error: expect.stringMatching(/mcpWriteEnabled/) });

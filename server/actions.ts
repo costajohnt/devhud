@@ -6,7 +6,7 @@ import type { State, Config, Bucket, ActionResult, Item, NewComment } from './ty
 
 // "owner/repo#123". Has a slash and a '#', so it can never be __proto__ and
 // friends when used as a State.prs key.
-export const PR_REF_RE = /^[\w.-]+\/[\w.-]+#\d+$/;
+const PR_REF_RE = /^[\w.-]+\/[\w.-]+#\d+$/;
 
 // The time the current snapshot's data was read (Snapshot.dataAsOf). Not
 // updatedAt: that is stamped after every fetch finishes, so a comment that

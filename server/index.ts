@@ -367,7 +367,7 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         const { type, key, repo, number, body: text, status, source } = body as {
           type?: string; key?: string; repo?: string; number?: number; body?: string; status?: string; source?: unknown;
         };
-        const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath, source: source === 'mcp' ? 'mcp' : undefined });
+        const result = await performWrite({ state, type: type ?? '', key, repo, number, body: text, status, configPath, source: source === 'mcp' ? 'mcp' : undefined });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         // The write already happened in Jira/GitHub: a failed local save must
         // not turn into a 500 that invites a retry (and a double post). Same
