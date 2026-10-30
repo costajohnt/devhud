@@ -178,19 +178,27 @@ test('a second claim of the same login code revokes the session the first claim 
 });
 
 // A theft near the end of a code's 60 s and a slower browser claim must still
-// be caught: spent codes live as long as the session they produced.
-test('a late second claim (after the code would have expired) still revokes the first session', async () => {
+// be caught (within SPENT_CODE_WINDOW_MS of the theft), but a code someone
+// saw must not be a way to revoke the user's session forever after.
+test('a second claim within five minutes revokes the first session; a later replay does nothing', async () => {
   const { base, token } = await start();
-  const code = await mintCode(base, token);
-  const thief = ((await (await claim(base, code)).json()) as { session: string }).session;
   const realNow = Date.now;
-  vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 5 * 60_000);
   const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
+    const code = await mintCode(base, token);
+    const thief = ((await (await claim(base, code)).json()) as { session: string }).session;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 4 * 60_000);
     expect((await claim(base, code)).status).toBe(409);
+    expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': thief } })).status).toBe(401);
+    vi.mocked(Date.now).mockRestore();
+
+    const code2 = await mintCode(base, token);
+    const user = ((await (await claim(base, code2)).json()) as { session: string }).session;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 6 * 60_000);
+    expect((await claim(base, code2)).status).toBe(401);
+    expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': user } })).status).toBe(200);
   } finally {
     vi.restoreAllMocks();
+    errSpy.mockRestore();
   }
-  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': thief } })).status).toBe(401);
-  void errSpy;
 });
