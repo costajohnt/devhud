@@ -40,6 +40,10 @@ interface RawConfig {
   ignoreAuthors?: string[];
 }
 
+export const isHttpsUrl = (u: string): boolean => {
+  try { return new URL(u).protocol === 'https:'; } catch { return false; }
+};
+
 export function loadConfig(path: string = CONFIG_PATH): Config {
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
@@ -57,7 +61,14 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
   } catch { /* already handled by the readFileSync above if the file is genuinely missing */ }
   let c: RawConfig;
   try { c = JSON.parse(raw) as RawConfig; }
-  catch (e) { throw new Error(`config at ${path} is not valid JSON: ${(e as Error).message}`); }
+  catch (e) {
+    // Never echo JSON.parse's message: V8 quotes the surrounding source, which
+    // for this file can be a token ("Unexpected token 'g', ..."token":ghp_...").
+    // That error reaches HTTP/MCP callers through performWrite. Keep only the
+    // position, when the engine reports one.
+    const at = (e as Error).message.match(/line (\d+) column (\d+)/);
+    throw new Error(`config at ${path} is not valid JSON${at ? ` (line ${at[1]}, column ${at[2]})` : ''}; check quotes and commas`);
+  }
   for (const key of ['jira', 'github'] as const) {
     if (!c[key]) throw new Error(`config at ${path} is missing required key "${key}"`);
   }
@@ -88,6 +99,11 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
   if (!demo) {
     for (const key of ['baseUrl', 'email', 'apiToken'] as const) {
       if (!jira[key]) throw new Error(`config at ${path} is missing required key "jira.${key}"`);
+    }
+    // Every Jira request carries Basic email:apiToken; over http that is the
+    // token in cleartext on every refresh.
+    if (!isHttpsUrl(jira.baseUrl!)) {
+      throw new Error(`config at ${path} has an invalid "jira.baseUrl" (${JSON.stringify(jira.baseUrl)}); must be an https:// URL`);
     }
   }
   // These values flow unescaped into query/path languages downstream —

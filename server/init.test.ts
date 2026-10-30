@@ -51,3 +51,38 @@ test('guessStatuses maps obvious names and keeps defaults otherwise', () => {
   expect(s.inTest).toBe('Testing');
   expect(s.todo).toBe('To Do');
 });
+
+test('init refuses an http Jira URL before asking for the token', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devhud-init-'));
+  const p = prompter(['http://acme.atlassian.net']);
+  const r = await runInit({ prompter: p, configPath: join(dir, 'config.json'), fetchFn: () => { throw new Error('no fetch expected'); }, log: () => {} });
+  expect(r.code).toBe(1);
+  expect(r.err).toMatch(/https/);
+  expect(p.asked).toHaveLength(1);
+});
+
+// Audit 2026-10-29 M14: --force over an existing 0644 file wrote the tokens
+// in place, readable by others until a later chmod.
+test('init --force over a world-readable config leaves it 0600', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devhud-init-'));
+  const configPath = join(dir, 'config.json');
+  writeFileSync(configPath, '{}', { mode: 0o644 });
+  const fetchFn = (url: string) => url.endsWith('/myself') ? json({ accountId: 'acc' }) : json([]);
+  const p = prompter(['https://acme.atlassian.net', 'me@acme.com', 'jt', 'PROJ', '', 'me', 'acme', 'web']);
+  const r = await runInit({ prompter: p, configPath, fetchFn, force: true, log: () => {} });
+  expect(r).toEqual({ code: 0 });
+  expect(statSync(configPath).mode & 0o777).toBe(0o600);
+  expect(JSON.parse(readFileSync(configPath, 'utf8')).jira.apiToken).toBe('jt');
+});
+
+test('init asks for the accountId when Jira rejects the credentials', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devhud-init-'));
+  const configPath = join(dir, 'config.json');
+  const fetchFn = () => Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+  // site, email, token, accountId (asked because /myself failed), project, gh token, username, org, repos
+  const p = prompter(['https://acme.atlassian.net', 'me@acme.com', 'jt', 'acc-typed', 'PROJ', '', 'me', 'acme', 'web']);
+  const r = await runInit({ prompter: p, configPath, fetchFn, log: () => {} });
+  expect(r).toEqual({ code: 0 });
+  expect(p.asked.some(q => /Could not reach Jira/.test(q))).toBe(true);
+  expect(JSON.parse(readFileSync(configPath, 'utf8')).jira.accountId).toBe('acc-typed');
+});

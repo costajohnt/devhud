@@ -3,11 +3,11 @@
 // status names, the GitHub login) so the only things typed are the site,
 // credentials, project and repos. The prompt/fetch seams are injectable so
 // the flow is testable without a TTY or network.
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
-import { loadConfig } from './config.ts';
+import { isHttpsUrl, loadConfig } from './config.ts';
+import { writeFilePrivate } from './state.ts';
 
 export interface Prompter {
   ask(question: string, fallback?: string): Promise<string>;
@@ -78,6 +78,9 @@ export async function runInit({ prompter, configPath, fetchFn = fetch, force = f
     log('devhud setup. Press enter to accept a [default].\n');
 
     const baseUrl = (await prompter.ask('Jira site URL, e.g. https://yourcompany.atlassian.net')).replace(/\/+$/, '');
+    // Checked before the token is asked for or sent anywhere: the /myself
+    // probe below would send it as Basic auth over whatever scheme this is.
+    if (!isHttpsUrl(baseUrl)) return { code: 1, err: `Jira site URL must start with https:// (got ${JSON.stringify(baseUrl)})` };
     const email = await prompter.ask('Jira account email');
     log('Create a Jira API token at https://id.atlassian.com/manage-profile/security/api-tokens');
     const apiToken = await prompter.secret('Jira API token');
@@ -115,10 +118,9 @@ export async function runInit({ prompter, configPath, fetchFn = fetch, force = f
       writeEnabled: false,
       autoTransitionMerged: false,
     };
-    // 0600: the file holds live credentials (loadConfig warns otherwise).
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-    chmodSync(configPath, 0o600); // mode only applies on create; --force reuses the file
+    // 0600 temp file then rename: writing in place with --force over an
+    // existing 0644 file exposed the new tokens until a later chmod.
+    writeFilePrivate(configPath, JSON.stringify(config, null, 2) + '\n');
 
     log(`\nWrote ${configPath}.`);
     log(`Status mapping: ${JSON.stringify(statuses)}. Edit jira.statuses if a stage is wrong.`);
