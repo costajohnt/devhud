@@ -1,9 +1,9 @@
 // `devhud serve` runs the server as a child process and forwards termination
 // signals to it (server/cli.ts). Without forwarding, a signal to the CLI
 // orphans the server, still listening on its port.
-import { test, expect } from 'vitest';
-import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { test, expect, beforeAll } from 'vitest';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,13 @@ const freePort = async () => {
 };
 const up = (port: number) => fetch(`http://127.0.0.1:${port}/api/data`).then(r => r.ok, () => false);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// The real server refuses to start without a built web bundle, and a fresh
+// clone (CI runs `npm test` before `npm run build`) has none.
+beforeAll(() => {
+  const web = fileURLToPath(new URL('../web', import.meta.url));
+  if (!existsSync(join(web, 'dist', 'index.html'))) execFileSync('npm', ['run', '-s', 'build'], { cwd: web, stdio: 'ignore' });
+}, 120_000);
 
 test('serve forwards SIGINT to the server: the port closes and the CLI exits 0', async () => {
   const home = mkdtempSync(join(tmpdir(), 'jd-serve-'));
