@@ -86,7 +86,7 @@ interface RawJiraIssue {
 // Jira's statusCategory.key is one of 'new' | 'indeterminate' | 'done'; map
 // anything unexpected to '' so downstream code falls back to status-name
 // matching rather than trusting a bogus category.
-function statusCategory(key: string | undefined): Card['statusCategory'] {
+export function statusCategory(key: string | undefined): Card['statusCategory'] {
   return key === 'new' || key === 'indeterminate' || key === 'done' ? key : '';
 }
 
@@ -96,6 +96,14 @@ interface RawJiraComment {
   body?: AdfNode;
   created?: string;
 }
+
+const mapComment = (c: RawJiraComment): JiraComment => ({
+  ...(c.id ? { id: String(c.id) } : {}),
+  author: c.author?.displayName ?? '',
+  authorId: c.author?.accountId ?? '',
+  body: adfToText(c.body).trim(),
+  createdAt: iso(c.created),
+});
 
 export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
   const f = issue.fields;
@@ -111,13 +119,7 @@ export function mapIssue(issue: RawJiraIssue, cfg: JiraConfig): Card {
     updatedAt: iso(f.updated),
     myAccountId: cfg.accountId,
     assigneeId: f.assignee?.accountId,
-    comments: (f.comment?.comments ?? []).map((c): JiraComment => ({
-      ...(c.id ? { id: String(c.id) } : {}),
-      author: c.author?.displayName ?? '',
-      authorId: c.author?.accountId ?? '',
-      body: adfToText(c.body).trim(),
-      createdAt: iso(c.created),
-    })),
+    comments: (f.comment?.comments ?? []).map(mapComment),
   };
 }
 
@@ -131,16 +133,8 @@ async function fetchLatestComments(key: string, cfg: JiraConfig, auth: string): 
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, cfg.baseUrl);
   url.searchParams.set('orderBy', '-created');
   url.searchParams.set('maxResults', '50');
-  const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json() as { comments?: RawJiraComment[] };
-  return (data.comments ?? []).map((c): JiraComment => ({
-    ...(c.id ? { id: String(c.id) } : {}),
-    author: c.author?.displayName ?? '',
-    authorId: c.author?.accountId ?? '',
-    body: adfToText(c.body).trim(),
-    createdAt: iso(c.created),
-  }));
+  const data = await (await jiraFetch(url, auth)).json() as { comments?: RawJiraComment[] };
+  return (data.comments ?? []).map(mapComment);
 }
 
 export async function fetchJiraCards(cfg: JiraConfig, doneSince?: string): Promise<Card[]> {
@@ -169,8 +163,24 @@ export async function fetchJiraCards(cfg: JiraConfig, doneSince?: string): Promi
   return cards;
 }
 
-const basicAuth = (cfg: JiraConfig): string =>
+export const basicAuth = (cfg: JiraConfig): string =>
   'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
+
+// Every Jira REST call (reads here, write-back in writeback.ts): JSON
+// Accept, 30s timeout, throws on a non-2xx with the first 200 chars of the
+// body. A `body` makes it a JSON POST.
+export async function jiraFetch(url: URL, auth: string, body?: unknown): Promise<Response> {
+  const res = await fetch(url, body === undefined
+    ? { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) }
+    : {
+      method: 'POST',
+      headers: { Authorization: auth, Accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return res;
+}
 
 // One page of issues per iteration, following Jira's nextPageToken cursor
 // until it runs out.
@@ -182,9 +192,7 @@ async function* searchPages(cfg: JiraConfig, auth: string, jql: string, fields: 
     url.searchParams.set('fields', fields);
     url.searchParams.set('maxResults', '50');
     if (nextPageToken) url.searchParams.set('nextPageToken', nextPageToken);
-    const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const data = await res.json() as { issues?: RawJiraIssue[]; nextPageToken?: string };
+    const data = await (await jiraFetch(url, auth)).json() as { issues?: RawJiraIssue[]; nextPageToken?: string };
     yield data.issues ?? [];
     nextPageToken = data.nextPageToken;
   } while (nextPageToken);
