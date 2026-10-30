@@ -40,7 +40,8 @@ export function QueuePanel({ data, onSelect, act, actionInFlight }: {
           {queue.map(e => (
             <li key={e.id} class="pr-row queue-row">
               <span class={PRIORITY[e.priority].cls}>{PRIORITY[e.priority].text}</span>
-              {e.kind === 'card' ? (
+              {/* No kind = a queue saved before review requests existed: a card. */}
+              {e.kind !== 'pr' ? (
                 <button type="button" class="pr-row-main queue-main" onClick={() => onSelect(e.key)} title={e.summary}>
                   <span class="pr-row-id">{e.key}</span>
                   <QueueText e={e} />

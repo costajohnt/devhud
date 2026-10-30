@@ -427,7 +427,9 @@ const REVIEW_REQUEST_SEARCH = `query($q: String!) {
         number url title updatedAt
         author { login }
         repository { nameWithOwner }
-        timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 1) { nodes { ... on ReviewRequestedEvent { createdAt } } }
+        timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
+          nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on User { login } } } }
+        }
       }
     }
   }
@@ -437,24 +439,44 @@ interface ReviewRequestNode {
   number?: number; url?: string; title?: string; updatedAt?: string;
   author?: { login?: string } | null;
   repository?: { nameWithOwner?: string } | null;
-  timelineItems?: { nodes?: ({ createdAt?: string } | null)[] | null } | null;
+  timelineItems?: { nodes?: ({ createdAt?: string; requestedReviewer?: { __typename?: string; login?: string } | null } | null)[] | null } | null;
+}
+
+// When this user's review was asked for: the newest request naming them,
+// else (a team request) the newest team request, else unknown. The newest
+// request to *anyone* would reset the clock whenever a second reviewer is
+// added, which breaks the queue's longest-waiting-first order.
+export function requestedAtFor(node: ReviewRequestNode, username: string): string | null {
+  const events = (node.timelineItems?.nodes ?? []).filter((e): e is NonNullable<typeof e> => !!e?.createdAt);
+  const mine = events.filter(e => e.requestedReviewer?.login?.toLowerCase() === username.toLowerCase());
+  const team = events.filter(e => e.requestedReviewer?.__typename === 'Team');
+  return (mine.length ? mine : team).at(-1)?.createdAt ?? null;
 }
 
 // Open, non-draft PRs in the configured repos that request this user's
 // review (directly or via a team). One search per identity, not per repo:
 // repo: qualifiers OR together, so the extra cost is one request a refresh.
-export async function fetchReviewRequests(cfg: GithubConfig): Promise<{ requests: ReviewRequest[]; errors: string[] }> {
+// failedRepos lists every repo whose search did not answer, so the caller
+// can keep last-known entries for exactly those and trust the rest.
+export async function fetchReviewRequests(cfg: GithubConfig): Promise<{ requests: ReviewRequest[]; errors: string[]; failedRepos: string[] }> {
+  // Keyed by token, not username: one account with two fine-grained tokens
+  // (one per org) needs both searches. GitHub search silently drops a repo:
+  // the token can't see, so sharing the first token would lose the other
+  // org's requests with no error.
   const groups = new Map<string, { username: string; token: string; repos: string[] }>();
   const errors: string[] = [];
+  const failedRepos: string[] = [];
   for (const repo of cfg.repos) {
     const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
     try {
       const id = resolveIdentity(cfg, full);
-      const g = groups.get(id.username) ?? { ...id, repos: [] };
+      const k = `${id.username}\0${id.token}`;
+      const g = groups.get(k) ?? { ...id, repos: [] };
       g.repos.push(full);
-      groups.set(id.username, g);
+      groups.set(k, g);
     } catch (e) {
       errors.push(`review requests ${full}: ${(e as Error).message}`);
+      failedRepos.push(full);
     }
   }
   const requests: ReviewRequest[] = [];
@@ -467,15 +489,16 @@ export async function fetchReviewRequests(cfg: GithubConfig): Promise<{ requests
         const repo = n.repository.nameWithOwner;
         requests.push({
           id: `${repo}#${n.number}`, repo, number: n.number, url: n.url ?? '', title: n.title ?? '',
-          author: n.author?.login ?? '', requestedAt: n.timelineItems?.nodes?.[0]?.createdAt ?? null,
+          author: n.author?.login ?? '', requestedAt: requestedAtFor(n, g.username),
           updatedAt: n.updatedAt ?? '', dismissed: false,
         });
       }
     } catch (e) {
       errors.push(`review requests (${g.username}): ${(e as Error).message}`);
+      failedRepos.push(...g.repos);
     }
   }
-  return { requests, errors };
+  return { requests, errors, failedRepos };
 }
 
 // Returns the identity (username + token) that owns fullRepo ("owner/repo").

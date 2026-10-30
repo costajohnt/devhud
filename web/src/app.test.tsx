@@ -591,3 +591,12 @@ test('a review-request entry links to the PR instead of selecting a card', () =>
   expect(main.getAttribute('href')).toBe('https://gh/o/a/9');
   expect(main.textContent).toContain('Review requested');
 });
+
+// Review finding: queue entries saved before review requests existed have no
+// kind and rendered as PR links until the first refresh.
+test('a queue entry with no kind (older snapshot) still selects its card', () => {
+  const legacy = { ...entry('P-1') } as Partial<QueueEntry>;
+  delete legacy.kind;
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] }, queue: [legacy as QueueEntry] })); });
+  expect(host.querySelector('#queue .queue-main')!.tagName).toBe('BUTTON');
+});

@@ -13,7 +13,7 @@ vi.mock('./jira.ts', () => ({
 vi.mock('./github.ts', async (importOriginal) => ({
   ...await importOriginal<typeof import('./github.ts')>(),
   fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
-  fetchReviewRequests: vi.fn(() => Promise.resolve({ requests: [], errors: [] })),
+  fetchReviewRequests: vi.fn(() => Promise.resolve({ requests: [], errors: [], failedRepos: [] })),
   enrichPr: vi.fn((p: Pr) => Promise.resolve(p)),
 }));
 
@@ -825,15 +825,31 @@ test('review requests: a failed fetch keeps the last list; a clean fetch prunes 
   const state = emptyState();
   state.prs = { 'o/r#9': { dismissedAt: '2026-07-01T00:00:00Z' }, 'o/r#1': { dismissedAt: '2026-07-01T00:00:00Z' } };
 
-  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [req], errors: [] });
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [req], errors: [], failedRepos: [] });
   const first = await refresh({ config, state, quiet: true });
   expect(first.reviewRequests.map(r => r.id)).toEqual(['o/r#9']);
   expect(first.queue.map(e => e.id)).toContain('o/r#9:review_requested');
   expect(Object.keys(state.prs)).toEqual(['o/r#9']);
 
-  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [], errors: ['review requests (me): 502'] });
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [], errors: ['review requests (me): 502'], failedRepos: ['o/r'] });
   const second = await refresh({ config, state, quiet: true });
   expect(second.reviewRequests.map(r => r.id)).toEqual(['o/r#9']);
   expect(second.errors.github).toContain('review requests (me): 502');
   expect(Object.keys(state.prs)).toEqual(['o/r#9']);
+});
+
+// Review finding: one failing identity used to freeze every identity's list.
+test('review requests: only the failed identity\'s repos keep last-known entries', async () => {
+  const { fetchReviewRequests } = await import('./github.ts');
+  const mk = (id: string) => ({ id, repo: id.slice(0, id.indexOf('#')), number: 1, url: 'u', title: 'T', author: 'a', requestedAt: null, updatedAt: '2026-07-03T00:00:00Z', dismissed: false });
+  const state = emptyState();
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [mk('work/a#1'), mk('home/b#1')], errors: [], failedRepos: [] });
+  await refresh({ config, state, quiet: true });
+  state.prs = { 'work/a#1': { dismissedAt: '2026-07-01T00:00:00Z' }, 'home/b#1': { dismissedAt: '2026-07-01T00:00:00Z' } };
+
+  // work's token fails; home answers with a new request and without b#1 (reviewed).
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [mk('home/b#2')], errors: ['review requests (work): 401'], failedRepos: ['work/a'] });
+  const snap = await refresh({ config, state, quiet: true });
+  expect(snap.reviewRequests.map(r => r.id).sort()).toEqual(['home/b#2', 'work/a#1']);
+  expect(Object.keys(state.prs)).toEqual(['work/a#1']);
 });

@@ -505,23 +505,26 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   // one calm sentence instead of pasting a URL and a JSON blob at the user
   // (#69). Any non-throttle failure keeps its own message — that one still
   // needs reading.
-  // Review requests are their own search: a failure keeps the last list
-  // rather than blanking the queue's review entries. Dismissals are pruned
-  // to the PRs still asking for review, only on a clean fetch.
+  // Review requests are their own search, isolated per identity like
+  // fetchPrs is per repo: a repo whose search failed keeps its last-known
+  // entries and dismissals, every other repo gets this refresh's answer.
   let reviewRequests: ReviewRequest[];
+  const previousRequests = state.snapshot?.reviewRequests ?? [];
   try {
     const rr = await fetchReviewRequests(config.github);
-    reviewRequests = rr.requests;
-    if (rr.errors.length) {
-      githubErrors.push(...rr.errors);
-      reviewRequests = state.snapshot?.reviewRequests ?? reviewRequests;
-    } else if (state.prs) {
+    githubErrors.push(...rr.errors);
+    const failed = new Set(rr.failedRepos.map(r => r.toLowerCase()));
+    const isFailed = (repo: string) => failed.has(repo.toLowerCase());
+    reviewRequests = [...rr.requests, ...previousRequests.filter(r => isFailed(r.repo))];
+    if (state.prs) {
       const live = new Set(reviewRequests.map(r => r.id));
-      for (const id of Object.keys(state.prs)) if (!live.has(id)) delete state.prs[id];
+      for (const id of Object.keys(state.prs)) {
+        if (!live.has(id) && !isFailed(id.slice(0, id.lastIndexOf('#')))) delete state.prs[id];
+      }
     }
   } catch (e) {
     githubErrors.push(`review requests: ${(e as Error).message}`);
-    reviewRequests = state.snapshot?.reviewRequests ?? [];
+    reviewRequests = previousRequests;
   }
   const throttled = githubErrors.filter(isThrottleMessage);
   const realFailures = githubErrors.filter(m => !isThrottleMessage(m));
