@@ -26,7 +26,6 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 - **Activity groups**: a Recent Activity feed grouped by Merged, Closed, and Comments over the last 7 days.
 - **Demo mode**: canned data through the real pipeline, no credentials or network calls required.
 - **Celebration**: confetti and a toast the first time one of your cards is observed reaching Done in Jira (a merged PR only means the code is ready for QA, so it is not celebrated).
-- **Simon runs** (optional): set the `simon` block in `config.json` (`root`, the absolute path of a local Simon executor scaffold, plus an optional `bin`, default `simon`) and the header's **runs** link opens `/simon`, a list of executor runs read from `<root>/state/runs/*.jsonl`. Each run's attention class comes from `simon status --json` when that binary is reachable, and from the ledger otherwise. `/simon/<run id>` shows one run's event timeline and re-polls while the run is live. Without the block, the page shows an "unconfigured" card. Read-only: nothing here writes to Simon.
 - **Attention notifications** (opt-in): toggle the 🔕 bell in the header to get a desktop notification when a card newly enters Needs Attention. Only fires while the tab is hidden — a board you're looking at already shows the card — and never replays what was already there when the page loaded. Off until you turn it on, and the browser's permission prompt appears on that click rather than at page load.
 - **Write-back** (opt-in, off by default): transition a Jira card, comment on a card, or comment on a PR via the CLI or MCP tools, and optionally move cards whose PR merged to In Test automatically (`autoTransitionMerged`). See the Write-back section below.
 
@@ -204,7 +203,6 @@ Full reference: [docs/API.md](docs/API.md). Summary:
 - `POST /api/refresh` fetches fresh Jira/GitHub data (or demo data) and rebuilds the snapshot.
 - `POST /api/action` applies an `ack`, `move` or `unpin` to one card.
 - `POST /api/write` (gated, off by default) transitions a card, comments on a card, or comments on a PR.
-- `GET /api/simon/runs` and `GET /api/simon/runs/:id` list Simon executor runs and return one run's events (see Simon runs under Features).
 
 Manual moves, pins and acknowledgements are stored locally in `data/state.json`. Jira and GitHub are read-only unless you've explicitly enabled write-back.
 

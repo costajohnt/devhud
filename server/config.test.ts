@@ -205,51 +205,6 @@ test('throws a readable error for a non-positive or non-integer refreshIntervalS
   }
 });
 
-test('simon block: defaults bin, requires absolute root', () => {
-  const p = join(dir, 'simon-ok.json');
-  writeFileSync(p, JSON.stringify({
-    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
-    github: { org: 'o', repos: ['r'], username: 'u' },
-    simon: { root: '/tmp/simon-scaffold' },
-  }));
-  expect(loadConfig(p).simon).toEqual({ root: '/tmp/simon-scaffold', bin: 'simon' });
-
-  const bad = join(dir, 'simon-bad.json');
-  writeFileSync(bad, JSON.stringify({
-    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
-    github: { org: 'o', repos: ['r'], username: 'u' },
-    simon: { root: 'relative/path' },
-  }));
-  expect(() => loadConfig(bad)).toThrow(/simon\.root/);
-});
-
-test('config without a simon block leaves it undefined', () => {
-  const p = join(dir, 'simon-absent.json');
-  writeFileSync(p, JSON.stringify({
-    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
-    github: { org: 'o', repos: ['r'], username: 'u' },
-  }));
-  expect(loadConfig(p).simon).toBeUndefined();
-});
-
-test('"simon": null is treated as absent; bad simon shapes get readable errors', () => {
-  const base = {
-    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
-    github: { org: 'o', repos: ['r'], username: 'u' },
-  };
-  const nullP = join(dir, 'simon-null.json');
-  writeFileSync(nullP, JSON.stringify({ ...base, simon: null }));
-  expect(loadConfig(nullP).simon).toBeUndefined();
-
-  const strP = join(dir, 'simon-string.json');
-  writeFileSync(strP, JSON.stringify({ ...base, simon: '/tmp/x' }));
-  expect(() => loadConfig(strP)).toThrow(/"simon"/);
-
-  const binP = join(dir, 'simon-bad-bin.json');
-  writeFileSync(binP, JSON.stringify({ ...base, simon: { root: '/tmp/x', bin: 5 } }));
-  expect(() => loadConfig(binP)).toThrow(/simon\.bin/);
-});
-
 // --- Multi-identity (#108) ---
 
 const baseJira = { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' };

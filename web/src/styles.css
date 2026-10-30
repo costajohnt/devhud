@@ -390,14 +390,6 @@ a:hover {
   background-clip: text;
 }
 
-/* Two-tone wordmark: "simon" carries the gradient above, "-dash" resets to a
-   solid accent color so the two halves read distinctly at a glance. */
-.dashboard-header h1 .wordmark-accent {
-  background: none;
-  -webkit-text-fill-color: var(--blue);
-  color: var(--blue);
-}
-
 .header-icon {
   width: 72px;
   height: 72px;
@@ -2162,42 +2154,7 @@ a:hover {
   border: 0;
 }
 
-/* === Simon runs page === */
-
-.header-link {
-  /* Link colour + a permanent underline: this is navigation sitting among the
-     header controls, so it must not read as another muted stat label (#52). */
-  color: var(--blue);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
-.header-link:hover {
-  text-decoration-thickness: 2px;
-}
-
-.header-link:focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 2px;
-  border-radius: var(--radius-sm);
-}
-
 .pill--green {
   background: var(--green-dim);
   color: var(--green);
-}
-
-.simon-run-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-3);
-}
-
-.simon-section-title {
-  font-size: 0.9375rem;
-  margin: var(--sp-4) 0 var(--sp-2);
-  color: var(--text-primary);
 }

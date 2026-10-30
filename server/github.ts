@@ -15,7 +15,6 @@ interface GqlPr {
   updatedAt: string;
   mergedAt?: string | null;
   closedAt?: string | null;
-  labels?: { nodes?: ({ name?: string | null } | null)[] | null } | null;
   reviewRequests?: { totalCount?: number | null } | null;
   commits?: { nodes?: ({ commit?: { statusCheckRollup?: GqlRollup | null } | null } | null)[] | null } | null;
   // Tip of the base branch; null once that branch is deleted.
@@ -129,7 +128,6 @@ export function newCiFailures(head: GqlRollup | null | undefined, base: GqlRollu
 }
 
 export function mapPr(node: GqlPr, repo: string): Pr {
-  const hasDraftLabel = (node.labels?.nodes ?? []).some(l => l?.name?.toLowerCase() === 'draft');
   const state: Pr['state'] = node.state === 'MERGED' ? 'merged' : node.state === 'OPEN' ? 'open' : 'closed';
   const headRollup = node.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const rollup = headRollup?.state;
@@ -154,7 +152,7 @@ export function mapPr(node: GqlPr, repo: string): Pr {
     // Pending review requests are visible at discovery; approvals and change
     // requests need the reviews list, which enrichPr fetches for linked PRs.
     reviewState: (node.reviewRequests?.totalCount ?? 0) > 0 ? 'review_required' : 'none',
-    isDraft: (node.isDraft ?? false) || hasDraftLabel,
+    isDraft: node.isDraft ?? false,
     comments: [],
   };
 }
@@ -405,7 +403,6 @@ const PR_SEARCH = `query($q: String!) {
     nodes {
       ... on PullRequest {
         number url title body headRefName state isDraft createdAt updatedAt mergedAt closedAt
-        labels(first: 10) { nodes { name } }
         reviewRequests(first: 1) { totalCount }
         commits(last: 1) { nodes { commit { statusCheckRollup { state ...Checks } } } }
         baseRef { target { ... on Commit { statusCheckRollup { state ...Checks } } } }

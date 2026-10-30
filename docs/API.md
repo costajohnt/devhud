@@ -1,6 +1,6 @@
 # API Reference
 
-devhud exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Seven routes under `/api/` (`/api/data`, `/api/events`, `/api/refresh`, `/api/action`, `/api/write`, `/api/simon/runs` and `/api/simon/runs/:id`), plus static file serving for the SPA.
+devhud exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Five routes under `/api/` (`/api/data`, `/api/events`, `/api/refresh`, `/api/action` and `/api/write`), plus static file serving for the SPA.
 
 There are two other ways to reach the same board: `server/cli.ts` (a plain-TS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
 
@@ -148,53 +148,6 @@ Keys in `config.json` that change what reaches Jira or GitHub, all re-read from 
 
   Per-card failures are logged and the batch continues. It never comments and never writes to GitHub.
 
-## GET /api/simon/runs
-
-Lists Simon executor runs. Read-only, served on demand, and outside the snapshot/SSE cycle, so run telemetry never rides along on `/api/events`. Implemented in `server/simon.ts`.
-
-Needs the optional `simon` block in `config.json`:
-
-```json
-"simon": { "root": "/absolute/path/to/simon/scaffold", "bin": "simon" }
-```
-
-`root` must be an absolute path (`loadConfig` rejects a relative one). `bin` is optional and defaults to `simon`. Without the block the response is `{ "configured": false, "runs": [] }`, and the web UI's `/simon` page shows an "unconfigured" card.
-
-When configured, the server reads every `<root>/state/runs/*.jsonl` ledger and returns:
-
-```
-{
-  configured: true,
-  runs: SimonRunSummary[],   // newest first (ids are timestamp-prefixed)
-  statusError?: string       // set when `simon status --json` failed; classes then come from the ledger fallback
-}
-```
-
-`SimonRunSummary`:
-
-```
-{
-  id: string,               // ledger basename minus .jsonl: <UTC-ts>-<KEY>
-  key: string,              // work-item key from run_start (fallback: parsed from id)
-  startedAt: string | null,
-  endedAt: string | null,   // run_end ts, null while in flight
-  outcome: string | null,   // run_end outcome
-  haltedAt: string | null,  // run_end halted_at
-  phase: string | null,     // last phase_start's phase
-  class: string | null,     // attention class (see below)
-  durationS: number | null,
-  lastEventAt: string | null
-}
-```
-
-`class` comes from `<bin> status --json` (run with `SIMON_ROOT=<root>` and a 5s timeout), attached to the newest run per key only. When that command fails, or has nothing for a run, the class falls back to the ledger: a finished run gets its `outcome`, an unfinished one is `in_flight`, or `stale` once its last event is more than 10 minutes old. A missing runs directory is not an error, it returns `runs: []`. Malformed ledger lines and unreadable ledgers are skipped.
-
-## GET /api/simon/runs/:id
-
-Returns one run's parsed ledger: `{ id: string, key: string, events: SimonEvent[] }`, where each event is one JSONL line with at least `ts` and `event` and every other field passed through verbatim. All timeline interpretation happens client-side (`web/src/simon-run-fold.ts`). The web UI's `/simon/<id>` page re-polls this every 1.5s while the run has no `run_end`.
-
-`404 { "error": "run not found" }` when `simon` is not configured, when the id fails `^[A-Za-z0-9._-]+$` (or is malformed percent-encoding such as `%zz`), when the resolved path would leave the runs directory, or when no such ledger exists.
-
 ## Payload shape
 
 The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
@@ -262,7 +215,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 
 `ciNewFailures` is present only while `ciStatus` is `'failing'`: the failed checks that are not also failing on the PR's base branch. `[]` means every failure is pre-existing on the base, so the card gets no `ci_failing` reason; absent means the comparison was not possible and the card is flagged as before, unless `ciBasePending` is `true`: the base branch's CI is still running, so the verdict is unknown and the card is not flagged (refresh carries over the previous verdict for the same PR when it has one). The board shows such a PR as "CI red, base running".
 
-`isDraft` is `true` for a GitHub draft PR and for a PR carrying a `Draft` label (how Simon marks the PRs it opens). An open draft routes the card to `self_review` unless the card is in a review status, and never to `mergeable`.
+`isDraft` is `true` for a GitHub draft PR. An open draft routes the card to `self_review` unless the card is in a review status, and never to `mergeable`.
 
 ### TodoItem
 
@@ -365,7 +318,7 @@ Any request not starting with `/api/` is treated as a static file request agains
 - If the resolved path is a real file, it's served with a `content-type` derived from its extension (`.html`, `.js`, `.css`, `.svg`, `.woff2`, `.png`, `.json`; anything else falls back to `application/octet-stream`).
 - If the path doesn't resolve to a file (a client-side route like `/done`, or any unknown path), the server falls back to serving `index.html` so the SPA router (`preact-iso`, reading `window.location` client-side) can render its own not-found or route view.
 
-`/api/*` paths that don't match `GET /api/data`, `GET /api/events`, `POST /api/refresh`, `POST /api/action`, `POST /api/write`, `GET /api/simon/runs`, or `GET /api/simon/runs/:id` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
+`/api/*` paths that don't match `GET /api/data`, `GET /api/events`, `POST /api/refresh`, `POST /api/action`, or `POST /api/write` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
 
 ## Single-instance behavior
 
