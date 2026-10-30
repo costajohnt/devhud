@@ -463,8 +463,13 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
     // changelog says whether the card already went through QA after this
     // merge: if so, QA sent it back and moving it again would undo that.
     const mergedAt = lastPrs.get(`${item.pr!.repo}#${item.pr!.number}`)?.mergedAt;
+    // Any post-merge move to a status that isn't pre-test by name counts:
+    // the changelog carries no status category, so a Done-category status
+    // with another name (Closed, Released), a jump straight to a post-test
+    // status, Canceled, or a since-renamed In Test would otherwise slip
+    // through. A false skip only leaves a ledger entry and the flag up.
     const afterMerge = mergedAt ? (live.statusChanges ?? []).find(c =>
-      Date.parse(c.at) >= Date.parse(mergedAt) && (sameStatus(c.to, statuses.inTest) || sameStatus(c.to, statuses.done))) : undefined;
+      Date.parse(c.at) >= Date.parse(mergedAt) && !isPreTest({ status: c.to, statusCategory: '' }, statuses)) : undefined;
     if (afterMerge) {
       const reason = `already went to ${afterMerge.to} after the merge (${afterMerge.at}); not moving it again`;
       console.log(`auto-transition: ${item.key} skipped — ${reason}`);

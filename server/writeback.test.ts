@@ -815,3 +815,28 @@ test('getIssueStatus reads the newest changelog page for status changes', async 
   expect(live.statusChanges).toEqual([{ to: 'In Test', at: '2026-07-02T09:00:00.000+0000' }]);
   expect(urls.some(u => u.includes('/changelog?startAt=30&maxResults=100'))).toBe(true);
 });
+
+// PR #137 round 2: the changelog carries names only, so matching just the
+// configured In Test/Done names missed Closed, Released, a jump straight to a
+// post-test status, and Canceled. Any post-merge non-pre-test move counts.
+test('autoTransitionMergedCards: any post-merge move outside the pre-test statuses counts as a QA trip', async () => {
+  for (const to of ['Closed', 'Ready for Release', 'Canceled', 'QA']) {
+    const state = stateWithMergedCard('PROJ-1');
+    state.lastPrs = [{ repo: 'o/r', number: 1, url: '', title: '', body: '', branch: 'PROJ-1-x', state: 'merged', createdAt: '', updatedAt: '', mergedAt: '2026-07-01T12:00:00Z', closedAt: null, ciStatus: 'passing', reviewState: 'approved', comments: [] }];
+    const transitionCardFn = vi.fn().mockResolvedValue(undefined);
+    const getIssueStatusFn = vi.fn().mockResolvedValue({ status: 'In Progress', statusCategory: 'indeterminate', statusChanges: [
+      { to, at: '2026-07-01T15:00:00.000+0000' }, { to: 'In Progress', at: '2026-07-02T09:00:00.000+0000' },
+    ] });
+    await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+    expect(transitionCardFn, to).not.toHaveBeenCalled();
+  }
+  // Moves among pre-test statuses after the merge (In Progress <-> Code Review) still transition.
+  const state = stateWithMergedCard('PROJ-1');
+  state.lastPrs = [{ repo: 'o/r', number: 1, url: '', title: '', body: '', branch: 'PROJ-1-x', state: 'merged', createdAt: '', updatedAt: '', mergedAt: '2026-07-01T12:00:00Z', closedAt: null, ciStatus: 'passing', reviewState: 'approved', comments: [] }];
+  const transitionCardFn = vi.fn().mockResolvedValue(undefined);
+  const getIssueStatusFn = vi.fn().mockResolvedValue({ status: 'In Progress', statusCategory: 'indeterminate', statusChanges: [
+    { to: 'Code Review', at: '2026-07-01T15:00:00.000+0000' }, { to: 'In Progress', at: '2026-07-02T09:00:00.000+0000' },
+  ] });
+  await autoTransitionMergedCards({ state, loadConfigFn: () => baseAutoConfig, transitionCardFn, getIssueStatusFn });
+  expect(transitionCardFn).toHaveBeenCalledTimes(1);
+});
