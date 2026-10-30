@@ -5,19 +5,23 @@ import { PR_ACK_REASONS } from './reasons.ts';
 import { CARD_STATE_RETENTION_DAYS, prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
-import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest } from './types.ts';
+import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest, DoneCard } from './types.ts';
 
 const DAY = 86400000;
 
 // How long a doneCelebrated entry is kept after its card stops appearing in
 // fetches. Deliberately far wider than the Done watermark lag: the gap
 // is the safety margin against a double celebration. See the prune in
-// buildSnapshot.
+// pruneState.
 export const CELEBRATION_RETENTION_DAYS = 90;
 // Per-card state (pins, horizons, acks) for a card absent from every fetch
 // for CARD_STATE_RETENTION_DAYS (classify.ts) is dropped; a card that comes
 // back starts fresh (audit M20).
 export { CARD_STATE_RETENTION_DAYS };
+
+// Which repos' data is degraded this refresh; 'all' when the whole fetch
+// failed, null when nothing is.
+type Degraded = Set<string> | 'all' | null;
 
 const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
@@ -60,7 +64,7 @@ function upsertPrLog(state: State, prs: Pr[]): void {
   }
 }
 
-export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, filed, reviewRequests = [], dataAsOf = new Date().toISOString() }: {
+export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, degradedRequestRepos = 'all', linked = linkPrsToCards(cards, prs), filed, reviewRequests = [], dataAsOf = new Date().toISOString() }: {
   cards: Card[]; prs: Pr[]; state: State; config: Config; errors: { jira?: string; github?: string };
   // When the data was read (see Snapshot.dataAsOf). refresh() passes the time
   // before its first fetch; direct callers get the build start.
@@ -76,56 +80,89 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   // repo in the config doesn't disable ack-pruning for every other repo's
   // cards forever.
   degradedPrRepos?: Set<string> | 'all';
+  // Repos (lowercased) whose review-request search failed this refresh
+  // ('all' = the whole search failed). Their dismissals survive the prune.
+  // Defaults to 'all': callers that don't fetch review requests never prune
+  // dismissals.
+  degradedRequestRepos?: Set<string> | 'all';
+  // PR-to-card links. refresh() already computed them to choose what to
+  // enrich and passes them through; direct callers get them computed here.
+  linked?: Map<string, Pr>;
 }): Snapshot {
+  state.prLog ??= {};
+  state.doneCelebrated ??= [];
+  upsertPrLog(state, prs);
+
+  // Both state-based attention reasons derive from PR data; when a card's PR
+  // data is degraded this refresh, classify's ack-pruning must not treat
+  // "reason missing from this refresh" as "reason cleared" — that would wipe
+  // acks a healthy refresh would have kept.
+  const degraded: Degraded = degradedPrRepos ?? (errors.github ? 'all' : null);
+
+  // The first refresh after state.ownPrs existed treats existing comments on
+  // card-less PRs as seen instead of flooding the queue with their history.
+  const firstOwnPrs = state.ownPrs === undefined;
+  state.ownPrs ??= {};
+  const nowIso = new Date().toISOString();
+
+  const board = classifyCards({ cards, linked, state, config, degraded });
+  const doneLedger = mergeDoneLedger(state, board.doneCards, board.notDone);
+  const unlinkedPrs = buildUnlinkedPrs({ prs, linked, state, config, degraded, initialSeen: firstOwnPrs ? nowIso : null });
+
+  // A dismissed review request stays hidden until the PR changes after the
+  // dismissal (a new push, comment or re-request bumps updatedAt).
+  const requests = reviewRequests.map(rr => {
+    const d = state.prs?.[rr.id]?.dismissedAt;
+    return { ...rr, dismissed: !!d && !(Date.parse(rr.updatedAt) > Date.parse(d)) };
+  });
+
+  pruneState({ state, cards, prs, nowIso, jiraFailed: !!errors.jira, doneCards: board.doneCards, degraded, reviewRequests, degradedRequestRepos });
+
+  const { buckets, todo, blocked, newlyDone } = board;
+  return {
+    updatedAt: new Date().toISOString(),
+    dataAsOf,
+    errors: { jira: errors.jira ?? null, github: errors.github ?? null },
+    buckets, queue: buildQueue(buckets, config.jira.statuses, requests, unlinkedPrs), reviewRequests: requests, todo, blocked,
+    unlinkedPrs,
+    // Done page and counter both come from the lifetime ledger, so they agree
+    // by construction. Deriving the count from a single refresh made it shrink
+    // as cards aged out of the fetch window; deriving it from the old
+    // append-only doneCelebrated ledger let it drift above the rows (a header
+    // reading 32 over a 4-row table). doneCelebrated stays scoped to the one
+    // job it is good for: celebrate-once dedup via newlyDone.
+    doneCards: doneLedger, doneTotal: doneLedger.length, newlyDone, recentActivity: buildActivity(prs, buckets),
+    prLog: Object.values(state.prLog) as PrLogEntry[],
+    filed: filed ?? [],
+  };
+}
+
+// Routes every fetched card: off the board (canceled, Todo, Blocked, Done)
+// or into a bucket via classifyCard, syncing each card's seen horizon and PR
+// acks with state.ownPrs on the way.
+function classifyCards({ cards, linked, state, config, degraded }: {
+  cards: Card[]; linked: Map<string, Pr>; state: State; config: Config; degraded: Degraded;
+}) {
   const { statuses } = config.jira;
   const username = config.github.username;
   // Multi-identity: pass all configured usernames so comments from any of them
   // are treated as "self" in classifyCard's new-comments check (#108).
   const usernames = config.github.usernames;
   const ignoreAuthors = config.ignoreAuthors ?? [];
-  state.prLog ??= {};
-  state.doneCelebrated ??= [];
-  upsertPrLog(state, prs);
-  const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
-
   const buckets: Record<Bucket, Item[]> = { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] };
   const todo: Snapshot['todo'] = [];
   const blocked: Snapshot['blocked'] = [];
-  const doneCards: Snapshot['doneCards'] = [], newlyDone: string[] = [];
+  const doneCards: DoneCard[] = [], newlyDone: string[] = [];
   // Cards seen this refresh that are NOT done (reopened, or canceled after
   // reaching Done). They must leave the lifetime ledger, or a card QA kicks
   // back stays counted as complete forever.
   const notDone = new Set<string>();
 
-  // state.cards used to grow forever: every card ever classified, plus any
-  // key an ack or move named. Stamp the cards this fetch returned, give
-  // unstamped entries (older state files, acks on unknown keys) a first
-  // sighting, and drop entries unseen for the retention window. No deletes
-  // when the Jira fetch failed (the cards then came from lastCards); those
-  // still count as seen, which keeps entries alive through an outage.
-  const nowIso = new Date().toISOString();
-  const fetchedKeys = new Set(cards.map(c => c.key));
-  const cardCutoff = Date.now() - CARD_STATE_RETENTION_DAYS * DAY;
-  for (const [key, cs] of Object.entries(state.cards)) {
-    if (fetchedKeys.has(key) || !cs.lastSeenAt) cs.lastSeenAt = nowIso;
-    else if (!errors.jira && Date.parse(cs.lastSeenAt) < cardCutoff) delete state.cards[key];
-  }
-
-  // Both state-based attention reasons derive from PR data; when a card's PR
-  // data is degraded this refresh, classify's ack-pruning must not treat
-  // "reason missing from this refresh" as "reason cleared" — that would wipe
-  // acks a healthy refresh would have kept.
-  const degraded = degradedPrRepos ?? (errors.github ? 'all' : null);
-
   // One seen-comment horizon and set of PR acks per open PR, whether or not
   // a card links it: state.ownPrs[ref] is kept for every open PR and synced
   // both ways with the linking card's CardState, so a PR that gains or loses
   // its card (reassigned, relinked) keeps what was already seen and acked.
-  // The first refresh after state.ownPrs existed treats existing comments on
-  // card-less PRs as seen instead of flooding the queue with their history.
-  const firstOwnPrs = state.ownPrs === undefined;
-  const ownPrs = (state.ownPrs ??= {});
-  const buildTime = new Date().toISOString();
+  const ownPrs = state.ownPrs!;
   const later = (a: string | null | undefined, b: string | null | undefined): string | null =>
     !a ? b ?? null : !b ? a : Date.parse(b) > Date.parse(a) ? b : a;
   // PRs linked by a card that stays on the board this refresh. An off-board
@@ -163,8 +200,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // lifecycle statement.
     if (isBlocked(card, statuses)) { blocked.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
     if (isTodo(card, statuses) && !pr) { todo.push({ key: card.key, summary: card.summary, jiraUrl: card.url, createdAt: card.createdAt }); continue; }
+    // lastSeenAt is stamped for every fetched card in pruneState.
     const cs = cardState(state, card.key);
-    cs.lastSeenAt ??= nowIso;
 
     // A merged PR is supporting context, not completion: it rides along on the
     // active card via prView(pr) (the board's "Merged" pill, the detail panel),
@@ -219,6 +256,105 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
     });
   }
+  return { buckets, todo, blocked, doneCards, newlyDone, notDone };
+}
+
+// Lifetime Done ledger, oss-autopilot's mergedPRs pattern: store every Done
+// card locally, fetch only what changed since the watermark, and merge by
+// key. This refresh's rows win (status/summary/PR can change after Done);
+// anything now non-Done is evicted. Result is an all-time list, so the
+// counter is the length of a complete list rather than of one fetch page.
+function mergeDoneLedger(state: State, doneCards: DoneCard[], notDone: Set<string>): DoneCard[] {
+  const ledgerByKey = new Map((state.doneLedger ?? []).map(d => [d.key, d]));
+  for (const key of notDone) ledgerByKey.delete(key);
+  for (const d of doneCards) ledgerByKey.set(d.key, d);
+  const doneLedger = [...ledgerByKey.values()]
+    .sort((a, b) => (b.doneAt ?? '').localeCompare(a.doneAt ?? ''));
+  state.doneLedger = doneLedger;
+  return doneLedger;
+}
+
+// Recent Activity: merges, closures and new comments from the last 7 days,
+// newest first.
+function buildActivity(prs: Pr[], buckets: Record<Bucket, Item[]>): ActivityEntry[] {
+  const weekAgo = Date.now() - 7 * DAY;
+
+  // Merged/closed PRs from the last 7 days still surface in Recent Activity as
+  // supporting context. They're derived straight from the fetched PRs — no
+  // dedicated payload field — since the board no longer has Merged/Closed pages.
+  const mergedActivity: ActivityEntry[] = prs
+    .filter(p => p.mergedAt && Date.parse(p.mergedAt) > weekAgo)
+    .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt! }));
+  // closedAt (GitHub's closed_at) preferred over updatedAt: post-close
+  // activity bumps updated_at and would resurface/re-date old closures.
+  const closedActivity: ActivityEntry[] = prs
+    .filter(p => p.state === 'closed' && !p.mergedAt)
+    .map(p => ({ p, date: p.closedAt ?? p.updatedAt }))
+    .filter(({ date }) => date && Date.parse(date) > weekAgo)
+    .map(({ p, date }) => ({ type: 'closed' as const, label: p.title || `${p.repo}#${p.number}`, url: p.url, date }));
+  // Comments surface from the board items just built: each item's
+  // newComments already carries source/author/createdAt, so no re-scan of
+  // cards/prs is needed. url follows the comment's source (PR vs Jira card).
+  const commentActivity: ActivityEntry[] = [];
+  for (const bucketItems of Object.values(buckets)) {
+    for (const item of bucketItems) {
+      for (const c of item.newComments) {
+        if (!c.createdAt || Date.parse(c.createdAt) <= weekAgo) continue;
+        commentActivity.push({
+          type: 'comment',
+          label: `${item.key}: comment from ${c.author}`,
+          url: c.source === 'github' ? (item.pr?.url ?? item.jiraUrl) : item.jiraUrl,
+          date: c.createdAt,
+        });
+      }
+    }
+  }
+  return [...mergedActivity, ...closedActivity, ...commentActivity]
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+// The user's open PRs with no card still need them: same PR reasons as a
+// card's PR, with their own seen horizon and acks in state.ownPrs.
+// initialSeen is the horizon a PR seen for the first time starts from.
+function buildUnlinkedPrs({ prs, linked, state, config, degraded, initialSeen }: {
+  prs: Pr[]; linked: Map<string, Pr>; state: State; config: Config; degraded: Degraded; initialSeen: string | null;
+}): Snapshot['unlinkedPrs'] {
+  const ownPrs = state.ownPrs!;
+  const ignoreAuthors = config.ignoreAuthors ?? [];
+  const selfNames = new Set((config.github.usernames ?? [config.github.username]).map(u => u.toLowerCase()));
+  return unlinked(prs, linked).filter(p => p.state === 'open').map(p => {
+    const ref = `${p.repo}#${p.number}`;
+    const ps = (ownPrs[ref] ??= { lastSeenPr: initialSeen });
+    const raw = prAttention(p, ps.lastSeenPr, selfNames, ignoreAuthors);
+    const { visible, acked } = applyAcks(raw.attention, ps.ackedReasons, degraded === 'all' || !!degraded?.has(p.repo));
+    ps.ackedReasons = acked;
+    return {
+      repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state,
+      attention: visible, newComments: visible.includes('new_pr_comments') ? raw.newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')) : [],
+      pr: prView(p)!, updatedAt: p.updatedAt,
+    };
+  });
+}
+
+// Every retention rule for per-entity state, run once after the snapshot is
+// built. Each one skips whatever a failed source can't vouch for this
+// refresh, so an outage never reads as "gone".
+function pruneState({ state, cards, prs, nowIso, jiraFailed, doneCards, degraded, reviewRequests, degradedRequestRepos }: {
+  state: State; cards: Card[]; prs: Pr[]; nowIso: string; jiraFailed: boolean; doneCards: DoneCard[];
+  degraded: Degraded; reviewRequests: ReviewRequest[]; degradedRequestRepos: Set<string> | 'all';
+}): void {
+  // state.cards used to grow forever: every card ever classified, plus any
+  // key an ack or move named. Stamp the cards this fetch returned, give
+  // unstamped entries (older state files, acks on unknown keys) a first
+  // sighting, and drop entries unseen for the retention window. No deletes
+  // when the Jira fetch failed (the cards then came from lastCards); those
+  // still count as seen, which keeps entries alive through an outage.
+  const fetchedKeys = new Set(cards.map(c => c.key));
+  const cardCutoff = Date.now() - CARD_STATE_RETENTION_DAYS * DAY;
+  for (const [key, cs] of Object.entries(state.cards)) {
+    if (fetchedKeys.has(key) || !cs.lastSeenAt) cs.lastSeenAt = nowIso;
+    else if (!jiraFailed && Date.parse(cs.lastSeenAt) < cardCutoff) delete state.cards[key];
+  }
 
   // Ledger retention. The ledger's only job is celebrating a card once, and an
   // entry can only do that job while its card can still turn up in a fetch —
@@ -239,18 +375,6 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   //     card resurrected after 90 silent days can celebrate twice, once.
   // An entry with a missing or unparseable timestamp is kept: never
   // re-celebrating is the safer failure, and the writer always stamps one.
-  // Lifetime Done ledger, oss-autopilot's mergedPRs pattern: store every Done
-  // card locally, fetch only what changed since the watermark, and merge by
-  // key. This refresh's rows win (status/summary/PR can change after Done);
-  // anything now non-Done is evicted. Result is an all-time list, so the
-  // counter is the length of a complete list rather than of one fetch page.
-  const ledgerByKey = new Map((state.doneLedger ?? []).map(d => [d.key, d]));
-  for (const key of notDone) ledgerByKey.delete(key);
-  for (const d of doneCards) ledgerByKey.set(d.key, d);
-  const doneLedger = [...ledgerByKey.values()]
-    .sort((a, b) => (b.doneAt ?? '').localeCompare(a.doneAt ?? ''));
-  state.doneLedger = doneLedger;
-
   const fetchedDone = new Set(doneCards.map(d => d.key));
   const ledgerCutoff = Date.now() - CELEBRATION_RETENTION_DAYS * DAY;
   state.doneCelebrated = state.doneCelebrated.filter(e => {
@@ -259,85 +383,25 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     return Number.isNaN(at) || at > ledgerCutoff;
   });
 
-  const weekAgo = Date.now() - 7 * DAY;
-
-  // Merged/closed PRs from the last 7 days still surface in Recent Activity as
-  // supporting context. They're derived straight from the fetched PRs — no
-  // dedicated payload field — since the board no longer has Merged/Closed pages.
-  const mergedActivity: ActivityEntry[] = prs
-    .filter(p => p.mergedAt && Date.parse(p.mergedAt) > weekAgo)
-    .map(p => ({ type: 'merged', label: p.title || `${p.repo}#${p.number}`, url: p.url, date: p.mergedAt! }));
-  // closedAt (GitHub's closed_at) preferred over updatedAt: post-close
-  // activity bumps updated_at and would resurface/re-date old closures.
-  const closedActivity: ActivityEntry[] = prs
-    .filter(p => p.state === 'closed' && !p.mergedAt)
-    .map(p => ({ p, date: p.closedAt ?? p.updatedAt }))
-    .filter(({ date }) => date && Date.parse(date) > weekAgo)
-    .map(({ p, date }) => ({ type: 'closed' as const, label: p.title || `${p.repo}#${p.number}`, url: p.url, date }));
-  // Comments surface from the board items just built above: each item's
-  // newComments already carries source/author/createdAt, so no re-scan of
-  // cards/prs is needed. url follows the comment's source (PR vs Jira card).
-  const commentActivity: ActivityEntry[] = [];
-  for (const bucketItems of Object.values(buckets)) {
-    for (const item of bucketItems) {
-      for (const c of item.newComments) {
-        if (!c.createdAt || Date.parse(c.createdAt) <= weekAgo) continue;
-        commentActivity.push({
-          type: 'comment',
-          label: `${item.key}: comment from ${c.author}`,
-          url: c.source === 'github' ? (item.pr?.url ?? item.jiraUrl) : item.jiraUrl,
-          date: c.createdAt,
-        });
-      }
-    }
-  }
-  // The user's open PRs with no card still need them: same PR reasons as a
-  // card's PR, with their own seen horizon and acks in state.ownPrs.
-  const selfNames = new Set((usernames ?? [username]).map(u => u.toLowerCase()));
-  const unlinkedPrs = unlinked(prs, linked).filter(p => p.state === 'open').map(p => {
-    const ref = `${p.repo}#${p.number}`;
-    const ps = (ownPrs[ref] ??= { lastSeenPr: firstOwnPrs ? buildTime : null });
-    const raw = prAttention(p, ps.lastSeenPr, selfNames, ignoreAuthors);
-    const { visible, acked } = applyAcks(raw.attention, ps.ackedReasons, degraded === 'all' || !!degraded?.has(p.repo));
-    ps.ackedReasons = acked;
-    return {
-      repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state,
-      attention: visible, newComments: visible.includes('new_pr_comments') ? raw.newComments.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')) : [],
-      pr: prView(p)!, updatedAt: p.updatedAt,
-    };
-  });
+  // Card-less PR state lives while the PR is open; a repo whose fetch failed
+  // keeps its entries.
+  const ownPrs = state.ownPrs!;
   const openRefs = new Set(prs.filter(p => p.state === 'open').map(p => `${p.repo}#${p.number}`));
   for (const ref of Object.keys(ownPrs)) {
     const repo = ref.slice(0, ref.lastIndexOf('#'));
     if (!openRefs.has(ref) && degraded !== 'all' && !degraded?.has(repo)) delete ownPrs[ref];
   }
 
-  // A dismissed review request stays hidden until the PR changes after the
-  // dismissal (a new push, comment or re-request bumps updatedAt).
-  const requests = reviewRequests.map(rr => {
-    const d = state.prs?.[rr.id]?.dismissedAt;
-    return { ...rr, dismissed: !!d && !(Date.parse(rr.updatedAt) > Date.parse(d)) };
-  });
-  const recentActivity = [...mergedActivity, ...closedActivity, ...commentActivity]
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  return {
-    updatedAt: new Date().toISOString(),
-    dataAsOf,
-    errors: { jira: errors.jira ?? null, github: errors.github ?? null },
-    buckets, queue: buildQueue(buckets, statuses, requests, unlinkedPrs), reviewRequests: requests, todo, blocked,
-    unlinkedPrs,
-    // Done page and counter both come from the lifetime ledger, so they agree
-    // by construction. Deriving the count from a single refresh made it shrink
-    // as cards aged out of the fetch window; deriving it from the old
-    // append-only doneCelebrated ledger let it drift above the rows (a header
-    // reading 32 over a 4-row table). doneCelebrated stays scoped to the one
-    // job it is good for: celebrate-once dedup via newlyDone.
-    doneCards: doneLedger, doneTotal: doneLedger.length, newlyDone, recentActivity,
-    prLog: Object.values(state.prLog) as PrLogEntry[],
-    filed: filed ?? [],
-  };
+  // Review-request dismissals live while the request does; a repo whose
+  // search failed keeps its dismissals.
+  if (state.prs && degradedRequestRepos !== 'all') {
+    const live = new Set(reviewRequests.map(r => r.id));
+    for (const id of Object.keys(state.prs)) {
+      if (!live.has(id) && !degradedRequestRepos.has(id.slice(0, id.lastIndexOf('#')).toLowerCase())) delete state.prs[id];
+    }
+  }
 }
+
 
 // How close an enrichment may sit to the updatedAt it read before the
 // same-second hole (see the enrichment skip in refresh()) makes it
@@ -432,22 +496,14 @@ export function filedFetchPlan(prior: FiledMeta | undefined, jira: { accountId: 
 // interleaved patches could permanently noop console.log for the process.
 async function runRefresh({ config, state, quiet }: { config: Config; state: State; quiet?: boolean }): Promise<Snapshot> {
   const errors: { jira?: string; github?: string } = {};
-  // Repos whose PR data is degraded this refresh (fetch or enrichment
-  // failure — even with a last-known-good fallback the data is stale);
-  // prFetchFailed marks the everything-failed case. Feeds ack-pruning: see
-  // buildSnapshot's degradedPrRepos.
-  const degradedPrRepos = new Set<string>();
-  let prFetchFailed = false;
-  let reused = 0;
-  let cards: Card[], prs: Pr[];
   // Taken before the first fetch: nothing read below can be newer than this,
   // so it is safe as the ack horizon (Snapshot.dataAsOf).
   const fetchStart = new Date().toISOString();
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
     const { demoCards, demoPrs, demoFiled, demoReviewRequests } = await import('./demo.ts');
-    cards = demoCards(config.jira);
-    prs = demoPrs(config.github);
+    const cards = demoCards(config.jira);
+    const prs = demoPrs(config.github);
     const payload = buildSnapshot({ cards, prs, state, config, errors, filed: demoFiled(config.jira), reviewRequests: demoReviewRequests(config.github), dataAsOf: fetchStart });
     state.snapshot = payload;
     state.lastRefreshAt = payload.updatedAt;
@@ -455,7 +511,8 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     return payload;
   }
   resetGithubStats();
-  let jiraOk = false, githubOk = false;
+  let jiraOk = false;
+  let cards: Card[];
   try {
     cards = await fetchJiraCards(config.jira, doneWatermark(state.doneLedger ?? []));
     jiraOk = true;
@@ -463,151 +520,19 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     errors.jira = (e as Error).message;
     cards = state.lastCards ?? [];
   }
-  // The filed list is a second Jira query with its own failure: it must not
-  // take the board down with it, and the board's failure must not blank it.
-  // Last-known-good is the previous snapshot's list (the only place it lives).
-  // filedFetchPlan decides between a delta over the cached list and a full
-  // refetch (periodic, or after an account/site change).
-  let filed: FiledCard[];
-  const plan = filedFetchPlan(state.filedMeta, config.jira, state.snapshot?.filed ?? []);
-  try {
-    filed = await fetchFiledCards(config.jira, plan.previous);
-    if (plan.full) state.filedMeta = plan.meta;
-  } catch (e) {
-    errors.jira = [errors.jira, `filed cards: ${(e as Error).message}`].filter(Boolean).join('; ');
-    // Another account's or site's list is not last-known-good for this one.
-    filed = plan.sameScope ? state.snapshot?.filed ?? [] : [];
-  }
+  const filed = await readFiled(config, state);
+  if (filed.error) errors.jira = [errors.jira, `filed cards: ${filed.error}`].filter(Boolean).join('; ');
+  const gh = await readPrs(config, state, cards);
+  const rr = await readReviewRequests(config, state);
   // Collected rather than concatenated as we go, so the compose step below can
   // tell a throttle apart from a real failure and keep both legible (#69).
-  const githubErrors: string[] = [];
-  try {
-    const gh = await fetchPrs(config.github);
-    prs = gh.prs;
-    const previous = new Map((state.lastPrs ?? []).map(p => [`${p.repo}#${p.number}`, p]));
-    carryOverCiVerdicts(prs, previous);
-    // fetchPrs isolates per-repo failures into "org/repo: msg" strings so one
-    // bad repo doesn't blank the others; splice that repo's last-known-good
-    // PRs back in from state.lastPrs so it doesn't vanish from the board.
-    if (gh.errors.length) {
-      githubErrors.push(...gh.errors);
-      for (const failedRepo of gh.failedRepos) {
-        degradedPrRepos.add(failedRepo);
-        prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
-      }
-    }
-    const linked = linkPrsToCards(cards, prs, config.jira.projectKey);
-    // Enrich only linked PRs that changed since the last refresh. GitHub bumps
-    // a PR's updated_at for every comment, review, review request, push and
-    // label — and for an edit or deletion of an existing comment too (checked
-    // against the REST issues endpoint, 2026-09-05) — so an unchanged
-    // updatedAt means last refresh's comments and review state still hold;
-    // CI arrives with discovery (mapPr) and is already fresh on the new
-    // object. This is what makes a quiet refresh cost one request per repo
-    // instead of three per linked PR (#72).
-    //
-    // One hole in that equality (#75): the timestamps are whole seconds, so a
-    // comment that lands in the same second as the updatedAt an enrichment
-    // read leaves updatedAt equal while the comment list is stale, and
-    // nothing bumps it again until the next PR event, which on a quiet PR can
-    // be days. An enrichment recorded that close to the updatedAt it saw is
-    // therefore unconfirmed and is fetched once more. That re-fetch runs a
-    // whole poll later, so it sees any same-second comment, and the row is
-    // marked enrichConfirmed for this updatedAt: the time test is not trusted
-    // to settle on its own, since a host clock running behind GitHub's would
-    // keep it true on every poll. Only a moved updatedAt (a fresh enrichPr
-    // result, which carries no flag) reopens the question. A last-known PR
-    // with no enrichedAt at all (state written before the stamp existed)
-    // takes the same one-time re-fetch.
-    const toEnrich: Pr[] = [];
-    // Open card-less PRs are enriched too: their comments and reviews feed
-    // the TODO queue. Closed/merged card-less PRs never show, so they skip it.
-    for (const p of new Set([...linked.values(), ...unlinked(prs, linked).filter(u => u.state === 'open')])) {
-      const last = previous.get(`${p.repo}#${p.number}`);
-      if (!last?.enriched || last.updatedAt !== p.updatedAt) { toEnrich.push(p); continue; }
-      // Same updatedAt as last time: either re-check it once, or reuse it.
-      // Either way this updatedAt is confirmed from here on. (A rejected
-      // re-check is replaced by its unflagged last-known row below, so the
-      // next refresh tries again.)
-      p.enrichConfirmed = true;
-      if (enrichmentUnconfirmed(last)) { toEnrich.push(p); continue; }
-      p.comments = last.comments;
-      if (p.reviewState !== 'review_required') p.reviewState = last.reviewState;
-      p.enriched = true;
-      p.enrichedAt = last.enrichedAt;
-      reused++;
-    }
-    // Enrich in small batches to avoid GitHub's secondary rate limit. Each
-    // enrichPr fires 3 parallel API calls, so a batch of 3 means ~9
-    // concurrent requests, well under the concurrency threshold — but that
-    // limit is rate-shaped too, and back-to-back batches sustain a request
-    // *rate* that trips it on a large enrich set (#69). The pause between
-    // batches shapes the whole sweep rather than just its width; gh() backs
-    // off and retries if one gets through anyway.
-    const BATCH = 3;
-    const BATCH_PAUSE_MS = 200;
-    const results: PromiseSettledResult<Pr>[] = [];
-    for (let i = 0; i < toEnrich.length; i += BATCH) {
-      if (i > 0) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
-      const batch = toEnrich.slice(i, i + BATCH);
-      results.push(...await Promise.allSettled(batch.map(p => enrichPr(p, config.github))));
-    }
-    const failed = results.filter(r => r.status === 'rejected');
-    if (failed.length) githubErrors.push(...failed.map(f => (f as PromiseRejectedResult).reason?.message).filter((m): m is string => !!m));
-    // A PR whose enrichment rejected keeps its fresh discovery object (state,
-    // CI, draft flag, base comparison all come from discovery and are
-    // current) and takes only the enrichment-derived fields from its
-    // last-known-good counterpart (matched by repo+number), so a transient
-    // detail-fetch failure neither strips review/comment data the board
-    // already had nor freezes a merged PR as open. enrichConfirmed stays
-    // unset and the copied enrichedAt predates the fresh updatedAt (or sits
-    // within the same-second window of it), so the next refresh re-enriches
-    // instead of reusing.
-    results.forEach((r, i) => {
-      if (r.status !== 'rejected') return;
-      const pr = toEnrich[i]!;
-      degradedPrRepos.add(pr.repo);
-      delete pr.enrichConfirmed;
-      const fallback = previous.get(`${pr.repo}#${pr.number}`);
-      if (!fallback) return;
-      pr.comments = fallback.comments;
-      if (pr.reviewState !== 'review_required') pr.reviewState = fallback.reviewState;
-      if (fallback.enriched) pr.enriched = true; else delete pr.enriched;
-      if (fallback.enrichedAt) pr.enrichedAt = fallback.enrichedAt; else delete pr.enrichedAt;
-    });
-    githubOk = true;
-  } catch (e) {
-    githubErrors.push((e as Error).message);
-    prs = state.lastPrs ?? [];
-    prFetchFailed = true;
-  }
+  const githubErrors = [...gh.errors, ...rr.errors];
   // A throttle that survives gh()'s retries is the least alarming failure the
-  // banner can carry: the last-known-good splices above keep the board usable
+  // banner can carry: the last-known-good splices keep the board usable
   // and the next tick usually clears it, so every throttled path collapses into
   // one calm sentence instead of pasting a URL and a JSON blob at the user
   // (#69). Any non-throttle failure keeps its own message — that one still
   // needs reading.
-  // Review requests are their own search, isolated per identity like
-  // fetchPrs is per repo: a repo whose search failed keeps its last-known
-  // entries and dismissals, every other repo gets this refresh's answer.
-  let reviewRequests: ReviewRequest[];
-  const previousRequests = state.snapshot?.reviewRequests ?? [];
-  try {
-    const rr = await fetchReviewRequests(config.github);
-    githubErrors.push(...rr.errors);
-    const failed = new Set(rr.failedRepos.map(r => r.toLowerCase()));
-    const isFailed = (repo: string) => failed.has(repo.toLowerCase());
-    reviewRequests = [...rr.requests, ...previousRequests.filter(r => isFailed(r.repo))];
-    if (state.prs) {
-      const live = new Set(reviewRequests.map(r => r.id));
-      for (const id of Object.keys(state.prs)) {
-        if (!live.has(id) && !isFailed(id.slice(0, id.lastIndexOf('#')))) delete state.prs[id];
-      }
-    }
-  } catch (e) {
-    githubErrors.push(`review requests: ${(e as Error).message}`);
-    reviewRequests = previousRequests;
-  }
   const throttled = githubErrors.filter(isThrottleMessage);
   const realFailures = githubErrors.filter(m => !isThrottleMessage(m));
   if (throttled.length) realFailures.unshift('GitHub throttled this refresh (rate limit) — showing last known data.');
@@ -617,16 +542,180 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   const prevAsOf = state.snapshot?.dataAsOf ?? state.snapshot?.updatedAt ?? null;
   const fellBack = Boolean(errors.jira || errors.github);
   const dataAsOf = fellBack && prevAsOf && Date.parse(prevAsOf) < Date.parse(fetchStart) ? prevAsOf : fetchStart;
-  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos, filed, reviewRequests, dataAsOf });
+  const payload = buildSnapshot({ cards, prs: gh.prs, linked: gh.linked, state, config, errors, degradedPrRepos: gh.degraded, filed: filed.cards, reviewRequests: rr.requests, degradedRequestRepos: rr.degraded, dataAsOf });
   state.snapshot = payload;
   state.lastRefreshAt = payload.updatedAt;
   // The last-known-good caches are the outage fallback; only a source that
-  // answered this refresh may overwrite its cache.
+  // answered this refresh may overwrite its cache. Filed cards and review
+  // requests are stored as served: a failed fetch already served its own
+  // fallback (or nothing, for another Jira account's list).
   if (jiraOk) state.lastCards = cards;
-  if (githubOk) state.lastPrs = prs;
+  if (gh.ok) state.lastPrs = gh.prs;
+  state.lastFiled = filed.cards;
+  state.lastReviewRequests = rr.requests;
   if (!quiet) {
-    console.log(`refresh: ${cards.length} cards, ${prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
-    console.log(`refresh: github ${formatGithubStats()}, ${reused} PRs reused unchanged`);
+    console.log(`refresh: ${cards.length} cards, ${gh.prs.length} prs — jira ${errors.jira ? `error: ${errors.jira}` : 'ok'}, github ${errors.github ? `error: ${errors.github}` : 'ok'}`);
+    console.log(`refresh: github ${formatGithubStats()}, ${gh.reused} PRs reused unchanged`);
   }
   return payload;
+}
+
+// The filed list is a second Jira query with its own failure: it must not
+// take the board down with it, and the board's failure must not blank it.
+// Last-known-good is state.lastFiled; a state file from before that field
+// falls back to the previous snapshot's list, where it used to live.
+// filedFetchPlan decides between a delta over the cached list and a full
+// refetch (periodic, or after an account/site change).
+async function readFiled(config: Config, state: State): Promise<{ cards: FiledCard[]; error?: string }> {
+  const cached = state.lastFiled ?? state.snapshot?.filed ?? [];
+  const plan = filedFetchPlan(state.filedMeta, config.jira, cached);
+  try {
+    const cards = await fetchFiledCards(config.jira, plan.previous);
+    if (plan.full) state.filedMeta = plan.meta;
+    return { cards };
+  } catch (e) {
+    // Another account's or site's list is not last-known-good for this one.
+    return { cards: plan.sameScope ? cached : [], error: (e as Error).message };
+  }
+}
+
+// PR discovery plus enrichment, falling back per repo (and wholesale) to
+// state.lastPrs. degraded names the repos whose PR data is stale this
+// refresh (fetch or enrichment failure — even with a last-known-good
+// fallback the data is stale), 'all' when the whole fetch failed; it feeds
+// ack-pruning (see buildSnapshot's degradedPrRepos). linked is the
+// PR-to-card map enrichment was chosen from, handed on to buildSnapshot;
+// absent when the fetch failed and prs came from the cache.
+async function readPrs(config: Config, state: State, cards: Card[]): Promise<{
+  prs: Pr[]; linked?: Map<string, Pr>; degraded: Set<string> | 'all'; errors: string[]; reused: number; ok: boolean;
+}> {
+  const errors: string[] = [];
+  const degraded = new Set<string>();
+  try {
+    const gh = await fetchPrs(config.github);
+    const prs = gh.prs;
+    const previous = new Map((state.lastPrs ?? []).map(p => [`${p.repo}#${p.number}`, p]));
+    carryOverCiVerdicts(prs, previous);
+    // fetchPrs isolates per-repo failures into "org/repo: msg" strings so one
+    // bad repo doesn't blank the others; splice that repo's last-known-good
+    // PRs back in from state.lastPrs so it doesn't vanish from the board.
+    if (gh.errors.length) {
+      errors.push(...gh.errors);
+      for (const failedRepo of gh.failedRepos) {
+        degraded.add(failedRepo);
+        prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
+      }
+    }
+    const linked = linkPrsToCards(cards, prs);
+    // Open card-less PRs are enriched too: their comments and reviews feed
+    // the TODO queue. Closed/merged card-less PRs never show, so they skip it.
+    const candidates = new Set([...linked.values(), ...unlinked(prs, linked).filter(u => u.state === 'open')]);
+    const enriched = await enrichChanged([...candidates], previous, config);
+    errors.push(...enriched.errors);
+    for (const repo of enriched.failedRepos) degraded.add(repo);
+    return { prs, linked, degraded, errors, reused: enriched.reused, ok: true };
+  } catch (e) {
+    errors.push((e as Error).message);
+    return { prs: state.lastPrs ?? [], degraded: 'all', errors, reused: 0, ok: false };
+  }
+}
+
+// Enrich only the candidates that changed since the last refresh. GitHub bumps
+// a PR's updated_at for every comment, review, review request, push and
+// label — and for an edit or deletion of an existing comment too (checked
+// against the REST issues endpoint, 2026-09-05) — so an unchanged
+// updatedAt means last refresh's comments and review state still hold;
+// CI arrives with discovery (mapPr) and is already fresh on the new
+// object. This is what makes a quiet refresh cost one request per repo
+// instead of three per linked PR (#72).
+//
+// One hole in that equality (#75): the timestamps are whole seconds, so a
+// comment that lands in the same second as the updatedAt an enrichment
+// read leaves updatedAt equal while the comment list is stale, and
+// nothing bumps it again until the next PR event, which on a quiet PR can
+// be days. An enrichment recorded that close to the updatedAt it saw is
+// therefore unconfirmed and is fetched once more. That re-fetch runs a
+// whole poll later, so it sees any same-second comment, and the row is
+// marked enrichConfirmed for this updatedAt: the time test is not trusted
+// to settle on its own, since a host clock running behind GitHub's would
+// keep it true on every poll. Only a moved updatedAt (a fresh enrichPr
+// result, which carries no flag) reopens the question. A last-known PR
+// with no enrichedAt at all (state written before the stamp existed)
+// takes the same one-time re-fetch.
+async function enrichChanged(candidates: Pr[], previous: Map<string, Pr>, config: Config): Promise<{ errors: string[]; failedRepos: string[]; reused: number }> {
+  const toEnrich: Pr[] = [];
+  let reused = 0;
+  for (const p of candidates) {
+    const last = previous.get(`${p.repo}#${p.number}`);
+    if (!last?.enriched || last.updatedAt !== p.updatedAt) { toEnrich.push(p); continue; }
+    // Same updatedAt as last time: either re-check it once, or reuse it.
+    // Either way this updatedAt is confirmed from here on. (A rejected
+    // re-check is replaced by its unflagged last-known row below, so the
+    // next refresh tries again.)
+    p.enrichConfirmed = true;
+    if (enrichmentUnconfirmed(last)) { toEnrich.push(p); continue; }
+    p.comments = last.comments;
+    if (p.reviewState !== 'review_required') p.reviewState = last.reviewState;
+    p.enriched = true;
+    p.enrichedAt = last.enrichedAt;
+    reused++;
+  }
+  // Enrich in small batches to avoid GitHub's secondary rate limit. Each
+  // enrichPr fires 3 parallel API calls, so a batch of 3 means ~9
+  // concurrent requests, well under the concurrency threshold — but that
+  // limit is rate-shaped too, and back-to-back batches sustain a request
+  // *rate* that trips it on a large enrich set (#69). The pause between
+  // batches shapes the whole sweep rather than just its width; gh() backs
+  // off and retries if one gets through anyway.
+  const BATCH = 3;
+  const BATCH_PAUSE_MS = 200;
+  const results: PromiseSettledResult<Pr>[] = [];
+  for (let i = 0; i < toEnrich.length; i += BATCH) {
+    if (i > 0) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
+    const batch = toEnrich.slice(i, i + BATCH);
+    results.push(...await Promise.allSettled(batch.map(p => enrichPr(p, config.github))));
+  }
+  const failed = results.filter(r => r.status === 'rejected');
+  const errors = failed.map(f => (f as PromiseRejectedResult).reason?.message).filter((m): m is string => !!m);
+  const failedRepos: string[] = [];
+  // A PR whose enrichment rejected keeps its fresh discovery object (state,
+  // CI, draft flag, base comparison all come from discovery and are
+  // current) and takes only the enrichment-derived fields from its
+  // last-known-good counterpart (matched by repo+number), so a transient
+  // detail-fetch failure neither strips review/comment data the board
+  // already had nor freezes a merged PR as open. enrichConfirmed stays
+  // unset and the copied enrichedAt predates the fresh updatedAt (or sits
+  // within the same-second window of it), so the next refresh re-enriches
+  // instead of reusing.
+  results.forEach((r, i) => {
+    if (r.status !== 'rejected') return;
+    const pr = toEnrich[i]!;
+    failedRepos.push(pr.repo);
+    delete pr.enrichConfirmed;
+    const fallback = previous.get(`${pr.repo}#${pr.number}`);
+    if (!fallback) return;
+    pr.comments = fallback.comments;
+    if (pr.reviewState !== 'review_required') pr.reviewState = fallback.reviewState;
+    if (fallback.enriched) pr.enriched = true; else delete pr.enriched;
+    if (fallback.enrichedAt) pr.enrichedAt = fallback.enrichedAt; else delete pr.enrichedAt;
+  });
+  return { errors, failedRepos, reused };
+}
+
+// Review requests are their own search, isolated per identity like
+// fetchPrs is per repo: a repo whose search failed keeps its last-known
+// entries (and, in pruneState, its dismissals); every other repo gets this
+// refresh's answer. Last-known-good is state.lastReviewRequests, or the
+// previous snapshot's list for a state file from before that field.
+async function readReviewRequests(config: Config, state: State): Promise<{
+  requests: ReviewRequest[]; errors: string[]; degraded: Set<string> | 'all';
+}> {
+  const previous = state.lastReviewRequests ?? state.snapshot?.reviewRequests ?? [];
+  try {
+    const rr = await fetchReviewRequests(config.github);
+    const failed = new Set(rr.failedRepos.map(r => r.toLowerCase()));
+    return { requests: [...rr.requests, ...previous.filter(r => failed.has(r.repo.toLowerCase()))], errors: rr.errors, degraded: failed };
+  } catch (e) {
+    return { requests: previous, errors: [`review requests: ${(e as Error).message}`], degraded: 'all' };
+  }
 }

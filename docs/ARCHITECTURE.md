@@ -63,8 +63,7 @@ POST /api/refresh   ▼
      │            enrichPr only for linked and open card-less PRs whose updatedAt changed since
      │            state.lastPrs; concurrent refreshes serialize per State (#72)
      │                    │
-     │                    ▼
-     │            linkPrsToCards()  : match PRs to cards
+     │            linkPrsToCards()  : match PRs to cards (once, before enrichment)
      │                    │
      │                    ▼
      │            classifyCard()    : bucket + attention, per card
@@ -96,10 +95,12 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
   snapshot: <last full payload, or null>,
   lastCards: <last successful Jira fetch, or null>,
   lastPrs: <last successful GitHub fetch, or null>,
+  lastFiled: FiledCard[],  // filed list the last refresh served (optional)
+  lastReviewRequests: ReviewRequest[],  // review requests the last refresh served (optional)
   prLog: { [id]: { id, repo, openedAt, mergedAt, closedAt } },
   prs: { ["owner/repo#n"]: { dismissedAt } },  // dismissed review requests (optional)
   ownPrs: { ["owner/repo#n"]: { lastSeenPr, ackedReasons } },  // card-less PRs' seen horizon + acks (optional)
-  filedMeta: { fullFetchAt, accountId, baseUrl },  // provenance of snapshot.filed (optional)
+  filedMeta: { fullFetchAt, accountId, baseUrl },  // provenance of lastFiled (optional)
   autoTransitioned: { ["KEY@owner/repo#n"]: { at, ok, error?, skipped? } },  // autoTransitionMerged ledger (optional)
   postedCommentIds: string[]  // Jira comments write-back posted, excluded from the own-reply watermark (optional)
 }
@@ -112,8 +113,9 @@ Freshness is server-owned: `index.ts` runs its own refresh loop (`refreshInterva
   - **Entries expire.** An entry's only job is preventing a second celebration, and it can only do that job while its card can still turn up in a fetch (`buildJql` only fetches Done cards updated since the `doneLedger` watermark). An entry both absent from the current refresh and older than `CELEBRATION_RETENTION_DAYS` (90) is dropped, so the ledger stays bounded and a bad row ages out instead of needing a hand-run migration. Entries for cards in the *current* fetch are never dropped at any age: dropping one would re-celebrate that card on every subsequent refresh.
 - **doneLedger**: the lifetime ledger of Done cards, and the source of both `snapshot.doneCards` and `snapshot.doneTotal` (`doneLedger.length`). Done cards are fetched incrementally against a watermark (`doneWatermark()` in `jira.ts`: the newest `doneAt` in the ledger minus one day, date-only). Each refresh merges the fetched Done cards in by key, with this refresh's row winning, and evicts any card the fetch now shows as not Done. So the count is all-time and does not shrink as cards age. A missing or empty ledger means an unbounded first fetch that seeds it.
 - **lastCards** / **lastPrs**: last-known-good fetch results, used to backfill the board on a partial or total source failure instead of blanking it.
+- **lastFiled** / **lastReviewRequests**: what the last refresh served for the Filed page and review requests, the fallback when that fetch fails (a failed review-request search falls back per repo). Unlike `lastCards`/`lastPrs` they are written on every refresh, since a failed fetch already served its own fallback. Absent in older state files: the first refresh then falls back to `snapshot.filed`/`snapshot.reviewRequests`, where these lived before, and writes both fields. A non-array value loads as absent.
 - **prLog**: full PR lifecycle history (see API.md), upserted from every fetched PR each refresh; never pruned.
-- **snapshot**: the exact payload the API returns; recomputed by `buildSnapshot` on every refresh, read as-is by `GET /api/data`.
+- **snapshot**: the exact payload the API returns; recomputed by `buildSnapshot` on every refresh, read as-is by `GET /api/data`. Output only: refresh reads no fallback data from it (only the previous `dataAsOf`).
 
 ### `.bak` rotation strategy
 

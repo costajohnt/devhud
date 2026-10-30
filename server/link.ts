@@ -23,7 +23,7 @@ function prMatchesCard(p: Pr, c: Card): boolean {
     containsWhole(c.description, p.url);
 }
 
-export function linkPrsToCards(cards: Card[], prs: Pr[], _projectKey?: string): Map<string, Pr> {
+export function linkPrsToCards(cards: Card[], prs: Pr[]): Map<string, Pr> {
   const map = new Map<string, Pr>();
   for (const c of cards) {
     const matches = prs.filter(p => prMatchesCard(p, c));
