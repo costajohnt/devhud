@@ -55,8 +55,11 @@ function upsertPrLog(state: State, prs: Pr[]): void {
   }
 }
 
-export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, filed, reviewRequests = [] }: {
+export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos, filed, reviewRequests = [], dataAsOf = new Date().toISOString() }: {
   cards: Card[]; prs: Pr[]; state: State; config: Config; errors: { jira?: string; github?: string };
+  // When the data was read (see Snapshot.dataAsOf). refresh() passes the time
+  // before its first fetch; direct callers get the build start.
+  dataAsOf?: string;
   reviewRequests?: ReviewRequest[];
   // Cards this user reported (jira.ts fetchFiledCards). Optional so callers
   // that don't fetch them (tests, direct use) get an empty list.
@@ -107,6 +110,13 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   const later = (a: string | null | undefined, b: string | null | undefined): string | null =>
     !a ? b ?? null : !b ? a : Date.parse(b) > Date.parse(a) ? b : a;
   const PR_ACK_REASONS = ['ci_failing', 'changes_requested', 'ready_to_merge'];
+  // PRs linked by a card that stays on the board this refresh. An off-board
+  // card must not clear the acks of a PR another on-board card still links.
+  const onBoardRefs = new Set<string>();
+  for (const card of cards) {
+    const pr = linked.get(card.key);
+    if (pr && !(isCanceled(card, statuses) || isBlocked(card, statuses) || isDone(card, statuses))) onBoardRefs.add(`${pr.repo}#${pr.number}`);
+  }
 
   for (const card of cards) {
     // Canceled work is neither active nor complete — drop it from every bucket,
@@ -115,13 +125,20 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
     // ack-pruning can't run for them; forget acks here so a card that later
     // returns to the board (e.g. QA rejects a Done card back to In Progress)
     // re-triggers on a still-true reason instead of staying muted forever.
-    if (isCanceled(card, statuses) || isTodo(card, statuses) || isBlocked(card, statuses) || isDone(card, statuses)) {
+    // The test must match the routing below exactly: a To Do card with a
+    // linked PR stays on the board, and wiping its acks here un-acked it on
+    // every refresh. The PR's own ack copy (ownPrs) is cleared too, or the
+    // sync below merges the old acks back when the card returns.
+    const pr = linked.get(card.key) ?? null;
+    if (isCanceled(card, statuses) || (isTodo(card, statuses) && !pr) || isBlocked(card, statuses) || isDone(card, statuses)) {
       const cs = state.cards[card.key];
       if (cs?.ackedReasons) cs.ackedReasons = null;
+      const ref = pr ? `${pr.repo}#${pr.number}` : null;
+      const own = ref && !onBoardRefs.has(ref) ? ownPrs[ref] : undefined;
+      if (own?.ackedReasons) own.ackedReasons = null;
     }
     if (!isDone(card, statuses)) notDone.add(card.key);
     if (isCanceled(card, statuses)) continue;
-    const pr = linked.get(card.key) ?? null;
     // Blocked is name-only and more specific than the To Do category, so it
     // wins if a project files the status under 'new'. Unlike todo, a linked
     // PR does not keep the card on the board: Jira saying blocked is the
@@ -176,9 +193,8 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
       key: card.key, summary: card.summary, jiraStatus: card.status, jiraUrl: card.url,
       fixVersions: card.fixVersions ?? [],
       bucket, attention, newComments, comments: itemComments(card, pr), pr: prView(pr),
-      // Read after classifyCard, which auto-clears a stale override once the
-      // card reaches In Test/Done — so this reflects the pin the board is
-      // actually honoring, not one about to be dropped.
+      // Read after classifyCard, whose lastStatus rule clears a pin on a status
+      // transition, so this reflects the pin the board is actually honoring.
       pinned: cs.override !== null, pinnedAt: cs.overrideAt,
       createdAt: card.createdAt, updatedAt: card.updatedAt,
       daysSinceActivity: lastTs ? Math.max(0, Math.floor((Date.now() - Date.parse(lastTs)) / DAY)) : null,
@@ -288,6 +304,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
 
   return {
     updatedAt: new Date().toISOString(),
+    dataAsOf,
     errors: { jira: errors.jira ?? null, github: errors.github ?? null },
     buckets, queue: buildQueue(buckets, statuses, requests, unlinkedPrs), reviewRequests: requests, todo, blocked,
     unlinkedPrs,
@@ -404,12 +421,15 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   let prFetchFailed = false;
   let reused = 0;
   let cards: Card[], prs: Pr[];
+  // Taken before the first fetch: nothing read below can be newer than this,
+  // so it is safe as the ack horizon (Snapshot.dataAsOf).
+  const fetchStart = new Date().toISOString();
   if (config.demo) {
     // Demo mode: canned data through the real pipeline, no network.
     const { demoCards, demoPrs, demoFiled, demoReviewRequests } = await import('./demo.ts');
     cards = demoCards(config.jira);
     prs = demoPrs(config.github);
-    const payload = buildSnapshot({ cards, prs, state, config, errors, filed: demoFiled(config.jira), reviewRequests: demoReviewRequests(config.github) });
+    const payload = buildSnapshot({ cards, prs, state, config, errors, filed: demoFiled(config.jira), reviewRequests: demoReviewRequests(config.github), dataAsOf: fetchStart });
     state.snapshot = payload;
     state.lastRefreshAt = payload.updatedAt;
     if (!quiet) console.log(`refresh (demo): ${cards.length} cards, ${prs.length} prs`);
@@ -576,7 +596,12 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
   const realFailures = githubErrors.filter(m => !isThrottleMessage(m));
   if (throttled.length) realFailures.unshift('GitHub throttled this refresh (rate limit) — showing last known data.');
   if (realFailures.length) errors.github = realFailures.join('; ');
-  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos, filed, reviewRequests });
+  // Any source that fell back served last-known-good data from an earlier
+  // read, so the horizon must not move past that earlier read.
+  const prevAsOf = state.snapshot?.dataAsOf ?? state.snapshot?.updatedAt ?? null;
+  const fellBack = Boolean(errors.jira || errors.github);
+  const dataAsOf = fellBack && prevAsOf && Date.parse(prevAsOf) < Date.parse(fetchStart) ? prevAsOf : fetchStart;
+  const payload = buildSnapshot({ cards, prs, state, config, errors, degradedPrRepos: prFetchFailed ? 'all' : degradedPrRepos, filed, reviewRequests, dataAsOf });
   state.snapshot = payload;
   state.lastRefreshAt = payload.updatedAt;
   // The last-known-good caches are the outage fallback; only a source that

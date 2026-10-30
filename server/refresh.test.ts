@@ -856,3 +856,22 @@ test('review requests: only the failed identity\'s repos keep last-known entries
   expect(snap.reviewRequests.map(r => r.id).sort()).toEqual(['home/b#2', 'work/a#1']);
   expect(Object.keys(state.prs)).toEqual(['work/a#1']);
 });
+
+// Audit 2026-10-29 M1: when a source falls back to last-known-good data, the
+// ack horizon must not move past the earlier read that data came from.
+test('dataAsOf: fresh read time normally, previous read time when a source fell back', async () => {
+  const { fetchJiraCards } = await import('./jira.ts');
+  const state = emptyState();
+  vi.mocked(fetchJiraCards).mockResolvedValueOnce([card()]);
+  const before = Date.now();
+  const fresh = await refresh({ config, state, quiet: true });
+  expect(Date.parse(fresh.dataAsOf!)).toBeGreaterThanOrEqual(before);
+  expect(Date.parse(fresh.dataAsOf!)).toBeLessThanOrEqual(Date.parse(fresh.updatedAt!));
+
+  // Jira fails (the file-level mock rejects): cards come from lastCards.
+  // A real pause, so a fresh read time could not equal the earlier one.
+  await new Promise(r => setTimeout(r, 10));
+  const stale = await refresh({ config, state, quiet: true });
+  expect(stale.errors.jira).toBeTruthy();
+  expect(stale.dataAsOf).toBe(fresh.dataAsOf);
+});

@@ -344,6 +344,12 @@ export interface PrLogEntry {
 
 export interface Snapshot {
   updatedAt: string | null;
+  // When this snapshot's data was read: taken before the first fetch, and
+  // never later than an earlier read a source fell back to. It is the "seen"
+  // horizon for acks, so a comment that lands while a refresh is running is
+  // still new afterwards. updatedAt (build completion) is for display only.
+  // Optional: absent in snapshots persisted before it existed.
+  dataAsOf?: string | null;
   errors: { jira: string | null; github: string | null };
   buckets: Record<Bucket, Item[]>;
   // Ranked TODO queue derived from buckets (server/queue.ts). Absent in

@@ -64,7 +64,7 @@ or
 Acknowledges a card's attention flags:
 
 - Clears `item.attention` and `item.newComments` on the in-memory snapshot.
-- Resets the "seen" horizon (`cardState.lastSeenPr` and `lastSeenJira`) to the *data horizon*, not wall-clock time: the last snapshot's `updatedAt`. This matters because a comment that arrived between the last refresh and this ack must still be treated as new on the *next* refresh, not silently swallowed.
+- Resets the "seen" horizon (`cardState.lastSeenPr` and `lastSeenJira`) to the *data horizon*, not wall-clock time: the last snapshot's `dataAsOf`, the time its data was read (taken before the first fetch, and held at an earlier read when a source fell back to cached data). Not `updatedAt`, which is stamped after every fetch finishes: a comment that landed during the refresh would sit before it, be missing from the snapshot, and be silently treated as seen. Snapshots persisted before `dataAsOf` existed fall back to `updatedAt`.
 - If the card was in `needs_attention`, moves it out: to its existing override bucket if one is set (`cardState.override`), otherwise to wherever the classifier would put it — the same order `classifyCard` uses, including the draft-PR rule that outranks everything else. (Both this and `unpin` call one shared `classifierDest` helper, so an acked card can't land somewhere the next refresh immediately undoes.)
 - Does **not** clear a prior override. Acking only dismisses the attention flags; it doesn't undo a previous manual move — that's what `unpin` is for.
 
@@ -163,6 +163,7 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 ```
 {
   updatedAt: string | null,        // ISO timestamp of this snapshot (null only in the first-boot placeholder)
+  dataAsOf?: string | null,        // when its data was read; the ack horizon (see type: "ack")
   errors: { jira: string | null, github: string | null },
   buckets: {
     needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], mergeable: Item[], qa_ready: Item[], in_qa: Item[]
