@@ -39,7 +39,9 @@ Requires **Node ≥ 22.18** — the whole repo runs TypeScript directly via Node
 
 ### 1. Configure
 
-Copy `config.example.json` to `config.json` and fill in, then `chmod 600 config.json` — it holds long-lived Jira/GitHub credentials, and the default umask leaves it readable by every other account on the machine (`loadConfig` warns at startup if you skip this).
+Quickest: after installing (step 2), run `node server/cli.ts init`. It asks for your Jira site, email and API token, project key, GitHub token and repos; looks up your Jira accountId, your project's status names and your GitHub login itself; guesses the status mapping; and writes `config.json` with mode 600. Tokens are not echoed. It refuses to overwrite an existing config unless you pass `--force`.
+
+Or by hand: copy `config.example.json` to `config.json` and fill in, then `chmod 600 config.json` — it holds long-lived Jira/GitHub credentials, and the default umask leaves it readable by every other account on the machine (`loadConfig` warns at startup if you skip this).
 
 - **Jira**: Get your API token at https://id.atlassian.com/manage-profile/security/api-tokens. Get your accountId by visiting `https://<baseUrl>/rest/api/3/myself` (e.g., `https://mysite.atlassian.net/rest/api/3/myself`) while logged in, then copy the `accountId` field, or ask a Claude session with the Atlassian MCP to look it up.
 - **GitHub**: Create a token with `repo` read scope. Falls back to `GITHUB_TOKEN` env var if not provided in config.
