@@ -17,7 +17,13 @@ const freePort = async () => {
   await new Promise<void>(r => srv.close(() => r()));
   return port;
 };
-const up = (port: number) => fetch(`http://127.0.0.1:${port}/api/data`).then(r => r.ok, () => false);
+// The server writes its API token next to its state when it starts; until
+// then (or without it) /api/data answers 401, which reads as not up yet.
+const up = (port: number, home: string) => {
+  let token = '';
+  try { token = readFileSync(join(home, 'data', 'api-token'), 'utf8').trim(); } catch { /* not written yet */ }
+  return fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-token': token } }).then(r => r.ok, () => false);
+};
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // The real server refuses to start without a built web bundle, and a fresh
@@ -40,13 +46,13 @@ test('serve forwards SIGINT to the server: the port closes and the CLI exits 0',
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(r => cli.on('exit', (code, signal) => r({ code, signal })));
   try {
     let ready = false;
-    for (let i = 0; i < 100 && !ready; i++) { await sleep(100); ready = await up(port); }
+    for (let i = 0; i < 100 && !ready; i++) { await sleep(100); ready = await up(port, home); }
     expect(ready, 'server answered /api/data').toBe(true);
 
     cli.kill('SIGINT');
     const result = await Promise.race([exited, sleep(5_000).then(() => null)]);
     expect(result).toEqual({ code: 0, signal: null });
-    expect(await up(port)).toBe(false);
+    expect(await up(port, home)).toBe(false);
   } finally {
     // Clean up even on failure: the CLI, and the server child it may have
     // orphaned (its pid is in data/server.pid while it runs).
