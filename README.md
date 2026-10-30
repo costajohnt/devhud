@@ -47,7 +47,7 @@ Set `"demo": true` in `config.json` (or run with `DEVHUD_DEMO=1`; `SIMON_DASH_DE
 
 ## Setup
 
-**Where files live:** from a git checkout, `config.json` sits at the repo root and state in `data/`, as below. An installed package (`npm i -g devhud`, once published) can't write next to its code, so it uses `~/.devhud/config.json` and `~/.devhud/data/`; run `devhud init` to create the config there. `DEVHUD_HOME=/some/dir` overrides both. `npm run pack:check` builds the package, installs the tarball into a scratch prefix and runs the installed `devhud` and `devhud-mcp` end to end.
+**Where files live:** from a git checkout, `config.json` sits at the repo root and state in `data/`, as below. An installed package (`npm i -g devhud`, or `npx devhud init`) can't write next to its code, so it uses `~/.devhud/config.json` and `~/.devhud/data/`; run `devhud init` to create the config there. `DEVHUD_HOME=/some/dir` overrides both. `npm run pack:check` builds the package, installs the tarball into a scratch prefix and runs the installed `devhud` and `devhud-mcp` end to end.
 
 Requires **Node ≥ 22.18** — the whole repo runs TypeScript directly via Node's native type stripping; older Node fails at startup with `ERR_UNKNOWN_FILE_EXTENSION`.
 

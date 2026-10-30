@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  # release.yml runs this whole workflow as a `needs:` gate, so a tag can't
+  # publish a commit that never passed it.
+  workflow_call:
 
 # Read-only token: CI only checks out and tests, it never writes back.
 permissions:
