@@ -23,7 +23,7 @@ const FREE_PORT = await (async () => {
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
-    port: FREE_PORT, // unused by direct-mode tests; nothing is listening on it
+    port: FREE_PORT, // direct-mode tests pass viaServer: false and never probe it
     jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
     github: { username: 'john', org: 'o', token: '', repos: [] },
     demo: false, writeEnabled: false,
@@ -76,7 +76,7 @@ test('probeServer returns false when nothing is listening on the port', async ()
 
 test('status in direct mode against a fresh temp state file prints the empty-board message', async () => {
   const statePath = tempStatePath();
-  const { code, out, err } = await run(['status'], { config, statePath });
+  const { code, out, err } = await run(['status'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(err).toBe('direct');
   expect(out).toBe('No data yet — run `devhud refresh` to fetch a snapshot.');
@@ -90,7 +90,7 @@ test('status --json in direct mode against a populated temp state file returns t
     doneTotal: 3,
   });
   saveState(statePath, state);
-  const { code, out } = await run(['status', '--json'], { config, statePath });
+  const { code, out } = await run(['status', '--json'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(JSON.parse(out).doneTotal).toBe(3);
 });
@@ -115,7 +115,7 @@ test('ack via the shared action function persists a bucket change to disk (direc
   });
   saveState(statePath, state);
 
-  const { code, out } = await run(['ack', 'P-1'], { config, statePath });
+  const { code, out } = await run(['ack', 'P-1'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(out).toBe('P-1 -> in_progress');
 
@@ -136,7 +136,7 @@ test('refresh --json in direct mode emits pure JSON on stdout (refresh()\'s own 
   const log = vi.spyOn(console, 'log');
   const write = vi.spyOn(process.stdout, 'write');
   try {
-    const { code, out } = await run(['refresh', '--json'], { config: demoConfig, statePath });
+    const { code, out } = await run(['refresh', '--json'], { config: demoConfig, statePath, viaServer: false });
     expect(code).toBe(0);
     expect(() => JSON.parse(out)).not.toThrow();
     expect(log).not.toHaveBeenCalled();
@@ -154,21 +154,21 @@ test('move --json in direct mode reports the resulting bucket', async () => {
     buckets: { needs_attention: [], in_progress: [needsAttentionItem({ key: 'P-2', bucket: 'in_progress', attention: [] })], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
   });
   saveState(statePath, state);
-  const { code, out } = await run(['move', 'P-2', 'in_qa', '--json'], { config, statePath });
+  const { code, out } = await run(['move', 'P-2', 'in_qa', '--json'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(JSON.parse(out)).toEqual({ ok: true, key: 'P-2', bucket: 'in_qa' });
 });
 
 test('ack on an unknown key is a no-op that still exits 0', async () => {
   const statePath = tempStatePath();
-  const { code, out } = await run(['ack', 'GHOST-1'], { config, statePath });
+  const { code, out } = await run(['ack', 'GHOST-1'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(out).toBe('GHOST-1: not currently on the board');
 });
 
 test('move with an invalid bucket exits 1 with the server-side error', async () => {
   const statePath = tempStatePath();
-  const { code, err } = await run(['move', 'P-1', 'needs_attention'], { config, statePath });
+  const { code, err } = await run(['move', 'P-1', 'needs_attention'], { config, statePath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain('bucket must be one of');
 });
@@ -182,7 +182,7 @@ test('direct-mode ack refuses when a server.pid exists for a live process (split
   saveState(statePath, state);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
 
-  const { code, err } = await run(['ack', 'P-1'], { config, statePath });
+  const { code, err } = await run(['ack', 'P-1'], { config, statePath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain(`a server (pid ${process.pid}) appears to be running`);
   // No mutation happened: the card is untouched on disk.
@@ -192,7 +192,7 @@ test('direct-mode ack refuses when a server.pid exists for a live process (split
 test('direct-mode refresh refuses when a server.pid exists for a live process', async () => {
   const statePath = tempStatePath();
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
-  const { code, err } = await run(['refresh'], { config, statePath });
+  const { code, err } = await run(['refresh'], { config, statePath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain('appears to be running but did not answer the probe');
 });
@@ -200,7 +200,7 @@ test('direct-mode refresh refuses when a server.pid exists for a live process', 
 test('status still works direct-mode even with a server.pid present (read-only)', async () => {
   const statePath = tempStatePath();
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
-  const { code, out } = await run(['status'], { config, statePath });
+  const { code, out } = await run(['status'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(out).toBe('No data yet — run `devhud refresh` to fetch a snapshot.');
 });
@@ -217,7 +217,7 @@ test('a stale server.pid (dead process) does not block direct-mode writes', asyn
   // int32 for process.kill: never a live pid, no reuse race — unlike a
   // spawned-and-reaped child, whose pid is immediately eligible for reuse.
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: 2147483647, port: FREE_PORT, startedAt: 'x' }));
-  const { code, out } = await run(['ack', 'P-1'], { config, statePath });
+  const { code, out } = await run(['ack', 'P-1'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(out).toBe('P-1 -> in_progress');
 });
@@ -226,7 +226,7 @@ test('transition in direct mode against demo config prints a clean demo-refusal 
   const statePath = tempStatePath();
   const demoConfig = makeConfig({ demo: true });
   const configPath = tempConfigFile({ demo: true });
-  const { code, out, err } = await run(['transition', 'FAKE-1', 'Done'], { config: demoConfig, statePath, configPath });
+  const { code, out, err } = await run(['transition', 'FAKE-1', 'Done'], { config: demoConfig, statePath, configPath, viaServer: false });
   expect(code).toBe(0);
   expect(err).toBe('direct');
   expect(out).toBe('demo mode: write-back is a no-op (nothing real to write to)');
@@ -236,7 +236,7 @@ test('transition --json in direct mode against demo config returns the stub-succ
   const statePath = tempStatePath();
   const demoConfig = makeConfig({ demo: true });
   const configPath = tempConfigFile({ demo: true });
-  const { code, out } = await run(['transition', 'FAKE-1', 'In', 'Review', '--json'], { config: demoConfig, statePath, configPath });
+  const { code, out } = await run(['transition', 'FAKE-1', 'In', 'Review', '--json'], { config: demoConfig, statePath, configPath, viaServer: false });
   expect(code).toBe(0);
   expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
@@ -244,21 +244,21 @@ test('transition --json in direct mode against demo config returns the stub-succ
 test('comment in direct mode refuses with the real gate error when writeEnabled is false (non-demo)', async () => {
   const statePath = tempStatePath();
   const configPath = tempConfigFile({ demo: false, writeEnabled: false });
-  const { code, err } = await run(['comment', 'P-1', 'looks', 'good'], { config, statePath, configPath });
+  const { code, err } = await run(['comment', 'P-1', 'looks', 'good'], { config, statePath, configPath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain('write-back disabled; set writeEnabled: true in config.json');
 });
 
 test('pr-comment usage error when the repo#num ref is malformed', async () => {
   const statePath = tempStatePath();
-  const { code, err } = await run(['pr-comment', 'not-a-ref', 'nice', 'work'], { config, statePath });
+  const { code, err } = await run(['pr-comment', 'not-a-ref', 'nice', 'work'], { config, statePath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain('usage: devhud pr-comment <repo#num> <text...>');
 });
 
 test('pr-comment usage error when no comment text is given', async () => {
   const statePath = tempStatePath();
-  const { code, err } = await run(['pr-comment', 'acme/webapp#482'], { config, statePath });
+  const { code, err } = await run(['pr-comment', 'acme/webapp#482'], { config, statePath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain('usage: devhud pr-comment <repo#num> <text...>');
 });
@@ -267,7 +267,7 @@ test('pr-comment demo-refuses cleanly with repo/number parsed from the ref', asy
   const statePath = tempStatePath();
   const demoConfig = makeConfig({ demo: true });
   const configPath = tempConfigFile({ demo: true });
-  const { code, out } = await run(['pr-comment', 'acme/webapp#482', 'nice', 'work', '--json'], { config: demoConfig, statePath, configPath });
+  const { code, out } = await run(['pr-comment', 'acme/webapp#482', 'nice', 'work', '--json'], { config: demoConfig, statePath, configPath, viaServer: false });
   expect(code).toBe(0);
   expect(JSON.parse(out)).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
@@ -276,31 +276,31 @@ test('direct-mode transition refuses when a server.pid exists for a live process
   const statePath = tempStatePath();
   const writeEnabledConfig = makeConfig({ demo: false, writeEnabled: true });
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: FREE_PORT, startedAt: 'x' }));
-  const { code, err } = await run(['transition', 'P-1', 'Done'], { config: writeEnabledConfig, statePath });
+  const { code, err } = await run(['transition', 'P-1', 'Done'], { config: writeEnabledConfig, statePath, viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain(`a server (pid ${process.pid}) appears to be running`);
 });
 
 test('transition/comment usage errors when KEY or status/text is missing', async () => {
-  const t = await run(['transition', 'P-1'], { config, statePath: tempStatePath() });
+  const t = await run(['transition', 'P-1'], { config, statePath: tempStatePath(), viaServer: false });
   expect(t.code).toBe(1);
   expect(t.err).toContain('usage: devhud transition <KEY> <status...>');
-  const c = await run(['comment'], { config, statePath: tempStatePath() });
+  const c = await run(['comment'], { config, statePath: tempStatePath(), viaServer: false });
   expect(c.code).toBe(1);
   expect(c.err).toContain('usage: devhud comment <KEY> <text...>');
 });
 
 test('exit code 1 for an unknown command', async () => {
-  const { code, err } = await run(['bogus'], { config, statePath: tempStatePath() });
+  const { code, err } = await run(['bogus'], { config, statePath: tempStatePath(), viaServer: false });
   expect(code).toBe(1);
   expect(err).toContain('Unknown command: bogus');
 });
 
 test('exit code 1 when ack/move is called without a KEY argument', async () => {
-  const ack = await run(['ack'], { config, statePath: tempStatePath() });
+  const ack = await run(['ack'], { config, statePath: tempStatePath(), viaServer: false });
   expect(ack.code).toBe(1);
   expect(ack.err).toContain('usage: devhud ack <KEY>');
-  const move = await run(['move'], { config, statePath: tempStatePath() });
+  const move = await run(['move'], { config, statePath: tempStatePath(), viaServer: false });
   expect(move.code).toBe(1);
   expect(move.err).toContain('usage: devhud move <KEY> <bucket>');
 });
@@ -383,7 +383,7 @@ test('unpin --json in direct mode releases the pin and reports the derived bucke
   state.cards['P-2'] = { lastSeenPr: null, lastSeenJira: null, override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z' };
   saveState(statePath, state);
 
-  const { code, out } = await run(['unpin', 'P-2', '--json'], { config, statePath });
+  const { code, out } = await run(['unpin', 'P-2', '--json'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(JSON.parse(out)).toEqual({ ok: true, key: 'P-2', bucket: 'in_progress', wasPinned: true });
   expect(loadState(statePath).cards['P-2']?.override).toBeNull();
@@ -398,7 +398,7 @@ test('unpin on an unpinned card says so instead of claiming a move', async () =>
   });
   saveState(statePath, state);
 
-  const { code, out } = await run(['unpin', 'P-3'], { config, statePath });
+  const { code, out } = await run(['unpin', 'P-3'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(out).toBe('P-3: was not pinned (in in_progress)');
 });
@@ -462,7 +462,7 @@ test('todo in direct mode rebuilds the queue from a pre-queue snapshot', async (
   });
   state.snapshot.queue = [];
   saveState(statePath, state);
-  const { code, out } = await run(['todo'], { config, statePath });
+  const { code, out } = await run(['todo'], { config, statePath, viaServer: false });
   expect(code).toBe(0);
   expect(out).toContain('P1  P-1  CI failing on o/r#4');
   expect(out).toContain('devhud ack P-1 ci_failing');

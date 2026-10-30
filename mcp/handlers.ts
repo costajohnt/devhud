@@ -12,6 +12,8 @@ export interface Ctx {
   config: Config;
   statePath: string;
   configPath?: string;
+  // Passed through to server/ops.ts: skips the probe (tests pin direct mode).
+  viaServer?: boolean;
 }
 
 export interface ErrorShape {

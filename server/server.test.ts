@@ -110,6 +110,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => server.close());
+// The loop tests below fake setTimeout; restore even when one fails.
+afterEach(() => { vi.useRealTimers(); });
 
 test('GET /api/data returns snapshot', async () => {
   const d = await (await fetch(`${base}/api/data`)).json();
@@ -463,6 +465,8 @@ test('GET /api/data returns the documented placeholder before any refresh has ru
 // snapshots one at a time.
 interface SseFrame { event: string | null; data: string; }
 
+// Captured before any test fakes timers, so the 5s guard stays real.
+const realSetTimeout = setTimeout;
 function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; nextTick: () => Promise<{ updatedAt: string | null }>; close: () => void }> {
   const { hostname, port } = new URL(base);
   return new Promise((resolve, reject) => {
@@ -494,7 +498,7 @@ function openEvents(base: string): Promise<{ next: () => Promise<Snapshot>; next
         if (qi >= 0) return Promise.resolve(queue.splice(qi, 1)[0]!);
         return Promise.race([
           new Promise<SseFrame>(r => waiters.push({ match, resolve: r })),
-          new Promise<SseFrame>((_, rej) => setTimeout(() => rej(new Error('no matching SSE event within 5s')), 5000).unref()),
+          new Promise<SseFrame>((_, rej) => realSetTimeout(() => rej(new Error('no matching SSE event within 5s')), 5000).unref()),
         ]);
       };
       resolve({
@@ -609,10 +613,13 @@ test('SSE fan-out isolates a client whose write throws', () => {
   expect(good.writes).toEqual(['connect', 'a']);
 });
 
-// Spins up a server whose scheduled loop runs every second against an
-// injected refreshFn — the loop itself (tick → broadcast, error recovery,
-// no-op suppression) is otherwise unreachable from tests: the default
-// interval is 120s and the real refresh() needs network.
+// Spins up a server whose scheduled loop runs every second (on fake
+// setTimeout; advance with nextLoopTick) against an injected refreshFn —
+// the loop itself (tick → broadcast, error recovery, no-op suppression) is
+// otherwise unreachable from tests: the default interval is 120s and the
+// real refresh() needs network. Only setTimeout/clearTimeout are faked, so
+// the real socket I/O underneath still runs.
+const nextLoopTick = () => vi.advanceTimersByTimeAsync(1000);
 async function startLoopServer(refreshFn: (args: { state: unknown }) => Promise<Snapshot>, autoTransitionFn?: (args: { state: unknown }) => Promise<{ attempted: number; succeeded: number; failed: number }>): Promise<{ server: http.Server; base: string }> {
   const dir = mkdtempSync(join(tmpdir(), 'jd-loop-'));
   const loopStatePath = join(dir, 'state.json');
@@ -622,6 +629,7 @@ async function startLoopServer(refreshFn: (args: { state: unknown }) => Promise<
   const state = emptyState();
   state.snapshot = makeSnapshot({ updatedAt: 't0' });
   saveState(loopStatePath, state);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const loopServer = createServer({
     config: makeConfig({ refreshIntervalSeconds: 1 }), statePath: loopStatePath, webDist,
     refreshFn: refreshFn as never,
@@ -644,6 +652,8 @@ test('scheduled loop broadcasts on tick and a failing tick does not kill the loo
   try {
     const events = await openEvents(loopBase);
     await events.next(); // connect replay of the seeded snapshot
+    await nextLoopTick(); // tick 1 throws
+    await nextLoopTick(); // tick 2 only runs if tick 1 rescheduled
     const snap = await events.next(); // first successful tick's broadcast
     expect(snap.updatedAt).toBe('t2'); // tick 1 threw; the loop survived and tick 2 ran
     expect(calls).toBe(2);
@@ -668,13 +678,16 @@ test('scheduled loop suppresses broadcasts when only updatedAt changed', async (
   try {
     const events = await openEvents(loopBase);
     await events.next(); // connect replay
+    await nextLoopTick();
     const first = await events.next();
     expect(first.updatedAt).toBe('t1'); // first tick always broadcasts (nothing prior)
     // t2 was suppressed as a full snapshot but still heartbeats its fresh
     // updatedAt, so an idle board's "Updated Xm ago" tracks the last
     // successful check.
+    await nextLoopTick();
     const tick = await events.nextTick();
     expect(tick.updatedAt).toBe('t2');
+    await nextLoopTick();
     const second = await events.next();
     expect(second.updatedAt).toBe('t3');
     expect(second.doneTotal).toBe(9);
@@ -706,6 +719,7 @@ test('scheduled loop auto-transitions before broadcasting and re-refreshes on su
   try {
     const events = await openEvents(loopBase);
     await events.next(); // connect replay
+    await nextLoopTick();
     const first = await events.next();
     expect(order.slice(0, 3)).toEqual(['refresh1', 'auto', 'refresh2']);
     expect(first.updatedAt).toBe('t2');
@@ -733,6 +747,7 @@ test('scheduled loop does not re-refresh when no auto-transition succeeded (M5)'
   try {
     const events = await openEvents(loopBase);
     await events.next();
+    await nextLoopTick();
     const first = await events.next();
     expect(first.updatedAt).toBe('t1');
     // Broadcast came straight after the failed batch: no second refresh.
