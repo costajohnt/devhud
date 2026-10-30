@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { classifyCard, isTodo, isDone, isCanceled, isBlocked, sameStatus, isPreTest } from './classify.ts';
+import { classifyCard, isTodo, isDone, isCanceled, isBlocked, sameStatus, primaryStatus, isPreTest } from './classify.ts';
 import type { Card, Pr, CardState, JiraStatuses } from './types.ts';
 
 const statuses: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' };
@@ -610,4 +610,18 @@ test('multi-identity: self logins match case-insensitively (GitHub logins are ca
     cs: cs(),
   });
   expect(result.attention).not.toContain('new_pr_comments');
+});
+
+// Configured statuses may be lists so teams with several equivalent names
+// (two review columns, two QA columns) route without code changes.
+test('status lists: any listed name matches, first entry is the primary', () => {
+  expect(sameStatus('pr review', ['Code Review', 'PR Review'])).toBe(true);
+  expect(sameStatus('In Progress', ['Code Review', 'PR Review'])).toBe(false);
+  expect(sameStatus('x', [])).toBe(false);
+  expect(primaryStatus(['QA', 'Testing'])).toBe('QA');
+  expect(primaryStatus('In Test')).toBe('In Test');
+
+  const listed: JiraStatuses = { ...statuses, inTest: ['QA', 'Testing'], review: ['PR Review', 'Peer Review'] };
+  expect(classifyCard({ ...base, statuses: listed, card: card({ status: 'Testing', description: 'QA instructions: x', fixVersions: ['1'] }), pr: null, cs: cs() }).bucket).toBe('qa_ready');
+  expect(classifyCard({ ...base, statuses: listed, card: card({ status: 'Peer Review' }), pr: null, cs: cs() }).bucket).toBe('waiting_review');
 });

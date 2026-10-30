@@ -1,4 +1,4 @@
-import type { Card, Pr, CardState, JiraStatuses, Bucket, NewComment, PrComment, JiraComment } from './types.ts';
+import type { Card, Pr, CardState, JiraStatuses, StatusNames, Bucket, NewComment, PrComment, JiraComment } from './types.ts';
 
 // The one place a raw PR/Jira comment becomes a NewComment (300-char body
 // cap, source tag, author fallback). classify's attention queue and
@@ -230,11 +230,16 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
 // stayed exact, so a project whose column read "in test" routed review
 // case-insensitively and In Test not at all (#67). This helper is the single
 // comparison every one of them now goes through. An undefined or blank status
-// never matches, including against another blank.
-export const sameStatus = (a: string | undefined, b: string | undefined): boolean => {
+// never matches, including against another blank. `b` may be a configured
+// list of names (StatusNames); any entry matching counts.
+export const sameStatus = (a: string | undefined, b: StatusNames | undefined): boolean => {
   const x = a?.trim().toLowerCase();
-  return !!x && x === b?.trim().toLowerCase();
+  if (!x || b === undefined) return false;
+  return (Array.isArray(b) ? b : [b]).some(n => x === n?.trim().toLowerCase());
 };
+
+// The single status name to transition a card to when config lists several.
+export const primaryStatus = (s: StatusNames): string => (Array.isArray(s) ? s[0] ?? '' : s);
 
 // Unlike To Do / Done, this cannot be decided by status category: Jira files
 // both 'In Progress' and 'Code Review' under the same 'indeterminate'

@@ -370,3 +370,28 @@ test('multi-identity: case-variant duplicate repos are a config error', () => {
     { username: 'personal-user', tokenEnv: 'GH_TOKEN_PERSONAL', repos: ['svc'] },
   ] })).toThrow(/differ only in case/);
 });
+
+test('jira.statuses accepts lists and rejects empty or non-string entries', () => {
+  const base = {
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  };
+  const ok = join(dir, 'statuses-list.json');
+  writeFileSync(ok, JSON.stringify({ ...base, jira: { ...base.jira, statuses: { review: ['Code Review', 'PR Review'] } } }));
+  expect(loadConfig(ok).jira.statuses.review).toEqual(['Code Review', 'PR Review']);
+  expect(loadConfig(ok).jira.statuses.inTest).toBe('In Test');
+  for (const [name, v] of [['empty', []], ['blank', ['']], ['number', 5]] as const) {
+    const p = join(dir, `statuses-${name}.json`);
+    writeFileSync(p, JSON.stringify({ ...base, jira: { ...base.jira, statuses: { inTest: v } } }));
+    expect(() => loadConfig(p)).toThrow(/invalid "jira.statuses.inTest"/);
+  }
+});
+
+test('ignoreAuthors defaults to Rovo only', () => {
+  const p = join(dir, 'ignore-default.json');
+  writeFileSync(p, JSON.stringify({
+    jira: { baseUrl: 'https://x.atlassian.net', email: 'a@b.c', apiToken: 't', projectKey: 'PROJ', accountId: 'id' },
+    github: { org: 'o', repos: ['r'], username: 'u' },
+  }));
+  expect(loadConfig(p).ignoreAuthors).toEqual(['Rovo']);
+});

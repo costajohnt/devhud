@@ -13,7 +13,7 @@
 import { refresh } from './refresh.ts';
 import { loadConfig } from './config.ts';
 import { resolveIdentity } from './github.ts';
-import { isPreTest, sameStatus } from './classify.ts';
+import { isPreTest, primaryStatus, sameStatus } from './classify.ts';
 import type { Card, Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
 
 interface JiraTransition {
@@ -430,8 +430,8 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
       continue;
     }
     try {
-      await transitionCardFn(config.jira, item.key, statuses.inTest);
-      console.log(`auto-transition: ${item.key} -> ${statuses.inTest}`);
+      await transitionCardFn(config.jira, item.key, primaryStatus(statuses.inTest));
+      console.log(`auto-transition: ${item.key} -> ${primaryStatus(statuses.inTest)}`);
       ledger[id] = { at: now(), ok: true };
       succeeded++;
     } catch (e) {
