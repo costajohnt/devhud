@@ -45,6 +45,8 @@ Set `"demo": true` in `config.json` (or run with `DEVHUD_DEMO=1`; `SIMON_DASH_DE
 
 ## Setup
 
+**Where files live:** from a git checkout, `config.json` sits at the repo root and state in `data/`, as below. An installed package (`npm i -g devhud`, once published) can't write next to its code, so it uses `~/.devhud/config.json` and `~/.devhud/data/`; run `devhud init` to create the config there. `DEVHUD_HOME=/some/dir` overrides both. `npm run pack:check` builds the package, installs the tarball into a scratch prefix and runs the installed `devhud` and `devhud-mcp` end to end.
+
 Requires **Node ≥ 22.18** — the whole repo runs TypeScript directly via Node's native type stripping; older Node fails at startup with `ERR_UNKNOWN_FILE_EXTENSION`.
 
 ### 1. Configure
@@ -74,12 +76,11 @@ Or by hand: copy `config.example.json` to `config.json` and fill in, then `chmod
 ```bash
 npm ci
 cd web && npm ci
-cd ../mcp && npm ci
 ```
 
 `npm ci` (not `npm i`) installs exactly what the lockfile pins, which matters here since this same install is also the deployment path on a machine that may hold write-enabled Jira/GitHub credentials.
 
-The third install is only needed if you plan to use the MCP server (see Claude integration below) — but do it now anyway: skipping it is the most common fresh-clone mistake and shows up as `ERR_MODULE_NOT_FOUND` the first time `mcp/index.ts` runs.
+The MCP server's dependencies are in the root install.
 
 ### 3. Run
 
@@ -158,12 +159,6 @@ Also runnable as `npm run cli -- status`, or (once linked/installed) as the
 
 `mcp/` is a stdio MCP server exposing the board to Claude sessions, so you can ask Claude about your board directly instead of switching to the dashboard or the CLI. It uses the same dual transport as the CLI: proxies through a running server if one's up on the configured port, otherwise operates directly on `data/state.json`. `board_status` and `card_comments` both carry an `_note` field (and matching tool-description text) flagging that card summaries and comment bodies are third-party Jira/GitHub text, not instructions — worth knowing if you're piping tool output somewhere else.
 
-Install its dependencies once:
-
-```bash
-cd mcp && npm ci
-```
-
 Register it with the Claude Code CLI:
 
 ```bash
@@ -240,7 +235,8 @@ Manual moves, pins and acknowledgements are stored locally in `data/state.json`.
 
 ```bash
 git pull
-npm ci && (cd web && npm ci) && (cd mcp && npm ci)   # only if a lockfile changed
+npm ci && (cd web && npm ci)                          # only if a lockfile changed
+npm run build                                         # only if you npm-linked the devhud bin (it runs dist/)
 ./bin/start.sh                                        # or reload the launchd agent
 ```
 

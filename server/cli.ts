@@ -8,8 +8,10 @@
 // either way. Which transport was used is always printed to stderr in
 // human mode.
 import { parseArgs } from 'node:util';
-import { spawnSync, spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { join, dirname, extname } from 'node:path';
+import { CONFIG_PATH, STATE_PATH } from './paths.ts';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
 import { BUCKETS } from './actions.ts';
@@ -87,6 +89,14 @@ export function formatQueue(payload: Snapshot): string {
   return lines.join('\n');
 }
 
+// Help is answered before a config is loaded (so it works on a fresh
+// install), but only in flag position: parseCli leaves the free text of
+// comment/transition alone, so "--help" in a comment body is still posted.
+export function wantsHelp(args: string[]): boolean {
+  if (!args.length) return true;
+  try { const p = parseCli(args); return p.values.help || !p.cmd; } catch { return false; }
+}
+
 const CLI_OPTIONS = { json: { type: 'boolean', default: false }, help: { type: 'boolean', default: false } } as const;
 const FREE_TEXT_CMDS = new Set(['transition', 'comment', 'pr-comment']);
 
@@ -156,8 +166,16 @@ export async function run(argv: string[], { config, statePath, configPath }: {
   if (cmd === 'serve') {
     // Foreground: inherit stdio and block until the server exits, mirroring
     // `node server/index.ts` run directly.
-    const result = spawnSync(process.execPath, [join(fileURLToPath(new URL('.', import.meta.url)), 'index.ts')], { stdio: 'inherit' });
-    return { code: result.status ?? 1, out: '', err: '' };
+    // index.ts from a checkout, index.js from a built package: same extension as this file.
+    // Async spawn with the termination signals forwarded: with spawnSync, a
+    // SIGTERM to this process (a supervisor, `kill <pid>`) orphaned the
+    // server, still listening on its port.
+    const self = fileURLToPath(import.meta.url);
+    const child = spawn(process.execPath, [join(dirname(self), `index${extname(self)}`)], { stdio: 'inherit' });
+    const forward = (sig: NodeJS.Signals) => () => { child.kill(sig); };
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, forward(sig));
+    const code = await new Promise<number>(res => child.on('exit', (c, sig) => res(c ?? (sig ? 0 : 1))));
+    return { code, out: '', err: '' };
   }
   if (cmd === 'open') {
     const url = `http://localhost:${config.port}`;
@@ -266,9 +284,18 @@ export async function run(argv: string[], { config, statePath, configPath }: {
   return { code: 1, out: '', err: `Unknown command: ${cmd}\n\n${HELP}` };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// realpath: an installed bin runs through a node_modules/.bin symlink, so
+// argv[1] is the link while import.meta.url is the real file.
+const isMain = (() => { try { return realpathSync(process.argv[1] ?? '') === fileURLToPath(import.meta.url); } catch { return false; } })();
+
+if (isMain) {
   try {
-    const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+    const configPath = CONFIG_PATH;
+    const args = process.argv.slice(2);
+    if (wantsHelp(args)) {
+      console.log(HELP);
+      process.exit(0);
+    }
     // init runs before a config exists, so it can't go through loadConfig.
     if (process.argv[2] === 'init') {
       const { runInit, ttyPrompter } = await import('./init.ts');
@@ -276,9 +303,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (err) console.error(err);
       process.exit(code);
     }
+    if (!existsSync(configPath)) {
+      console.error(`No config at ${configPath}. Run \`devhud init\` to create one.`);
+      process.exit(1);
+    }
     const config = loadConfig(configPath);
-    const root = fileURLToPath(new URL('..', import.meta.url));
-    const statePath = join(root, 'data', 'state.json');
+    const statePath = STATE_PATH;
     const { code, out, err } = await run(process.argv.slice(2), { config, statePath, configPath });
     if (err) console.error(err);
     if (out) console.log(out);

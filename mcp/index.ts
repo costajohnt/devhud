@@ -6,8 +6,7 @@
 // file), so this works whether it's invoked from anywhere on disk. If
 // config.json is missing, loadConfig()'s error is surfaced as a clear MCP
 // startup failure rather than a silent crash.
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { CONFIG_PATH, STATE_PATH } from '../server/paths.ts';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -17,7 +16,7 @@ import { boardStatus, todoList, doRefresh, ackCard, moveCard, unpinCard, cardCom
 import type { Ctx } from './handlers.ts';
 import type { Config } from '../server/types.ts';
 
-const configPath = fileURLToPath(new URL('../config.json', import.meta.url));
+const configPath = CONFIG_PATH;
 let config: Config;
 try {
   config = loadConfig(configPath);
@@ -25,8 +24,7 @@ try {
   console.error(`devhud-mcp: failed to load config.json: ${(e as Error).message}`);
   process.exit(1);
 }
-const root = fileURLToPath(new URL('..', import.meta.url));
-const statePath = join(root, 'data', 'state.json');
+const statePath = STATE_PATH;
 const ctx: Ctx = { config, statePath, configPath };
 
 const server = new McpServer({ name: 'devhud', version: '1.0.0' });

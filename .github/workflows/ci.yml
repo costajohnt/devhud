@@ -35,9 +35,10 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             web/package-lock.json
-            mcp/package-lock.json
       - run: npm ci
       - run: cd web && npm ci
-      - run: cd mcp && npm ci
       - run: npm test
       - run: npm run build
+      # The published package: build dist/, pack it, install the tarball
+      # into a scratch prefix and run the installed bins.
+      - run: npm run pack:check
