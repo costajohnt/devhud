@@ -19,6 +19,9 @@ afterEach(() => vi.unstubAllGlobals());
 const REPOS = ['alpha', 'beta', 'gamma'];
 const PRS_PER_REPO = 50;
 const LINKED_PER_REPO = 2;
+// Open PRs no card links to: enriched too, since they feed the TODO queue.
+// Every other PR in the author's window is closed or merged.
+const OPEN_UNLINKED_PER_REPO = 2;
 
 const config: Config = {
   jira: { projectKey: 'PROJ', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled' } },
@@ -41,9 +44,9 @@ function fakeGithub() {
   const node = (repoIdx: number, n: number) => ({
     number: n, url: `https://github.example/${REPOS[repoIdx]}/pull/${n}`, title: 'T', body: '',
     headRefName: n <= LINKED_PER_REPO ? `${cardKey(repoIdx, n)}-feature` : `unrelated-${n}`,
-    state: n % 5 === 0 ? 'MERGED' : 'OPEN', isDraft: false,
+    state: n % 5 === 0 ? 'MERGED' : n <= LINKED_PER_REPO + OPEN_UNLINKED_PER_REPO ? 'OPEN' : 'CLOSED', isDraft: false,
     createdAt: '2026-06-01T00:00:00Z', updatedAt: updatedAt.get(key(REPOS[repoIdx]!, n)) ?? '2026-07-01T00:00:00Z',
-    mergedAt: n % 5 === 0 ? '2026-07-01T00:00:00Z' : null, closedAt: null,
+    mergedAt: n % 5 === 0 ? '2026-07-01T00:00:00Z' : null, closedAt: n % 5 !== 0 && n > LINKED_PER_REPO + OPEN_UNLINKED_PER_REPO ? '2026-07-01T00:00:00Z' : null,
     labels: { nodes: [] }, reviewRequests: { totalCount: 0 },
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
   });
@@ -76,6 +79,8 @@ function fakeGithub() {
 const LINKED = REPOS.length * LINKED_PER_REPO;
 // One PR search per repo plus one review-request search per identity.
 const SEARCHES = REPOS.length + 1;
+// PRs whose comments/reviews are fetched: linked plus open card-less.
+const ENRICHED = REPOS.length * (LINKED_PER_REPO + OPEN_UNLINKED_PER_REPO);
 
 test('cold, warm, and one-changed-PR refreshes stay inside their request bounds', async () => {
   const gh = fakeGithub();
@@ -89,8 +94,8 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
   // hits, and no check-runs request (CI rides on the search).
   await refresh({ config, state, quiet: true });
   const cold = githubStats();
-  expect(cold.requests).toBe(SEARCHES + 3 * LINKED);
-  expect(cold.byFamily).toEqual({ graphql: SEARCHES, issue_comments: LINKED, review_comments: LINKED, reviews: LINKED });
+  expect(cold.requests).toBe(SEARCHES + 3 * ENRICHED);
+  expect(cold.byFamily).toEqual({ graphql: SEARCHES, issue_comments: ENRICHED, review_comments: ENRICHED, reviews: ENRICHED });
   expect(gh.calls.filter(c => c.includes('/pulls/') && !c.includes('/comments') && !c.includes('/reviews'))).toEqual([]);
   expect(gh.calls.some(c => c.includes('check-runs'))).toBe(false);
   const board = Object.values(state.snapshot!.buckets).flat();
@@ -121,10 +126,15 @@ test('cold, warm, and one-changed-PR refreshes stay inside their request bounds'
     '/repos/example-org/beta/pulls/1/reviews?per_page=100',
   ]);
 
-  // An unlinked PR changing costs nothing beyond discovery.
+  // A closed card-less PR changing costs nothing beyond discovery.
   gh.touch('gamma', 40, '2026-07-02T00:00:00Z');
   await refresh({ config, state, quiet: true });
   expect(githubStats().requests).toBe(SEARCHES);
+
+  // An open card-less PR changing is re-enriched: it feeds the TODO queue.
+  gh.touch('gamma', 3, '2026-07-02T00:00:00Z');
+  await refresh({ config, state, quiet: true });
+  expect(githubStats().requests).toBe(SEARCHES + 3);
 });
 
 test('a PR that becomes linked after being seen unlinked is enriched, not served an empty comment list', async () => {
@@ -135,12 +145,14 @@ test('a PR that becomes linked after being seen unlinked is enriched, not served
   vi.mocked(fetchJiraCards).mockResolvedValueOnce([]);
   const state = emptyState();
   await refresh({ config, state, quiet: true });
-  expect(githubStats().requests).toBe(SEARCHES);
-  // Second refresh: the cards arrive; the PRs are unchanged but were never
-  // enriched, so the linked ones must be fetched now.
+  // Open card-less PRs are enriched for the queue, so they arrive with data.
+  expect(githubStats().requests).toBe(SEARCHES + 3 * ENRICHED);
+  // Second refresh: the cards arrive and link to PRs that were already
+  // enriched while card-less and are unchanged: reused, not refetched, and
+  // still not served an empty comment list.
   vi.mocked(fetchJiraCards).mockResolvedValueOnce(cards);
   await refresh({ config, state, quiet: true });
-  expect(githubStats().requests).toBe(SEARCHES + 3 * LINKED);
+  expect(githubStats().requests).toBe(SEARCHES);
   expect(Object.values(state.snapshot!.buckets).flat().every(i => i.comments.length === 1)).toBe(true);
 });
 
@@ -157,8 +169,8 @@ test('a refresh logs its GitHub request count and endpoint breakdown', async () 
     log.mockRestore();
   }
   const line = lines.find(l => l.includes('github ') && l.includes('requests'));
-  expect(line).toContain(`${SEARCHES + 3 * LINKED} requests`);
+  expect(line).toContain(`${SEARCHES + 3 * ENRICHED} requests`);
   expect(line).toContain(`graphql ${SEARCHES}`);
-  expect(line).toContain(`reviews ${LINKED}`);
-  expect(line).toContain('0 linked PRs reused unchanged');
+  expect(line).toContain(`reviews ${ENRICHED}`);
+  expect(line).toContain('0 PRs reused unchanged');
 });

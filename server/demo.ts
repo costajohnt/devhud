@@ -79,7 +79,10 @@ export function demoPrs(cfg: GithubConfig): Pr[] {
     pr('webapp', 478, 'DEMO-99-csv-export', { reviewState: 'review_required' }),
     pr('webapp', 470, 'DEMO-95-onboarding', { state: 'merged', mergedAt: iso(6), reviewState: 'approved', ciStatus: 'unknown' }),
     pr('webapp', 465, 'DEMO-92-dark-mode', { state: 'merged', mergedAt: iso(2), reviewState: 'approved', ciStatus: 'unknown' }),
-    pr('webapp', 491, 'chore-bump-node-22', { title: 'chore: bump node to 22' }),
+    pr('webapp', 491, 'chore-bump-node-22', {
+      title: 'chore: bump node to 22',
+      comments: [{ author: 'mike-ui', body: 'Does the Dockerfile base image need the same bump?', createdAt: iso(0.5) }],
+    }),
     // Older merges spread over the past ~5 months, varied repos, so the
     // charts panel (merged per month / merged by repo) has real spread.
     pr('api-gateway', 412, 'DEMO-80-job-retry-backoff', { state: 'merged', mergedAt: iso(19), reviewState: 'approved', ciStatus: 'unknown' }),

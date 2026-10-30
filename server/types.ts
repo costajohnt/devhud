@@ -288,12 +288,19 @@ export interface TodoItem {
   createdAt: string | null;
 }
 
+// One of the user's open PRs that no card links to. It still feeds the
+// TODO queue (kind 'pr', key "owner/repo#n") from its own PR reasons.
 export interface UnlinkedPr {
   repo: string;
   number: number;
   url: string;
   title: string;
   state: string;
+  // Optional: absent in snapshots persisted before the queue covered them.
+  attention?: string[];
+  newComments?: NewComment[];
+  pr?: PrRef;
+  updatedAt?: string | null;
 }
 
 // A card Jira has marked complete (Done category, excluding Canceled). Drives
@@ -452,6 +459,10 @@ export interface State {
   // the entry comes back once the PR changes. Optional; pruned to the PRs
   // still requesting review on each successful fetch.
   prs?: Record<string, { dismissedAt: string | null }>;
+  // Seen-comment horizon and acked reasons for the user's own card-less
+  // PRs, keyed by "owner/repo#n" (the card equivalent is CardState). Pruned
+  // to the open card-less PRs on each refresh that fetched their repo.
+  ownPrs?: Record<string, { lastSeenPr: string | null; ackedReasons?: string[] | null }>;
 }
 
 // --- Action / write-back results ---

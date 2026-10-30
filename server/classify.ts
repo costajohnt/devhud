@@ -48,6 +48,35 @@ export const hasQaInstructions = (description: string): boolean =>
 export const ciFailureIsNew = (pr: Pick<Pr, 'ciNewFailures' | 'ciBasePending'>): boolean =>
   pr.ciNewFailures ? pr.ciNewFailures.length > 0 : !pr.ciBasePending;
 
+// The reasons a PR alone produces, card or no card. classifyCard and the
+// card-less PRs in buildSnapshot both use this, so the two can't drift.
+export function prAttention(pr: Pr, lastSeenPr: string | null | undefined, selfNames: Set<string>, ignoreAuthors: string[]): { attention: string[]; newComments: NewComment[] } {
+  const attention: string[] = [];
+  // Red CI that is red on the base branch too is not this PR's problem;
+  // ciNewFailures is [] only when every failed check also fails there (#79).
+  // Unknown flags too, except while the base branch's own CI is still running
+  // and there is no earlier verdict to go on (#86).
+  if (pr.ciStatus === 'failing' && pr.state === 'open' && ciFailureIsNew(pr)) attention.push('ci_failing');
+  // Review outcomes on an open PR are TODO items, not routing: the bucket
+  // already reflects the review state, the badge puts it on the queue.
+  // ready_to_merge waits for green CI: not while running, not while red.
+  if (pr.state === 'open' && pr.reviewState === 'changes_requested') attention.push('changes_requested');
+  if (pr.state === 'open' && !pr.isDraft && pr.reviewState === 'approved' && pr.ciStatus === 'passing') attention.push('ready_to_merge');
+  const newComments = (pr.comments ?? [])
+    .filter(c => !selfNames.has(c.author.toLowerCase()) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, lastSeenPr))
+    .map(githubNewComment);
+  if (newComments.length) attention.push('new_pr_comments');
+  return { attention, newComments };
+}
+
+// State-reason acks stay muted only while continuously true; anything
+// else in the list is dropped. Shared by cards (classifyCard) and card-less
+// PRs. Returns the visible reasons and the pruned ack list.
+export function applyAcks(attention: string[], acked: string[] | null | undefined, degraded: boolean): { visible: string[]; acked: string[] | null } {
+  const kept = (acked ?? []).filter(r => STATE_REASONS.includes(r) && (degraded || attention.includes(r)));
+  return { visible: attention.filter(r => !kept.includes(r)), acked: kept.length ? kept : null };
+}
+
 export interface ClassifyResult {
   bucket: Bucket;
   attention: string[];
@@ -81,24 +110,11 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // GitHub logins are case-insensitive, so compare lowercased.
   const selfNames = new Set((usernames ?? [username]).map(u => u.toLowerCase()));
 
-  // Red CI that is red on the base branch too is not this card's problem;
-  // ciNewFailures is [] only when every failed check also fails there (#79).
-  // Unknown flags too, except while the base branch's own CI is still running
-  // and there is no earlier verdict to go on (#86).
-  if (pr?.ciStatus === 'failing' && pr.state === 'open' && ciFailureIsNew(pr)) attention.push('ci_failing');
-
-  // Review outcomes on an open PR are TODO items, not routing: the bucket
-  // already reflects the review state, the badge puts it on the queue.
-  // ready_to_merge waits for green CI: not while running, not while red.
-  if (pr?.state === 'open' && pr.reviewState === 'changes_requested') attention.push('changes_requested');
-  if (pr?.state === 'open' && !pr.isDraft && pr.reviewState === 'approved' && pr.ciStatus === 'passing') attention.push('ready_to_merge');
-
-  for (const c of pr?.comments ?? []) {
-    if (!selfNames.has(c.author.toLowerCase()) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {
-      newComments.push(githubNewComment(c));
-    }
+  if (pr) {
+    const p = prAttention(pr, cs.lastSeenPr, selfNames, ignoreAuthors);
+    attention.push(...p.attention);
+    newComments.push(...p.newComments);
   }
-  if (newComments.length) attention.push('new_pr_comments');
 
   // The developer's own latest tracker comment is an implicit watermark
   // alongside the explicit ack: replying is the resolution of "somebody is
@@ -156,9 +172,8 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // that would otherwise mute comment attention forever. cs is mutated in
   // place; the caller persists card state after the refresh, same as the
   // celebration bookkeeping in buildSnapshot.
-  const acked = (cs.ackedReasons ?? []).filter(r => STATE_REASONS.includes(r) && (prDegraded || attention.includes(r)));
-  cs.ackedReasons = acked.length ? acked : null;
-  const visible = attention.filter(r => !acked.includes(r));
+  const { visible, acked } = applyAcks(attention, cs.ackedReasons, prDegraded);
+  cs.ackedReasons = acked;
 
   // Auto-clear a stale override once the card reaches In Test or Done:
   // the card's lifecycle has moved past developer-side bucketing.

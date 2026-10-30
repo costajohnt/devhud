@@ -261,8 +261,11 @@ Cards in Jira's To Do status category (or the configured "To Do" status) with no
 ### UnlinkedPr
 
 ```
-{ repo: string, number: number, url: string, title: string, state: string }
+{ repo: string, number: number, url: string, title: string, state: string,
+  attention?: string[], newComments?: NewComment[], pr?: PrRef, updatedAt?: string | null }
 ```
+
+`attention`/`newComments` are the PR's own reasons (`ci_failing`, `changes_requested`, `new_pr_comments`, `ready_to_merge`, computed by the same `prAttention` cards use) after acks; they feed the queue as `kind: "pr"` entries keyed `owner/repo#n`. Open card-less PRs are enriched (comments, reviews) like linked ones, with the same unchanged-`updatedAt` reuse. Their seen horizon and acked reasons live in `state.ownPrs`; ack one with the PR ref and the reason, same semantics as a card. Optional because older snapshots lack them.
 
 Open PRs that couldn't be matched to any tracked Jira card by branch name, PR title, PR body (containing a `/browse/KEY` link), or card description (containing the PR URL). Only `state === 'open'` unlinked PRs are surfaced; unlinked merged/closed PRs are silently dropped from this list (they still land in `prLog`).
 

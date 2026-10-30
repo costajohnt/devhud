@@ -107,6 +107,22 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     (state.prs ??= {})[key] = { dismissedAt: rr.updatedAt };
     return { ok: true, bucket: null };
   }
+  // One of the user's card-less PRs: same per-reason semantics as a card
+  // (comments advance the seen horizon, state reasons mute while true), and
+  // likewise only for a reason the PR currently shows.
+  if (type === 'ack' && typeof reason === 'string' && PR_REF_RE.test(key)) {
+    const u = state.snapshot?.unlinkedPrs?.find(p => `${p.repo}#${p.number}` === key);
+    if (!u?.attention?.includes(reason)) return { ok: true, bucket: null };
+    const ps = ((state.ownPrs ??= {})[key] ??= { lastSeenPr: null });
+    if (reason === 'new_pr_comments') {
+      ps.lastSeenPr = state.snapshot?.updatedAt ?? new Date().toISOString();
+      u.newComments = [];
+    } else {
+      ps.ackedReasons = ackReasons(ps.ackedReasons, [reason]);
+    }
+    u.attention = u.attention.filter(r => r !== reason);
+    return { ok: true, bucket: null };
+  }
   // Everything else is validated before cardState() too: it creates a
   // state.cards entry on first touch, so a bad type, bucket or a key that is
   // not a Jira key would otherwise grow state.json without limit.
