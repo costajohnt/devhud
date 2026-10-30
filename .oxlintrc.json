@@ -17,5 +17,5 @@
   "overrides": [
     { "files": ["**/*.test.ts", "**/*.test.tsx"], "rules": { "react/globals": "off" } }
   ],
-  "ignorePatterns": ["node_modules/**", "web/dist/**", "data/**"]
+  "ignorePatterns": ["node_modules/**", "web/dist/**", "data/**", "dist/**", ".claude/**"]
 }

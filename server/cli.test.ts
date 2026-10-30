@@ -130,9 +130,21 @@ test('refresh --json in direct mode emits pure JSON on stdout (refresh()\'s own 
     jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
     github: { username: 'costajohnt', org: 'acme', token: '', repos: [] },
   });
-  const { code, out } = await run(['refresh', '--json'], { config: demoConfig, statePath });
-  expect(code).toBe(0);
-  expect(() => JSON.parse(out)).not.toThrow();
+  // refresh() logs through console.log, which never reaches `out`, so parsing
+  // `out` alone could not catch a leak; on MCP stdio that line would corrupt
+  // the JSON-RPC stream. Assert nothing was written to stdout at all.
+  const log = vi.spyOn(console, 'log');
+  const write = vi.spyOn(process.stdout, 'write');
+  try {
+    const { code, out } = await run(['refresh', '--json'], { config: demoConfig, statePath });
+    expect(code).toBe(0);
+    expect(() => JSON.parse(out)).not.toThrow();
+    expect(log).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+    write.mockRestore();
+  }
 });
 
 test('move --json in direct mode reports the resulting bucket', async () => {
@@ -302,6 +314,9 @@ test('--help / no command prints usage; exit 0 with --help, exit 1 with no comma
   expect(bare.out).toContain('Usage:');
 });
 
+// The in-process server shares the probe's event loop: under CPU load a
+// stall past the CLI's default probe timeout flipped these to direct mode.
+const SLOW_PROBE_MS = 5000;
 let server: http.Server;
 let serverConfig: Config;
 beforeAll(async () => {
@@ -324,14 +339,14 @@ beforeAll(async () => {
 afterAll(() => server.close());
 
 test('status goes through the HTTP transport when a server is listening on the configured port', async () => {
-  const { code, out, err } = await run(['status', '--json'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json' });
+  const { code, out, err } = await run(['status', '--json'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json', probeTimeoutMs: SLOW_PROBE_MS });
   expect(code).toBe(0);
   expect(err).toBe('via server');
   expect(JSON.parse(out).doneTotal).toBe(7);
 });
 
 test('ack goes through the HTTP transport and reports the resulting bucket', async () => {
-  const { code, out, err } = await run(['ack', 'P-9'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json' });
+  const { code, out, err } = await run(['ack', 'P-9'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json', probeTimeoutMs: SLOW_PROBE_MS });
   expect(code).toBe(0);
   expect(err).toBe('via server');
   expect(out).toBe('P-9 -> in_progress');
@@ -350,7 +365,7 @@ test('refresh via the HTTP transport surfaces a non-2xx response as an error ins
   await new Promise<void>(r => badServer.listen(0, () => r()));
   try {
     const badConfig = makeConfig({ port: (badServer.address() as AddressInfo).port });
-    const { code, err } = await run(['refresh'], { config: badConfig, statePath: '/nonexistent/should-not-be-read.json' });
+    const { code, err } = await run(['refresh'], { config: badConfig, statePath: '/nonexistent/should-not-be-read.json', probeTimeoutMs: SLOW_PROBE_MS });
     expect(code).toBe(1);
     expect(err).toContain('HTTP 500');
   } finally {
