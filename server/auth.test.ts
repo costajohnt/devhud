@@ -176,3 +176,21 @@ test('a second claim of the same login code revokes the session the first claim 
   // A third try is just an unknown code.
   expect((await claim(base, code)).status).toBe(401);
 });
+
+// A theft near the end of a code's 60 s and a slower browser claim must still
+// be caught: spent codes live as long as the session they produced.
+test('a late second claim (after the code would have expired) still revokes the first session', async () => {
+  const { base, token } = await start();
+  const code = await mintCode(base, token);
+  const thief = ((await (await claim(base, code)).json()) as { session: string }).session;
+  const realNow = Date.now;
+  vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 5 * 60_000);
+  const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    expect((await claim(base, code)).status).toBe(409);
+  } finally {
+    vi.restoreAllMocks();
+  }
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': thief } })).status).toBe(401);
+  void errSpy;
+});

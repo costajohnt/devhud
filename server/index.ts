@@ -191,11 +191,14 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
   // takes the session as a query parameter (the request log omits queries).
   const sessions = new Set<string>();
   const loginCodes = new Map<string, number>(); // code -> expiry (ms)
-  // Codes already traded, until they would have expired, with the session
-  // each produced. The code passes through the `open` command's argv, which
-  // other local users can read; if one races the browser and claims it
-  // first, the browser's own claim arrives here and revokes that session.
-  const spentCodes = new Map<string, { session: string; exp: number }>();
+  // Codes already traded, each with the session it produced, kept as long
+  // as that session lives (so bounded by MAX_SESSIONS). The code passes
+  // through the `open` command's argv, which other local users can read; if
+  // one races the browser and claims it first, the browser's own claim lands
+  // here, whenever it arrives, and revokes that session. Keeping them only
+  // until the code's own expiry left a window: a theft near the end of the
+  // 60 s and a slower browser claim went unnoticed.
+  const spentCodes = new Map<string, string>(); // code -> session
   const LOGIN_CODE_TTL_MS = 60_000;
   const isSession = (s: string | null | undefined): boolean => !!s && [...sessions].some(v => sameToken(s, v));
   const authorized = (req: IncomingMessage, url: URL): boolean =>
@@ -255,14 +258,13 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         try { body = await readBody(req); } catch (e) { const be = bodyError(e); return send(be.status, { error: be.error }); }
         const code = typeof body.code === 'string' ? body.code : '';
         const now = Date.now();
-        for (const [c, s] of spentCodes) if (s.exp < now) spentCodes.delete(c);
         const exp = loginCodes.get(code);
         loginCodes.delete(code);
         if (!exp || exp < now) {
           const spent = spentCodes.get(code);
           if (spent) {
             spentCodes.delete(code);
-            sessions.delete(spent.session);
+            sessions.delete(spent);
             console.error('devhud: a login code was claimed twice; the first session is revoked (another local process may have read it)');
             return send(409, { error: 'this login link was already used by another client, and that session has been revoked; run `devhud open` again' });
           }
@@ -270,8 +272,12 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         }
         const session = randomBytes(32).toString('base64url');
         sessions.add(session);
-        spentCodes.set(code, { session, exp });
-        if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.values().next().value!);
+        spentCodes.set(code, session);
+        if (sessions.size > MAX_SESSIONS) {
+          const oldest = sessions.values().next().value!;
+          sessions.delete(oldest);
+          for (const [c, s] of spentCodes) if (s === oldest) spentCodes.delete(c);
+        }
         return send(200, { session });
       }
       if (url.pathname.startsWith('/api/')) {
