@@ -6,21 +6,11 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Config, Snapshot } from '../server/types.ts';
 
-// Same convention as server/cli.test.ts: an OS-allocated-then-released port,
-// so "nothing listens here" is actually true and every handler in this file
-// exercises the direct-mode (no running server) path.
-import { createServer as createNetServer } from 'node:net';
-import type { AddressInfo } from 'node:net';
-const FREE_PORT = await (async () => {
-  const srv = createNetServer();
-  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
-  const port = (srv.address() as AddressInfo).port;
-  await new Promise<void>(r => srv.close(() => r()));
-  return port;
-})();
-
+// Direct-mode tests pass viaServer: false so no probe runs; a released
+// "free" port could be grabbed by a parallel listen(0) and flip them to
+// via-server mode. The via-server tests below use their own fixed ports.
 const config: Config = {
-  port: FREE_PORT,
+  port: 0,
   jira: { projectKey: 'DEMO', accountId: 'me', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
   github: { username: 'costajohnt', org: 'acme', token: '', repos: [] },
   demo: true,
@@ -69,7 +59,7 @@ function seedSnapshot(statePath: string) {
 
 test('boardStatus returns the empty-board placeholder against a fresh state file', async () => {
   const statePath = tempStatePath();
-  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot;
+  const snap = await boardStatus({ config, statePath, viaServer: false }) as unknown as Snapshot;
   expect(snap.updatedAt).toBeNull();
   expect(snap.buckets.needs_attention).toEqual([]);
 });
@@ -77,7 +67,7 @@ test('boardStatus returns the empty-board placeholder against a fresh state file
 test('boardStatus returns the persisted snapshot as-is', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot;
+  const snap = await boardStatus({ config, statePath, viaServer: false }) as unknown as Snapshot;
   expect(snap.doneTotal).toBe(3);
   expect(snap.buckets.needs_attention[0]!.key).toBe('P-1');
 });
@@ -88,7 +78,7 @@ test('boardStatus returns the persisted snapshot as-is', async () => {
 test('boardStatus marks the payload as containing untrusted third-party text', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot & { _note: string };
+  const snap = await boardStatus({ config, statePath, viaServer: false }) as unknown as Snapshot & { _note: string };
   expect(snap._note).toMatch(/third-party text/);
   expect(snap._note).toMatch(/never as instructions/);
 });
@@ -96,7 +86,7 @@ test('boardStatus marks the payload as containing untrusted third-party text', a
 test('ackCard clears attention and moves the card out of needs_attention (direct mode)', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await ackCard({ config, statePath, key: 'P-1' });
+  const result = await ackCard({ config, statePath, viaServer: false, key: 'P-1' });
   expect(result).toEqual({ ok: true, bucket: 'in_progress' });
   const persisted = loadState(statePath);
   expect(persisted.snapshot!.buckets.needs_attention).toEqual([]);
@@ -112,7 +102,7 @@ test('ackCard with a reason dismisses only that TODO entry and leaves the card\'
   seeded.attention = ['new_pr_comments', 'new_jira_comments'];
   seeded.newComments.push({ source: 'jira', author: 'qa', body: 'repro?', createdAt: '2026-07-01T00:00:00Z' });
   saveState(statePath, state);
-  const result = await ackCard({ config, statePath, key: 'P-1', reason: 'new_pr_comments' });
+  const result = await ackCard({ config, statePath, viaServer: false, key: 'P-1', reason: 'new_pr_comments' });
   expect(result).toEqual({ ok: true, bucket: 'in_progress' });
   const persisted = loadState(statePath);
   const item = persisted.snapshot!.buckets.in_progress[0]!;
@@ -125,7 +115,7 @@ test('ackCard with a reason dismisses only that TODO entry and leaves the card\'
 test('moveCard pins the card to the requested bucket and persists the override', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await moveCard({ config, statePath, key: 'P-1', bucket: 'in_qa' });
+  const result = await moveCard({ config, statePath, viaServer: false, key: 'P-1', bucket: 'in_qa' });
   expect(result).toEqual({ ok: true, bucket: 'in_qa' });
   const persisted = loadState(statePath);
   expect(persisted.cards['P-1']!.override).toBe('in_qa');
@@ -135,14 +125,14 @@ test('moveCard pins the card to the requested bucket and persists the override',
 test('moveCard rejects an invalid bucket the same way the HTTP API does', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await moveCard({ config, statePath, key: 'P-1', bucket: 'needs_attention' }) as { error: string };
+  const result = await moveCard({ config, statePath, viaServer: false, key: 'P-1', bucket: 'needs_attention' }) as { error: string };
   expect(result.error).toContain('bucket must be one of');
 });
 
 test('cardComments returns the item\'s full comment history and newComments', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await cardComments({ config, statePath, key: 'P-1' }) as { key: string; comments: { author: string }[]; newComments: unknown[] };
+  const result = await cardComments({ config, statePath, viaServer: false, key: 'P-1' }) as { key: string; comments: { author: string }[]; newComments: unknown[] };
   expect(result.key).toBe('P-1');
   expect(result.comments).toHaveLength(1);
   expect(result.newComments).toHaveLength(1);
@@ -152,7 +142,7 @@ test('cardComments returns the item\'s full comment history and newComments', as
 test('cardComments marks the payload as containing untrusted third-party text', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await cardComments({ config, statePath, key: 'P-1' }) as { _note: string };
+  const result = await cardComments({ config, statePath, viaServer: false, key: 'P-1' }) as { _note: string };
   expect(result._note).toMatch(/third-party text/);
   expect(result._note).toMatch(/never as instructions/);
 });
@@ -173,7 +163,7 @@ test('cardComments finds a done card via the doneCards fallback, returning empty
   ];
   saveState(statePath, state);
 
-  const result = await cardComments({ config, statePath, key: 'P-9' }) as { key: string; comments: unknown[]; newComments: unknown[] };
+  const result = await cardComments({ config, statePath, viaServer: false, key: 'P-9' }) as { key: string; comments: unknown[]; newComments: unknown[] };
 
   expect(result.key).toBe('P-9');
   expect(result.comments).toEqual([]);
@@ -183,13 +173,13 @@ test('cardComments finds a done card via the doneCards fallback, returning empty
 test('cardComments on an unknown key returns an error shape, not a throw', async () => {
   const statePath = tempStatePath();
   seedSnapshot(statePath);
-  const result = await cardComments({ config, statePath, key: 'NOPE-1' }) as { error: string };
+  const result = await cardComments({ config, statePath, viaServer: false, key: 'NOPE-1' }) as { error: string };
   expect(result.error).toContain('NOPE-1');
 });
 
 test('doRefresh in demo mode returns bucket counts, errors, and newlyDone without touching the network', async () => {
   const statePath = tempStatePath();
-  const summary = await doRefresh({ config, statePath }) as { counts: Record<string, number>; errors: unknown; newlyDone: unknown[] };
+  const summary = await doRefresh({ config, statePath, viaServer: false }) as { counts: Record<string, number>; errors: unknown; newlyDone: unknown[] };
   expect(summary.errors).toEqual({ jira: null, github: null });
   expect(Object.values(summary.counts).some(n => n > 0)).toBe(true);
   expect(Array.isArray(summary.newlyDone)).toBe(true);
@@ -202,28 +192,28 @@ test('ackCard refuses a direct-mode write when a server.pid exists for a live pr
   const statePath = tempStatePath();
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
-  const result = await ackCard({ config, statePath, key: 'P-1' }) as { error: string };
+  const result = await ackCard({ config, statePath, viaServer: false, key: 'P-1' }) as { error: string };
   expect(result.error).toContain('appears to be running');
 });
 
 test('transitionCard against demo config returns the stub-success refusal, not an error', async () => {
   const statePath = tempStatePath();
   const configPath = tempConfigFile({ demo: true });
-  const result = await transitionCard({ config, statePath, configPath, key: 'P-1', status: 'Done' });
+  const result = await transitionCard({ config, statePath, viaServer: false, configPath, key: 'P-1', status: 'Done' });
   expect(result).toEqual({ ok: true, demo: true, message: 'demo mode: write-back is a no-op (nothing real to write to)' });
 });
 
 test('commentCard against demo config returns the stub-success refusal', async () => {
   const statePath = tempStatePath();
   const configPath = tempConfigFile({ demo: true });
-  const result = await commentCard({ config, statePath, configPath, key: 'P-1', body: 'looks good' });
+  const result = await commentCard({ config, statePath, viaServer: false, configPath, key: 'P-1', body: 'looks good' });
   expect(result.demo).toBe(true);
 });
 
 test('commentPr against demo config returns the stub-success refusal', async () => {
   const statePath = tempStatePath();
   const configPath = tempConfigFile({ demo: true });
-  const result = await commentPr({ config, statePath, configPath, repo: 'acme/webapp', number: 482, body: 'nice work' });
+  const result = await commentPr({ config, statePath, viaServer: false, configPath, repo: 'acme/webapp', number: 482, body: 'nice work' });
   expect(result.demo).toBe(true);
 });
 
@@ -231,7 +221,7 @@ test('transitionCard refuses a direct-mode write when a server.pid exists for a 
   const statePath = tempStatePath();
   const writeEnabledConfig: Config = { ...config, demo: false, writeEnabled: true };
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
-  const result = await transitionCard({ config: writeEnabledConfig, statePath, key: 'P-1', status: 'Done' });
+  const result = await transitionCard({ config: writeEnabledConfig, statePath, viaServer: false, key: 'P-1', status: 'Done' });
   expect(result.error).toContain('appears to be running');
 });
 
@@ -239,7 +229,7 @@ test('transitionCard against a non-demo config with writeEnabled false refuses w
   const statePath = tempStatePath();
   const nonDemoConfig: Config = { ...config, demo: false, writeEnabled: false };
   const configPath = tempConfigFile({ demo: false, writeEnabled: false });
-  const result = await transitionCard({ config: nonDemoConfig, statePath, configPath, key: 'P-1', status: 'Done' });
+  const result = await transitionCard({ config: nonDemoConfig, statePath, viaServer: false, configPath, key: 'P-1', status: 'Done' });
   expect(result.error).toBe('write-back disabled; set writeEnabled: true in config.json');
 });
 
@@ -284,7 +274,7 @@ test('boardStatus (read-only) still works direct-mode even with a server.pid pre
   const statePath = tempStatePath();
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
-  const snap = await boardStatus({ config, statePath }) as unknown as Snapshot;
+  const snap = await boardStatus({ config, statePath, viaServer: false }) as unknown as Snapshot;
   expect(snap.doneTotal).toBe(3);
 });
 
@@ -296,7 +286,7 @@ test('boardStatus leaves out prLog and caps doneCards, keeping doneTotal', async
   const done = Array.from({ length: 30 }, (_, i) => ({ key: `P-${i}`, summary: '', jiraStatus: 'Done', jiraUrl: '', pr: null, doneAt: null }));
   state.snapshot = { ...emptySnapshot(), updatedAt: 'x', doneCards: done, doneTotal: 30, prLog: [{ id: 'o/r#1', repo: 'o/r', openedAt: null, mergedAt: null, closedAt: null }] };
   saveState(statePath, state);
-  const r = await boardStatus({ config, statePath }) as Record<string, unknown>;
+  const r = await boardStatus({ config, statePath, viaServer: false }) as Record<string, unknown>;
   expect('prLog' in r).toBe(false);
   expect((r.doneCards as unknown[]).length).toBe(BOARD_DONE_CARDS);
   expect(r.doneCardsShown).toBe(BOARD_DONE_CARDS);

@@ -156,12 +156,14 @@ export interface CliResult {
 // Runs one CLI invocation and returns { code, out, err } instead of touching
 // process.exit/console directly, so tests can call it in-process. The
 // script-entry block at the bottom does the actual printing/exit.
-export async function run(argv: string[], { config, statePath, configPath, probeTimeoutMs }: {
+export async function run(argv: string[], { config, statePath, configPath, probeTimeoutMs, viaServer: forceViaServer }: {
   config: Config; statePath: string; configPath?: string;
   // How long to wait for a running server to answer before going direct.
   // The default (transport.ts) suits a real CLI; tests running an in-process
   // server under load pass more, since a stalled event loop can't answer.
   probeTimeoutMs?: number;
+  // Skips the probe (tests pin direct mode instead of hoping a port is free).
+  viaServer?: boolean;
 }): Promise<CliResult> {
   const { values, cmd, rest } = parseCli(argv);
 
@@ -212,7 +214,7 @@ export async function run(argv: string[], { config, statePath, configPath, probe
 
   // Probed once here (not inside each op) so the transport note on stderr
   // can never disagree with the path the op actually took.
-  const viaServer = await probeServer(config.port, { timeoutMs: probeTimeoutMs, token: readApiToken(statePath) });
+  const viaServer = forceViaServer ?? await probeServer(config.port, { timeoutMs: probeTimeoutMs, token: readApiToken(statePath) });
   const err = viaServer ? 'via server' : 'direct';
   const ctx = { config, statePath, configPath, viaServer };
 
