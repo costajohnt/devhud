@@ -2,11 +2,36 @@ import { cardState } from './state.ts';
 import { STATE_REASONS, isInReview, sameStatus } from './classify.ts';
 import { QUEUE_REASONS, rebuildQueue, routesToAttention } from './queue.ts';
 import { KEY_RE } from './writeback.ts';
-import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
+import type { State, Config, Bucket, ActionResult, Item, NewComment } from './types.ts';
 
 // "owner/repo#123". Has a slash and a '#', so it can never be __proto__ and
 // friends when used as a State.prs key.
 export const PR_REF_RE = /^[\w.-]+\/[\w.-]+#\d+$/;
+
+// The time the current snapshot's data was read (Snapshot.dataAsOf). Not
+// updatedAt: that is stamped after every fetch finishes, so a comment that
+// landed mid-refresh would sit before it, be missing from the snapshot, and
+// be silently treated as seen once acked. Older snapshots fall back to
+// updatedAt.
+const dataHorizon = (state: State): string =>
+  state.snapshot?.dataAsOf ?? state.snapshot?.updatedAt ?? new Date().toISOString();
+
+// The seen horizon an ack/move records for one comment source: the latest of
+// the data horizon, the newest comment the entry actually showed, and the
+// previous horizon. The data horizon alone is held back while any source is
+// falling back (refresh.ts), so a dismissal during a long partial outage
+// would otherwise not cover the comments it showed and they'd re-flag every
+// refresh. Like any timestamp horizon it can't recover a comment that
+// becomes visible later with an older timestamp (a pending GitHub review's
+// inline comments carry their draft time; a refresh can land between the
+// tab rendering and the click), so it covers the comments the entry showed
+// and anything older. Keeping the previous value means a held horizon can
+// never move a card's horizon backward.
+export function seenThrough(horizon: string, previous: string | null | undefined, shown: readonly NewComment[], source: NewComment['source']): string {
+  let t = horizon;
+  for (const c of shown) if (c.source === source && c.createdAt && Date.parse(c.createdAt) > Date.parse(t)) t = c.createdAt;
+  return previous && Date.parse(previous) > Date.parse(t) ? previous : t;
+}
 
 export const BUCKETS: Bucket[] = ['in_progress', 'self_review', 'waiting_review', 'mergeable', 'qa_ready', 'in_qa'];
 
@@ -115,7 +140,7 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     if (!u?.attention?.includes(reason)) return { ok: true, bucket: null };
     const ps = ((state.ownPrs ??= {})[key] ??= { lastSeenPr: null });
     if (reason === 'new_pr_comments') {
-      ps.lastSeenPr = state.snapshot?.updatedAt ?? new Date().toISOString();
+      ps.lastSeenPr = seenThrough(dataHorizon(state), ps.lastSeenPr, u.newComments ?? [], 'github');
       u.newComments = [];
     } else {
       ps.ackedReasons = ackReasons(ps.ackedReasons, [reason]);
@@ -143,10 +168,9 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     }
     return null;
   };
-  // "Seen" horizon is the data horizon (last snapshot's updatedAt), not
-  // wall-clock time — a comment that arrived between the last refresh and
-  // this ack must still be treated as new on the next refresh.
-  const horizon = state.snapshot?.updatedAt ?? new Date().toISOString();
+  // "Seen" horizon is the data horizon, not wall-clock time — a comment that
+  // arrived after the data was read must still be treated as new.
+  const horizon = dataHorizon(state);
 
   // Per-reason ack: dismisses one TODO entry and leaves the card's other
   // entries alone. Comment reasons advance only their own source's seen
@@ -158,8 +182,8 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     // whose reason is true) and never surface.
     const loc = findItem();
     if (!loc || !snap || !loc.item.attention.includes(reason)) return { ok: true, bucket: loc?.from ?? null };
-    if (reason === 'new_pr_comments') cs.lastSeenPr = horizon;
-    else if (reason === 'new_jira_comments') cs.lastSeenJira = horizon;
+    if (reason === 'new_pr_comments') cs.lastSeenPr = seenThrough(horizon, cs.lastSeenPr, loc.item.newComments, 'github');
+    else if (reason === 'new_jira_comments') cs.lastSeenJira = seenThrough(horizon, cs.lastSeenJira, loc.item.newComments, 'jira');
     else cs.ackedReasons = ackReasons(cs.ackedReasons, [reason]);
     const source = reason === 'new_pr_comments' ? 'github' : reason === 'new_jira_comments' ? 'jira' : null;
     loc.item.attention = loc.item.attention.filter(r => r !== reason);
@@ -174,11 +198,17 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     return { ok: true, bucket: loc.from };
   }
 
+  // Full ack and move both mark every comment the card showed as seen.
+  const markSeen = (shown: readonly NewComment[]) => {
+    cs.lastSeenPr = seenThrough(horizon, cs.lastSeenPr, shown, 'github');
+    cs.lastSeenJira = seenThrough(horizon, cs.lastSeenJira, shown, 'jira');
+  };
+
   if (type === 'ack') {
-    cs.lastSeenPr = cs.lastSeenJira = horizon;
     // override is intentionally kept: acking only clears the attention
     // flags, it doesn't undo a prior manual move.
     const loc = findItem();
+    markSeen(loc?.item.newComments ?? []);
     if (!loc || !snap) return { ok: true, bucket: null };
     // Record acked state-based reasons so classifyCard keeps them muted on
     // subsequent refreshes — see CardState.ackedReasons and ackReasons above.
@@ -204,8 +234,8 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
     // Also bump the seen horizon so old comments already accounted for by
     // the classifier don't bounce the card straight back to needs_attention
     // on the next refresh.
-    cs.lastSeenPr = cs.lastSeenJira = horizon;
     const loc = findItem();
+    markSeen(loc?.item.newComments ?? []);
     if (!loc || !snap) return { ok: true, bucket: null };
     // A manual move is an acknowledgment too: mute state-based reasons and
     // clear the item's attention flags the same way ack does, so the moved
@@ -226,9 +256,8 @@ function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
   }
 
   // Releases a manual pin and hands the card back to the classifier. Without
-  // this, `override` was write-only: drag-to-pin set it, and the only exits
-  // were the card reaching In Test/Done (classifyCard's auto-clear) or the
-  // user hand-editing data/state.json.
+  // this, `override` was write-only: drag-to-pin set it, and the only other
+  // exit is a Jira status transition (classifyCard's lastStatus rule).
   //
   // Unlike ack this does NOT touch the seen horizons — unpinning says
   // "stop forcing this bucket", not "I've read the new comments", and

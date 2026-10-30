@@ -160,15 +160,15 @@ test('degraded PR data mutes acked reasons without pruning them', () => {
   expect(c.ackedReasons).toEqual(['ci_failing']);
 });
 
-test('override auto-cleared when card reaches In Test or Done', () => {
-  const s = cs({ override: 'waiting_review', overrideAt: '2026-07-01T00:00:00Z' });
-  // In Test: override cleared, routes to qa_ready
+test('override cleared when the card transitions into In Test or Done', () => {
+  const s = cs({ override: 'waiting_review', overrideAt: '2026-07-01T00:00:00Z', lastStatus: 'In Progress' });
+  // Into In Test: override cleared, routes to qa_ready
   const r = classifyCard({ ...base, card: card({ status: 'In Test', description: 'QA instructions: click it' }), pr: pr({ state: 'merged' }), cs: s });
   expect(r.bucket).toBe('qa_ready');
   expect(s.override).toBeNull();
   expect(s.overrideAt).toBeNull();
-  // Done: override cleared, routes to in_progress (Done cards are filtered upstream, but classify still works)
-  const s2 = cs({ override: 'self_review', overrideAt: '2026-07-01T00:00:00Z' });
+  // Into Done: override cleared (Done cards are filtered upstream, but classify still works)
+  const s2 = cs({ override: 'self_review', overrideAt: '2026-07-01T00:00:00Z', lastStatus: 'In Progress' });
   classifyCard({ ...base, card: card({ status: 'Done' }), pr: null, cs: s2 });
   expect(s2.override).toBeNull();
   // In Progress: override preserved
@@ -405,12 +405,8 @@ test('In Test matches case-insensitively and ignores surrounding space', () => {
   for (const status of ['in test', 'IN TEST', '  In Test  ']) {
     const c = card({ status, description: 'QA instructions: click it', fixVersions: ['1.0'] });
     expect(classifyCard({ ...base, card: c, pr: null, cs: cs() }).bucket).toBe('qa_ready');
-    // The same comparison gates the merged-not-in-test attention reason and
-    // the auto-clear of a stale override.
+    // The same comparison gates the merged-not-in-test attention reason.
     expect(classifyCard({ ...base, card: c, pr: pr({ state: 'merged' }), cs: cs() }).attention).not.toContain('merged_not_in_test');
-    const pinned = cs({ override: 'in_progress', lastStatus: status });
-    classifyCard({ ...base, card: c, pr: null, cs: pinned });
-    expect(pinned.override).toBeNull();
   }
 });
 
@@ -624,4 +620,17 @@ test('status lists: any listed name matches, first entry is the primary', () => 
   const listed: JiraStatuses = { ...statuses, inTest: ['QA', 'Testing'], review: ['PR Review', 'Peer Review'] };
   expect(classifyCard({ ...base, statuses: listed, card: card({ status: 'Testing', description: 'QA instructions: x', fixVersions: ['1'] }), pr: null, cs: cs() }).bucket).toBe('qa_ready');
   expect(classifyCard({ ...base, statuses: listed, card: card({ status: 'Peer Review' }), pr: null, cs: cs() }).bucket).toBe('waiting_review');
+});
+
+// Audit 2026-10-29 H1: a status check ("is the card In Test") ran on every
+// refresh and wiped any pin on an In Test card, so dragging a QA Ready card to
+// In QA bounced it back on the next tick.
+test('a pin set while the card is already In Test (In QA) survives refreshes', () => {
+  const s = cs({ override: 'in_qa', overrideAt: '2026-07-01T00:00:00Z', lastStatus: 'In Test' });
+  const c = card({ status: 'In Test', description: 'QA instructions: click it', fixVersions: ['1.0'] });
+  for (let i = 0; i < 3; i++) expect(classifyCard({ ...base, card: c, pr: pr({ state: 'merged' }), cs: s }).bucket).toBe('in_qa');
+  expect(s.override).toBe('in_qa');
+  // QA rejects it back to In Progress: the transition releases the pin.
+  classifyCard({ ...base, card: card({ status: 'In Progress' }), pr: null, cs: s });
+  expect(s.override).toBeNull();
 });
