@@ -27,7 +27,7 @@ const emptyBuckets = (): Record<Bucket, Item[]> => ({
 });
 
 const data = (buckets: Partial<Record<Bucket, Item[]>> = {}): DashboardData => ({
-  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null },
+  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null }, queue: [],
   buckets: { ...emptyBuckets(), ...buckets },
   todo: [], blocked: [], filed: [], unlinkedPrs: [], doneCards: [], doneTotal: 3, newlyDone: [], recentActivity: [], prLog: [],
 });

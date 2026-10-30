@@ -27,9 +27,10 @@ const HELP = `devhud — Jira/GitHub board CLI
 
 Usage:
   devhud init [--force]                Interactive setup: writes config.json
+  devhud todo [--json]                 Show the prioritized TODO queue
   devhud status [--json]               Show the board snapshot
   devhud refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
-  devhud ack <KEY> [--json]            Acknowledge a card's attention flags
+  devhud ack <KEY> [reason] [--json]   Acknowledge a card's attention flags, or one TODO entry
   devhud move <KEY> <bucket> [--json]  Pin a card to a bucket (${BUCKETS.join('|')})
   devhud unpin <KEY> [--json]          Release a pin, returning the card to the classifier
   devhud transition <KEY> <status...> [--json]  Transition a Jira card to a workflow status
@@ -67,6 +68,20 @@ export function formatStatus(payload: Snapshot): string {
     for (const item of b.needs_attention) {
       lines.push(`  ${item.key}  ${item.summary}  [${item.attention.join(', ')}]`);
     }
+  }
+  return lines.join('\n');
+}
+
+const PRIORITY_LABEL = { 1: 'P1', 2: 'P2', 3: 'P3' } as const;
+
+export function formatQueue(payload: Snapshot): string {
+  if (!payload.updatedAt) return 'No data yet — run `devhud refresh` to fetch a snapshot.';
+  const q = payload.queue ?? [];
+  if (!q.length) return 'Nothing needs you right now.';
+  const lines = [`TODO (${q.length}):`];
+  for (const e of q) {
+    lines.push(`  ${PRIORITY_LABEL[e.priority]}  ${e.key}  ${e.title}`);
+    lines.push(`      ${e.url}   (devhud ack ${e.key} ${e.reason})`);
   }
   return lines.join('\n');
 }
@@ -170,15 +185,23 @@ export async function run(argv: string[], { config, statePath, configPath }: {
     return { code: 0, out, err };
   }
 
+  if (cmd === 'todo') {
+    const result = await opSnapshot(ctx);
+    if ('error' in result) return { code: 1, out: '', err: [err, result.error].join('\n') };
+    const out = values.json ? JSON.stringify(result.queue ?? []) : formatQueue(result);
+    return { code: 0, out, err };
+  }
+
   if (cmd === 'ack' || cmd === 'move' || cmd === 'unpin') {
     const key = rest[0];
     const bucket = cmd === 'move' ? rest[1] : undefined;
+    const reason = cmd === 'ack' ? rest[1] : undefined;
     if (!key || (cmd === 'move' && !bucket)) {
       const usage = `usage: devhud ${cmd} <KEY>${cmd === 'move' ? ' <bucket>' : ''}`;
       return { code: 1, out: '', err: [err, usage].join('\n') };
     }
 
-    const result = await opAction(ctx, { type: cmd, key, bucket });
+    const result = await opAction(ctx, { type: cmd, key, bucket, reason });
 
     if (values.json) {
       const out = JSON.stringify(

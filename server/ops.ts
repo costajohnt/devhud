@@ -9,6 +9,7 @@
 // argv/output formatting in the CLI, tool-result shaping in MCP.
 import { loadState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
+import { rebuildQueue } from './queue.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
 import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
@@ -41,7 +42,12 @@ export async function opSnapshot(ctx: OpCtx): Promise<Snapshot | OpError> {
       return { error: (e as Error).message };
     }
   }
-  return loadState(ctx.statePath).snapshot ?? emptySnapshot();
+  const snap = loadState(ctx.statePath).snapshot ?? emptySnapshot();
+  // A state file from before the queue existed migrates to queue: []; rebuild
+  // from the buckets so the CLI/MCP don't report an empty TODO list until the
+  // next refresh. Cheap and pure, so always rebuilt on this path.
+  rebuildQueue(snap, ctx.config.jira.statuses);
+  return snap;
 }
 
 export async function opRefresh(ctx: OpCtx): Promise<Snapshot | OpError> {
@@ -75,15 +81,15 @@ export async function opRefresh(ctx: OpCtx): Promise<Snapshot | OpError> {
 
 export interface OpActionResult { ok: true; bucket: Bucket | null; wasPinned?: boolean; }
 
-export async function opAction(ctx: OpCtx, { type, key, bucket }: {
-  type: string; key: string; bucket?: string;
+export async function opAction(ctx: OpCtx, { type, key, bucket, reason }: {
+  type: string; key: string; bucket?: string; reason?: string;
 }): Promise<OpActionResult | OpError> {
   if (await probed(ctx)) {
     // Forward the type rather than collapsing everything-but-move to 'ack':
     // that shortcut silently turned an unpin into an acknowledgement over
     // the HTTP transport while direct mode did the right thing. Only 'move'
     // carries a bucket.
-    const body = type === 'move' ? { type: 'move', key, bucket } : { type, key };
+    const body = type === 'move' ? { type: 'move', key, bucket } : reason !== undefined ? { type, key, reason } : { type, key };
     let res: Response;
     try {
       res = await fetch(`${base(ctx.config)}/api/action`, {
@@ -100,7 +106,7 @@ export async function opAction(ctx: OpCtx, { type, key, bucket }: {
   const blockingPid = serverAppearsRunning(ctx.statePath);
   if (blockingPid) return { error: splitBrainError(blockingPid) };
   const state = loadState(ctx.statePath);
-  const r = applyAction({ state, config: ctx.config, type, key, bucket });
+  const r = applyAction({ state, config: ctx.config, type, key, bucket, reason });
   if ('error' in r) return { error: r.error };
   // Re-checked immediately before the write, not just the early guard above.
   try {

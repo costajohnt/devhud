@@ -75,7 +75,7 @@ export function demoPrs(cfg: GithubConfig): Pr[] {
       comments: [{ author: 'sarah-dev', body: 'The retry logic swallows the original error, can you preserve the stack?', createdAt: iso(0.2) }],
     }),
     pr('webapp', 475, 'DEMO-97-webhooks-v2', { state: 'merged', mergedAt: iso(0.1), reviewState: 'approved', ciStatus: 'unknown' }),
-    pr('api-gateway', 489, 'DEMO-104-rate-limit', { ciStatus: 'pending' }),
+    pr('api-gateway', 489, 'DEMO-104-rate-limit', { reviewState: 'approved' }),
     pr('webapp', 478, 'DEMO-99-csv-export', { reviewState: 'review_required' }),
     pr('webapp', 470, 'DEMO-95-onboarding', { state: 'merged', mergedAt: iso(6), reviewState: 'approved', ciStatus: 'unknown' }),
     pr('webapp', 465, 'DEMO-92-dark-mode', { state: 'merged', mergedAt: iso(2), reviewState: 'approved', ciStatus: 'unknown' }),

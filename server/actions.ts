@@ -1,5 +1,6 @@
 import { cardState } from './state.ts';
 import { STATE_REASONS, isInReview, sameStatus } from './classify.ts';
+import { QUEUE_REASONS, rebuildQueue, routesToAttention } from './queue.ts';
 import { KEY_RE } from './writeback.ts';
 import type { State, Config, Bucket, ActionResult, Item } from './types.ts';
 
@@ -34,16 +35,18 @@ export function classifierDest(item: Item, config: Config): Bucket {
   const draftOpen = pr?.state === 'open' && !!pr.isDraft;
   const outForReview = isInReview(item.jiraStatus, statuses);
   if (draftOpen && !outForReview) return 'self_review';
-  if (item.attention.length) return 'needs_attention';
+  // Only what classifyCard routes on, not every badge: a card whose
+  // remaining reasons are badges (comments, ready_to_merge) belongs in the
+  // bucket its lifecycle earns.
+  if (routesToAttention(item, statuses)) return 'needs_attention';
   if (sameStatus(item.jiraStatus, statuses?.inTest)) return 'qa_ready';
   // Mirrors the classifier's #53 exception, and its position: a draft PR is
   // never Mergeable, so this is checked before the approved branch.
   if (draftOpen) return 'waiting_review';
-  if (pr?.state === 'open') {
-    if (pr.reviewState === 'approved') return 'mergeable';
-    if (isInReview(item.jiraStatus, statuses) || pr.reviewState !== 'none') return 'waiting_review';
-    return 'self_review';
-  }
+  // Same as classifyCard since #90: only the draft flag routes an open PR to
+  // self_review, so a non-draft open PR is out for review whatever its
+  // review count.
+  if (pr?.state === 'open') return pr.reviewState === 'approved' ? 'mergeable' : 'waiting_review';
   // Mirrors the classifier's no-PR review case (#64) — this function exists to
   // track it exactly, so the two cannot disagree about where a card belongs.
   if (isInReview(item.jiraStatus, statuses)) return 'waiting_review';
@@ -58,8 +61,18 @@ export function classifierDest(item: Item, config: Config): Bucket {
 // the card's resulting bucket, or null if the card isn't on the current
 // board (a valid no-op: it may have merged away or never been fetched) — or
 // `{ error, status }` on failure.
-export function applyAction({ state, config, type, key, bucket }: {
-  state: State; config: Config; type: string; key: unknown; bucket?: string;
+export function applyAction(args: {
+  state: State; config: Config; type: string; key: unknown; bucket?: string; reason?: unknown;
+}): ActionResult {
+  const result = applyActionToSnapshot(args);
+  // Every action can change attention or buckets, so the queue is rebuilt
+  // from the edited snapshot rather than patched alongside it.
+  if (!('error' in result) && args.state.snapshot) rebuildQueue(args.state.snapshot, args.config.jira.statuses);
+  return result;
+}
+
+function applyActionToSnapshot({ state, config, type, key, bucket, reason }: {
+  state: State; config: Config; type: string; key: unknown; bucket?: string; reason?: unknown;
 }): ActionResult {
   // Validated once here so every transport (HTTP, CLI direct mode, MCP
   // direct mode) gets the same rejection instead of cardState() silently
@@ -85,6 +98,9 @@ export function applyAction({ state, config, type, key, bucket }: {
   // not a Jira key would otherwise grow state.json without limit.
   if (!KEY_RE.test(key)) return { error: 'key must be a Jira issue key like PROJ-123', status: 400 };
   if (type !== 'ack' && type !== 'move' && type !== 'unpin') return { error: 'unknown action type', status: 400 };
+  if (reason !== undefined && (type !== 'ack' || typeof reason !== 'string' || !QUEUE_REASONS.includes(reason))) {
+    return { error: `reason is only valid on ack and must be one of ${QUEUE_REASONS.join(', ')}`, status: 400 };
+  }
   if (type === 'move' && (!bucket || !BUCKETS.includes(bucket as Bucket))) {
     return { error: `bucket must be one of ${BUCKETS.join(', ')}`, status: 400 };
   }
@@ -101,6 +117,32 @@ export function applyAction({ state, config, type, key, bucket }: {
   // wall-clock time — a comment that arrived between the last refresh and
   // this ack must still be treated as new on the next refresh.
   const horizon = state.snapshot?.updatedAt ?? new Date().toISOString();
+
+  // Per-reason ack: dismisses one TODO entry and leaves the card's other
+  // entries alone. Comment reasons advance only their own source's seen
+  // horizon; state reasons are muted the same way a full ack mutes them.
+  if (type === 'ack' && typeof reason === 'string') {
+    // Only an entry the user can actually see may be dismissed. Recording an
+    // ack for a reason not currently on the card would pre-mute it: the next
+    // real CI failure would arrive already acked (classifyCard keeps acks
+    // whose reason is true) and never surface.
+    const loc = findItem();
+    if (!loc || !snap || !loc.item.attention.includes(reason)) return { ok: true, bucket: loc?.from ?? null };
+    if (reason === 'new_pr_comments') cs.lastSeenPr = horizon;
+    else if (reason === 'new_jira_comments') cs.lastSeenJira = horizon;
+    else cs.ackedReasons = ackReasons(cs.ackedReasons, [reason]);
+    const source = reason === 'new_pr_comments' ? 'github' : reason === 'new_jira_comments' ? 'jira' : null;
+    loc.item.attention = loc.item.attention.filter(r => r !== reason);
+    if (source) loc.item.newComments = loc.item.newComments.filter(c => c.source !== source);
+    if (loc.from === 'needs_attention' && !routesToAttention(loc.item, config.jira?.statuses)) {
+      snap.buckets.needs_attention.splice(loc.i, 1);
+      const dest = cs.override ?? classifierDest(loc.item, config);
+      loc.item.bucket = dest;
+      snap.buckets[dest].push(loc.item);
+      return { ok: true, bucket: dest };
+    }
+    return { ok: true, bucket: loc.from };
+  }
 
   if (type === 'ack') {
     cs.lastSeenPr = cs.lastSeenJira = horizon;

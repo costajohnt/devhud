@@ -158,7 +158,7 @@ export function BoardStats({ data }: { data: DashboardData }) {
         return (
           <Tag class="stat-card muted" {...(data.todo.length > 0 ? { href: '#todo' } : {})}>
             <span class="stat-value"><AnimatedValue value={data.todo.length} /></span>
-            <span class="stat-label">Todo</span>
+            <span class="stat-label">Backlog</span>
           </Tag>
         );
       })()}

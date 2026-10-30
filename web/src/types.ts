@@ -30,12 +30,19 @@ export interface Item { key: string; summary: string; jiraStatus: string; jiraUr
   // reaches In Test/Done, which auto-clears). pinnedAt is when it was set.
   pinned: boolean; pinnedAt: string | null; }
 
+// One TODO queue entry (mirrors server/types.ts QueueEntry).
+export interface QueueEntry { id: string; key: string; summary: string; reason: string;
+  priority: 1 | 2 | 3; title: string; detail: string | null; url: string; at: string | null; }
+
 export interface PrLogEntry { id: string; repo: string; openedAt: string | null; mergedAt: string | null; closedAt: string | null; }
 
 export interface DashboardData {
   updatedAt: string | null;
   errors: { jira: string | null; github: string | null };
   buckets: Record<Bucket, Item[]>;
+  // Ranked TODO queue, highest priority and longest waiting first. The
+  // server migrates an old snapshot that lacks it, so it is always present.
+  queue: QueueEntry[];
   // createdAt/doneAt are nullable to match server/types.ts (TodoItem,
   // DoneCard): jira.ts's iso() yields null for an unparseable timestamp.
   todo: TodoItem[];

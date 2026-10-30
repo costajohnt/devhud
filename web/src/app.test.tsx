@@ -8,7 +8,7 @@ import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { h, render } from 'preact';
 import { act } from 'preact/test-utils';
 import { App } from './app.js';
-import type { DashboardData, Item, Bucket } from './types.js';
+import type { DashboardData, Item, Bucket, QueueEntry } from './types.js';
 
 class StubEventSource {
   static instances: StubEventSource[] = [];
@@ -34,7 +34,7 @@ const item = (overrides: Partial<Item> = {}): Item => ({
 });
 
 const snap = (overrides: Partial<DashboardData> = {}): DashboardData => ({
-  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null },
+  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null }, queue: [],
   buckets: emptyBuckets(), todo: [], blocked: [], filed: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
   newlyDone: [], recentActivity: [], prLog: [], ...overrides,
 });
@@ -150,8 +150,8 @@ test('the celebrate button explains itself instead of doing nothing (#54)', asyn
   expect(toast.textContent).toContain('reduced motion');
 });
 
-test('the tab title carries the needs-attention count and clears when it empties', () => {
-  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), needs_attention: [item({ bucket: 'needs_attention' }), item({ key: 'P-2', bucket: 'needs_attention' })] } })); });
+test('the tab title carries the TODO count and clears when it empties', () => {
+  act(() => { es().emit(snap({ queue: [entry('P-1'), entry('P-2')] })); });
   expect(document.title).toBe('(2) devhud');
 
   act(() => { es().emit(snap({ updatedAt: '2026-08-01T00:05:00Z' })); });
@@ -399,9 +399,14 @@ function remount() {
   act(() => { render(h(App, null), host); });
 }
 
+const entry = (key: string, reason = 'ci_failing'): QueueEntry => ({
+  id: `${key}:${reason}`, key, summary: `summary ${key}`, reason, priority: 1,
+  title: `CI failing on o/r#1`, detail: null, url: 'https://gh/pr/1', at: null,
+});
+
 const attentionSnap = (keys: string[], updatedAt = '2026-08-01T00:05:00Z') => snap({
   updatedAt,
-  buckets: { ...emptyBuckets(), needs_attention: keys.map(k => item({ key: k, bucket: 'needs_attention' })) },
+  queue: keys.map(k => entry(k)),
 });
 
 test('the bell is hidden entirely when the browser has no Notification API', () => {
@@ -445,7 +450,7 @@ test('a blocked permission explains itself instead of silently doing nothing', a
   expect(localStorage.getItem('devhud-notify')).not.toBe('1');
 });
 
-test('a card entering needs_attention on a hidden tab fires one notification', () => {
+test('a new TODO entry on a hidden tab fires one notification', () => {
   installNotification('granted');
   localStorage.setItem('devhud-notify', '1');
   remount();
@@ -456,7 +461,8 @@ test('a card entering needs_attention on a hidden tab fires one notification', (
 
   act(() => { es().emit(attentionSnap(['P-1', 'P-2'])); });
   expect(StubNotification.fired).toHaveLength(1);
-  expect(StubNotification.fired[0]!.title).toBe('P-2 needs attention');
+  expect(StubNotification.fired[0]!.title).toBe('New TODO');
+  expect(StubNotification.fired[0]!.body).toBe('P-2: CI failing on o/r#1');
   expect(StubNotification.fired[0]!.tag).toBe('devhud-attention');
 });
 
@@ -527,4 +533,52 @@ test('the Blocked column renders under the board and hides when empty', () => {
 
   act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] }, blocked: [] })); });
   expect(host.querySelector('#blocked')).toBeNull();
+});
+
+test('the TODO queue renders above the board, empty state included', () => {
+  act(() => { es().emit(snap({ buckets: { ...emptyBuckets(), in_progress: [item()] } })); });
+  const queue = host.querySelector('#queue')!;
+  expect(queue.textContent).toContain('Nothing needs you right now.');
+  // Above the board stats: the queue is the first thing on the page.
+  expect(queue.compareDocumentPosition(host.querySelector('.pr-row-main:not(.queue-main)')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  act(() => { es().emit(snap({ updatedAt: '2026-08-01T00:05:00Z', queue: [entry('P-1'), entry('P-2', 'new_pr_comments')] })); });
+  const rows = [...host.querySelectorAll('#queue .queue-row')];
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.textContent).toContain('P1');
+  expect(rows[0]!.querySelector('a')!.getAttribute('href')).toBe('https://gh/pr/1');
+});
+
+test('Done on a TODO entry acks just that reason', async () => {
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve({ ok: true, json: () => Promise.resolve(snap()) }));
+  vi.stubGlobal('fetch', fetchMock);
+  act(() => { es().emit(snap({ queue: [entry('P-1', 'new_pr_comments')] })); });
+
+  const done = host.querySelector('#queue .queue-done')!;
+  await act(async () => { done.dispatchEvent(new Event('click', { bubbles: true })); });
+
+  const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/action');
+  expect(JSON.parse((call![1] as { body: string }).body)).toEqual({ type: 'ack', key: 'P-1', reason: 'new_pr_comments' });
+});
+
+// Review finding: Done on a queue entry ran the full-ack "advance to the next
+// needs-attention card" logic and opened a card the user never selected.
+test('Done on a TODO entry does not open or move the detail selection', async () => {
+  // Both cards stay in needs_attention after the ack, as they would when a
+  // routing reason (red CI) is still on P-1.
+  const board = snap({
+    buckets: { ...emptyBuckets(), needs_attention: [item({ bucket: 'needs_attention' }), item({ key: 'P-2', bucket: 'needs_attention' })] },
+    queue: [entry('P-1', 'new_pr_comments')],
+  });
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => Promise.resolve({
+    ok: true, json: () => Promise.resolve(url === '/api/data' ? board : { ok: true, bucket: 'needs_attention' }),
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  act(() => { es().emit(board); });
+  const done = host.querySelector('#queue .queue-done')!;
+  await act(async () => { done.dispatchEvent(new Event('click', { bubbles: true })); });
+  // Let the action's fetch -> /api/data -> setSelected chain settle.
+  await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/data')).toBe(true);
+  expect(host.querySelector('.pr-detail')).toBeNull();
 });

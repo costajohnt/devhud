@@ -1,10 +1,14 @@
 # devhud
 
-Local dashboard for Jira and GitHub PRs. Node server (port 3010 by default) serves a Preact SPA that tracks card status and PR activity across projects.
+A heads-up display for your in-flight work across Jira and GitHub. It watches your cards and their linked PRs and keeps a prioritized TODO list of everything that needs you: a reviewer's comment, a Jira question from QA, red CI, requested changes, an approved PR waiting to be merged, a merged PR whose card never moved. Handle one, mark it done, and the next one is on top.
+
+Runs locally: a Node server (port 3010 by default) serves a Preact SPA, plus a CLI and an MCP server so an agent can work the same queue.
+
+![TODO queue: ranked entries with P1/P2 priority badges, each naming the card, what happened, how long it has waited, and Open/Done buttons.](docs/images/todo.jpg)
 
 See [docs/API.md](docs/API.md) for the full HTTP API reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the module map, data flow, and design decisions.
 
-![Board view: cards grouped into buckets from Needs Attention through In QA, with stat cards for each bucket plus Todo and Done totals.](docs/images/board.jpg)
+![Board view: cards grouped into buckets from Needs Attention through In QA, with stat cards for each bucket plus Backlog and Done totals.](docs/images/board.jpg)
 
 The board groups cards into buckets, with filters for status and repo and a search box above the list.
 
@@ -18,6 +22,12 @@ Charts and the Recent Activity feed round out the board with PR lifecycle trends
 
 ## Features
 
+- **TODO queue**: the top of the page. One entry per thing that needs you, across every in-flight card, ranked:
+  - **P1**: CI failing on your PR (only checks not already red on the base branch), changes requested by a reviewer, or a new Jira comment on a card that is in QA (the tester is waiting on you).
+  - **P2**: new PR comments (issue comments, inline review comments, review summaries), new Jira comments, a merged PR whose card is not in test yet.
+  - **P3**: an approved PR with green CI (not pending) ready to merge, a card in test with no QA instructions or fix version.
+
+  Within a priority, whatever has waited longest is first. **Open** takes you to the PR or card; **Done** dismisses that one entry and leaves the card's others. Entries also clear on their own when the underlying thing does (CI goes green, you reply on the Jira card, the PR merges). The tab title shows the count, and the 🔕 bell turns on a desktop notification for each new entry. `devhud todo` and the `todo_list` MCP tool read the same queue.
 - **Live updates**: the server refreshes Jira/GitHub on its own schedule (`refreshIntervalSeconds` in `config.json`, default 120) and pushes every new snapshot to open tabs over Server-Sent Events (`GET /api/events`) — leave it on a screen and it stays current, no clicking refresh, and N open tabs still cost one API sweep. Moves and acks in one tab appear in every other tab immediately.
 - **Buckets**: cards land in Needs Attention, In Progress, Self Review Needed, Waiting in Review, Mergeable, QA Ready, or In QA based on Jira status and linked PR state. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#classification-rules) for the exact rules.
 - **Attention triggers**: a card surfaces in Needs Attention on CI failing, a merged PR whose card isn't yet In Test/Done, or a new Jira comment while the card is In Test — except while its PR is a draft, which routes to Self Review Needed instead until the card reaches a review status. Other triggers (new comments on cards elsewhere, missing QA instructions or fix version) show as pills on the row without moving the card.
@@ -120,10 +130,12 @@ port, commands go through its HTTP API; otherwise they operate directly on
 was used is printed to stderr.
 
 ```bash
+node server/cli.ts todo                  # the prioritized TODO queue
 node server/cli.ts status                # counts + needs-attention rows
 node server/cli.ts status --json         # full snapshot
 node server/cli.ts refresh               # fetch fresh data, then show status
 node server/cli.ts ack PROJ-123          # clear attention flags on a card
+node server/cli.ts ack PROJ-123 new_pr_comments  # dismiss one TODO entry
 node server/cli.ts move PROJ-123 in_qa   # pin a card to a bucket
 node server/cli.ts unpin PROJ-123        # release the pin, back to classifier control
 node server/cli.ts serve                 # run the server in the foreground

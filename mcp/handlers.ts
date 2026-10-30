@@ -6,7 +6,7 @@
 // server/ops.ts, the shared dual-transport layer the CLI uses too — this
 // file only shapes tool results (summaries, untrusted-text notes) on top.
 import { opSnapshot, opRefresh, opAction, opWrite } from '../server/ops.ts';
-import type { Config, Snapshot, Bucket } from '../server/types.ts';
+import type { Config, Snapshot, Bucket, QueueEntry } from '../server/types.ts';
 
 export interface Ctx {
   config: Config;
@@ -54,8 +54,14 @@ export interface ActionShape {
   wasPinned?: boolean;
 }
 
-export async function ackCard(ctx: Ctx & { key: string }): Promise<ActionShape | ErrorShape> {
-  return await opAction(ctx, { type: 'ack', key: ctx.key });
+export async function ackCard(ctx: Ctx & { key: string; reason?: string }): Promise<ActionShape | ErrorShape> {
+  return await opAction(ctx, { type: 'ack', key: ctx.key, reason: ctx.reason });
+}
+
+export async function todoList(ctx: Ctx): Promise<{ queue: QueueEntry[]; updatedAt: string | null; _note: string } | ErrorShape> {
+  const snap = await opSnapshot(ctx);
+  if ('error' in snap) return snap;
+  return { queue: snap.queue ?? [], updatedAt: snap.updatedAt, _note: UNTRUSTED_TEXT_NOTE };
 }
 
 export async function moveCard(ctx: Ctx & { key: string; bucket: string }): Promise<ActionShape | ErrorShape> {
