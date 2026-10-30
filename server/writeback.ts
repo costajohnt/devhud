@@ -193,6 +193,10 @@ export interface PerformWriteArgs {
   refreshFn?: typeof refresh;
   configPath?: string;
   loadConfigFn?: typeof loadConfig;
+  // 'mcp' when an MCP tool asked for the write (audit M4): MCP writes need
+  // mcpWriteEnabled as well as writeEnabled, so turning write-back on for
+  // the CLI doesn't also hand it to an agent reading third-party text.
+  source?: 'mcp';
 }
 
 // Shared entry point for every write path. `state` is mutated in place by
@@ -216,7 +220,7 @@ export interface PerformWriteArgs {
 // otherwise.
 export async function performWrite({
   state, type, key, repo, number, body, status,
-  refreshFn = refresh, configPath, loadConfigFn = loadConfig,
+  refreshFn = refresh, configPath, loadConfigFn = loadConfig, source,
 }: PerformWriteArgs): Promise<WriteResult> {
   if (!WRITE_TYPES.includes(type)) {
     return { error: `unknown write type "${type}"`, status: 400 };
@@ -261,6 +265,9 @@ export async function performWrite({
   if (gate.blocked) {
     if (gate.demo) return { ok: true, demo: true, message: gate.message ?? '' };
     return { error: gate.message ?? 'write-back disabled', status: 403 };
+  }
+  if (source === 'mcp' && !liveConfig.mcpWriteEnabled) {
+    return { error: 'MCP write-back disabled; set mcpWriteEnabled: true in config.json to let MCP tools write (writeEnabled alone covers the CLI)', status: 403 };
   }
 
   // Scope, not just shape: KEY_RE/REPO_RE stop URL smuggling, but the trust

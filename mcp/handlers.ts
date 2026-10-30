@@ -75,15 +75,15 @@ export async function unpinCard(ctx: Ctx & { key: string }): Promise<ActionShape
 export type WriteShape = Record<string, unknown>;
 
 export async function transitionCard(ctx: Ctx & { key: string; status: string }): Promise<WriteShape> {
-  return await opWrite(ctx, { type: 'transition', key: ctx.key, status: ctx.status });
+  return await opWrite(ctx, { type: 'transition', key: ctx.key, status: ctx.status, source: 'mcp' });
 }
 
 export async function commentCard(ctx: Ctx & { key: string; body: string }): Promise<WriteShape> {
-  return await opWrite(ctx, { type: 'comment', key: ctx.key, body: ctx.body });
+  return await opWrite(ctx, { type: 'comment', key: ctx.key, body: ctx.body, source: 'mcp' });
 }
 
 export async function commentPr(ctx: Ctx & { repo: string; number: number; body: string }): Promise<WriteShape> {
-  return await opWrite(ctx, { type: 'pr_comment', repo: ctx.repo, number: ctx.number, body: ctx.body });
+  return await opWrite(ctx, { type: 'pr_comment', repo: ctx.repo, number: ctx.number, body: ctx.body, source: 'mcp' });
 }
 
 export interface CardCommentsShape {

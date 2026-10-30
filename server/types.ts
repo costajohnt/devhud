@@ -86,6 +86,8 @@ export interface Config {
   port: number;
   demo: boolean;
   writeEnabled: boolean;
+  // MCP write tools also need this (audit M4). Optional: defaults false.
+  mcpWriteEnabled?: boolean;
   // Optional so test fixtures and older config.json files need no change;
   // the server applies DEFAULT_REFRESH_INTERVAL_SECONDS when absent.
   refreshIntervalSeconds?: number;

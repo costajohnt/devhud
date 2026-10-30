@@ -9,7 +9,8 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { writePidFile } from './transport.ts';
+import { writePidFile, loadOrCreateApiToken, TOKEN_HEADER } from './transport.ts';
+import { timingSafeEqual } from 'node:crypto';
 import type { Config, State, Snapshot } from './types.ts';
 
 // Server-side poll cadence when config.json doesn't set refreshIntervalSeconds.
@@ -61,6 +62,27 @@ function bodyError(e: unknown): { status: number; error: string } {
 // guard at all — a read-only endpoint is exactly what rebinding targets
 // (confidentiality, not mutation), so it needs this check just as much as
 // the POST routes do.
+// Constant-time token comparison; length differs → not equal.
+const sameToken = (a: string | undefined, b: string): boolean => {
+  if (!a) return false;
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+const COOKIE = 'devhud_token';
+const cookieToken = (req: IncomingMessage): string | undefined =>
+  (req.headers.cookie ?? '').split(';').map(c => c.trim()).find(c => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
+const headerToken = (req: IncomingMessage): string | undefined => {
+  const v = req.headers[TOKEN_HEADER];
+  return Array.isArray(v) ? v[0] : v;
+};
+
+// Served at / instead of the dashboard when the browser has no auth cookie.
+// The dashboard itself holds no data, but loading it without the cookie
+// would just show "server unreachable"; this says what to do instead.
+const GATE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>devhud</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:15vh auto;padding:0 1rem;color:#cbd5e1;background:#0b1020}code{background:#1e293b;padding:.1rem .35rem;border-radius:4px}</style></head>
+<body><h1>devhud</h1><p>This dashboard needs its access token. Run <code>devhud open</code> (or <code>node server/cli.ts open</code> from a checkout), or use the link the server printed when it started.</p></body></html>`;
+
 function guardHost(req: IncomingMessage): { status: number; error: string } | null {
   const host = (req.headers.host ?? '').toLowerCase();
   const port = req.socket.localPort;
@@ -156,10 +178,17 @@ export function createSseFanout<C extends SseClient>() {
 // the scheduled loop (short interval + stub) without network or module
 // mocking — same convention as performWrite's refreshFn.
 // `autoTransitionFn` is injectable for the same reason (M5 ordering tests).
-export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh, autoTransitionFn = autoTransitionMergedCards }: {
+export function createServer({ config, statePath, webDist, configPath, refreshFn = refresh, autoTransitionFn = autoTransitionMergedCards, apiToken }: {
   config: Config; statePath: string; webDist: string; configPath?: string; refreshFn?: typeof refresh;
   autoTransitionFn?: typeof autoTransitionMergedCards;
+  // When set, every /api/* request must carry it (x-devhud-token header or
+  // the devhud_token cookie) and the dashboard page needs the cookie. The
+  // real server always sets it (main below); omitted only by tests that
+  // exercise everything else.
+  apiToken?: string;
 }): http.Server {
+  const authorized = (req: IncomingMessage): boolean =>
+    !apiToken || sameToken(headerToken(req), apiToken) || sameToken(cookieToken(req), apiToken);
   // The in-memory `state` object is the single source of truth for the
   // life of the process; disk (statePath) is write-through only. Loading
   // once here (instead of per-request) avoids a lost-update race between
@@ -204,6 +233,15 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
       if (url.pathname.startsWith('/api/')) {
         const hostErr = guardHost(req);
         if (hostErr) return send(hostErr.status, { error: hostErr.error });
+        if (!authorized(req)) return send(401, { error: 'missing or invalid devhud token; run `devhud open` for the dashboard (the CLI and MCP read it automatically)' });
+      }
+      // `devhud open` lands here with the token: trade it for an HttpOnly,
+      // same-site-only cookie and drop it from the address bar.
+      if (apiToken && url.searchParams.has('token') && req.method === 'GET') {
+        if (sameToken(url.searchParams.get('token') ?? undefined, apiToken)) {
+          res.writeHead(302, { location: '/', 'set-cookie': `${COOKIE}=${apiToken}; HttpOnly; SameSite=Strict; Path=/` });
+          return res.end();
+        }
       }
       if (url.pathname === '/api/data' && req.method === 'GET') {
         return send(200, state.snapshot ?? emptySnapshot());
@@ -279,10 +317,10 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         // Explicit destructure, not `...body`: a spread would let a client
         // smuggle arbitrary keys (e.g. "config"/"state") into performWrite's
         // named parameters, potentially overriding config/state entirely.
-        const { type, key, repo, number, body: text, status } = body as {
-          type?: string; key?: string; repo?: string; number?: number; body?: string; status?: string;
+        const { type, key, repo, number, body: text, status, source } = body as {
+          type?: string; key?: string; repo?: string; number?: number; body?: string; status?: string; source?: unknown;
         };
-        const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath });
+        const result = await performWrite({ config, state, type: type ?? '', key, repo, number, body: text, status, configPath, source: source === 'mcp' ? 'mcp' : undefined });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         // The write already happened in Jira/GitHub: a failed local save must
         // not turn into a 500 that invites a retry (and a double post). Same
@@ -310,6 +348,12 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         if (!stat.isFile() || file === '') throw new Error();
       } catch {
         p = resolve(root, 'index.html');
+      }
+      // Assets carry no data and stay public; the page that would call the
+      // API is replaced by instructions until the browser has the cookie.
+      if (p === resolve(root, 'index.html') && !authorized(req)) {
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" });
+        return res.end(GATE_HTML);
       }
       const buf = readFileSync(p);
       // Response-side hardening. 'unsafe-inline' is required by the
@@ -469,7 +513,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(1);
   }
   if (bundle) console.warn(`\n!! ${bundle.message}\n`);
-  const server = createServer({ config, statePath: STATE_PATH, webDist: WEB_DIST, configPath });
+  const apiToken = loadOrCreateApiToken(STATE_PATH);
+  const server = createServer({ config, statePath: STATE_PATH, webDist: WEB_DIST, configPath, apiToken });
   // Single-instance guard: let the OS decide via the listen() call itself
   // rather than probing a possibly-stale pid file (which can false-negative
   // after a crash, or false-positive if the pid was reused).
@@ -482,7 +527,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   server.listen(config.port, '127.0.0.1', () => {
     writePidFile(pidPath, config.port);
-    console.log(`devhud on http://localhost:${config.port}`);
+    console.log(`devhud on http://localhost:${config.port}/?token=${apiToken}  (or run \`devhud open\`)`);
   });
   const shutdown = () => {
     try { unlinkSync(pidPath); } catch {}

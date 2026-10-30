@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
 import { BUCKETS } from './actions.ts';
 import { opSnapshot, opRefresh, opAction, opWrite } from './ops.ts';
-import { probeServer } from './transport.ts';
+import { probeServer, readApiToken } from './transport.ts';
 import type { Config, Snapshot } from './types.ts';
 
 // Re-exported for backward compatibility: server/cli.test.ts imports
@@ -183,7 +183,10 @@ export async function run(argv: string[], { config, statePath, configPath, probe
     return { code, out: '', err: '' };
   }
   if (cmd === 'open') {
-    const url = `http://localhost:${config.port}`;
+    // The token in the URL sets the dashboard's auth cookie; the server
+    // redirects to the bare URL right after, so it doesn't linger in the bar.
+    const token = readApiToken(statePath);
+    const url = `http://localhost:${config.port}${token ? `/?token=${encodeURIComponent(token)}` : ''}`;
     // Platform-appropriate opener: the macOS-only `open` binary printed
     // "Opening …" and exited 0 on Linux/Windows while opening nothing, and
     // its missing 'error' listener turned the ENOENT into an unhandled
@@ -197,7 +200,7 @@ export async function run(argv: string[], { config, statePath, configPath, probe
 
   // Probed once here (not inside each op) so the transport note on stderr
   // can never disagree with the path the op actually took.
-  const viaServer = await probeServer(config.port, probeTimeoutMs ? { timeoutMs: probeTimeoutMs } : undefined);
+  const viaServer = await probeServer(config.port, { timeoutMs: probeTimeoutMs, token: readApiToken(statePath) });
   const err = viaServer ? 'via server' : 'direct';
   const ctx = { config, statePath, configPath, viaServer };
 

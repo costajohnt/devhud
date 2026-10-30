@@ -5,6 +5,7 @@
 // directly on disk via the same server/*.ts modules the server itself uses
 // (loadState/saveState/refresh/applyAction), so behavior is identical
 // either way.
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { saveState, writeFilePrivate } from './state.ts';
@@ -22,9 +23,9 @@ export function writePidFile(pidPath: string, port: number): void {
 
 // ~500ms budget: long enough that a live server on loopback always answers,
 // short enough that "no server running" doesn't make every command feel stuck.
-export async function probeServer(port: number, { timeoutMs = 500 }: { timeoutMs?: number } = {}): Promise<boolean> {
+export async function probeServer(port: number, { timeoutMs = 500, token }: { timeoutMs?: number; token?: string | null } = {}): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs), headers: tokenHeaders(token) });
     return res.ok;
   } catch {
     return false;
@@ -83,3 +84,26 @@ export function saveStateGuarded(statePath: string, state: State): void {
   if (blockingPid) throw new Error(splitBrainError(blockingPid));
   saveState(statePath, state);
 }
+
+// The local API token (audit M3). Loopback alone let any local process read
+// the board and, with writeEnabled, write to Jira/GitHub as the user; the
+// state and pid files were already owner-only (0600), the socket was not.
+// The server creates the token once in a 0600 file next to the state file;
+// the CLI and MCP read it from there and send it on every /api/* request,
+// the browser gets it as a cookie through `devhud open`.
+export const apiTokenPath = (statePath: string): string => join(dirname(statePath), 'api-token');
+
+export function readApiToken(statePath: string): string | null {
+  try { return readFileSync(apiTokenPath(statePath), 'utf8').trim() || null; } catch { return null; }
+}
+
+export function loadOrCreateApiToken(statePath: string): string {
+  const existing = readApiToken(statePath);
+  if (existing) return existing;
+  const token = randomBytes(32).toString('base64url');
+  writeFilePrivate(apiTokenPath(statePath), token);
+  return token;
+}
+
+export const TOKEN_HEADER = 'x-devhud-token';
+export const tokenHeaders = (token: string | null | undefined): Record<string, string> => (token ? { [TOKEN_HEADER]: token } : {});

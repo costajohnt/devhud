@@ -12,7 +12,7 @@ import { refresh } from './refresh.ts';
 import { rebuildQueue } from './queue.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
-import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded } from './transport.ts';
+import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded, readApiToken, tokenHeaders } from './transport.ts';
 import type { Config, Snapshot, Bucket } from './types.ts';
 
 export interface OpCtx {
@@ -27,7 +27,9 @@ export interface OpCtx {
 export interface OpError { error: string; }
 
 const base = (config: Config) => `http://127.0.0.1:${config.port}`;
-const probed = (ctx: OpCtx) => ctx.viaServer ?? probeServer(ctx.config.port);
+const probed = (ctx: OpCtx) => ctx.viaServer ?? probeServer(ctx.config.port, { token: readApiToken(ctx.statePath) });
+// The server's API token, read from next to the state file it guards.
+const auth = (ctx: OpCtx) => tokenHeaders(readApiToken(ctx.statePath));
 
 export async function opSnapshot(ctx: OpCtx): Promise<Snapshot | OpError> {
   if (await probed(ctx)) {
@@ -35,7 +37,7 @@ export async function opSnapshot(ctx: OpCtx): Promise<Snapshot | OpError> {
     // answered the probe can still drop the connection by the time this
     // call lands. Catch into the same { error } shape as everything else.
     try {
-      const res = await fetch(`${base(ctx.config)}/api/data`);
+      const res = await fetch(`${base(ctx.config)}/api/data`, { headers: auth(ctx) });
       if (!res.ok) return { error: `HTTP ${res.status}` };
       return await res.json() as Snapshot;
     } catch (e) {
@@ -56,7 +58,7 @@ export async function opRefresh(ctx: OpCtx): Promise<Snapshot | OpError> {
     // { error }, not escape the op as a raw throw (MCP would leak it to
     // the SDK; the CLI would mask it in its top-level catch).
     try {
-      const res = await fetch(`${base(ctx.config)}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+      const res = await fetch(`${base(ctx.config)}/api/refresh`, { method: 'POST', headers: { 'content-type': 'application/json', ...auth(ctx) } });
       if (!res.ok) return { error: `HTTP ${res.status}` };
       return await res.json() as Snapshot;
     } catch (e) {
@@ -93,7 +95,7 @@ export async function opAction(ctx: OpCtx, { type, key, bucket, reason }: {
     let res: Response;
     try {
       res = await fetch(`${base(ctx.config)}/api/action`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        method: 'POST', headers: { 'content-type': 'application/json', ...auth(ctx) }, body: JSON.stringify(body),
       });
     } catch (e) {
       return { error: (e as Error).message };
@@ -127,12 +129,14 @@ export type OpWriteResult = Record<string, unknown>;
 // inside performWrite.
 export async function opWrite(ctx: OpCtx, writeArgs: {
   type: string; key?: string; repo?: string; number?: number; body?: string; status?: string;
+  // 'mcp' for writes an MCP tool asked for: gated by mcpWriteEnabled too.
+  source?: 'mcp';
 }): Promise<OpWriteResult> {
   if (await probed(ctx)) {
     let res: Response;
     try {
       res = await fetch(`${base(ctx.config)}/api/write`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(writeArgs),
+        method: 'POST', headers: { 'content-type': 'application/json', ...auth(ctx) }, body: JSON.stringify(writeArgs),
       });
     } catch (e) {
       return { error: (e as Error).message };

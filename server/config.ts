@@ -35,6 +35,7 @@ interface RawConfig {
   port?: number;
   demo?: boolean;
   writeEnabled?: boolean;
+  mcpWriteEnabled?: boolean;
   autoTransitionMerged?: boolean;
   refreshIntervalSeconds?: number;
   ignoreAuthors?: string[];
@@ -243,6 +244,7 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     port,
     demo,
     writeEnabled: Boolean(c.writeEnabled),
+    mcpWriteEnabled: Boolean(c.mcpWriteEnabled),
     autoTransitionMerged: Boolean(c.autoTransitionMerged),
     refreshIntervalSeconds: c.refreshIntervalSeconds,
     ignoreAuthors: Array.isArray(c.ignoreAuthors) ? c.ignoreAuthors : DEFAULT_IGNORE_AUTHORS,

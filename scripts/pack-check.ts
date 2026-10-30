@@ -3,7 +3,7 @@
 // installed bins against a demo config in a scratch DEVHUD_HOME. Proves the
 // package installs and runs, which `npm pack` contents alone do not.
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,8 +48,15 @@ try {
       page = await fetch(`http://127.0.0.1:${port}/`).then(r => r.text(), () => '');
     }
     assert.match(page, /<title>devhud<\/title>/);
-    const data = await (await fetch(`http://127.0.0.1:${port}/api/data`)).json() as { queue?: unknown[] };
+    // The API needs the token the server wrote next to its state file.
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/data`)).status, 401, 'api/data refuses a request without the token');
+    const token = readFileSync(join(home, 'data', 'api-token'), 'utf8').trim();
+    const data = await (await fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-token': token } })).json() as { queue?: unknown[] };
     assert.ok(Array.isArray(data.queue), 'api/data has a queue');
+    // `devhud open`'s link trades the token for the dashboard cookie.
+    const opened = await fetch(`http://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' });
+    assert.equal(opened.status, 302);
+    assert.match(opened.headers.get('set-cookie') ?? '', /devhud_token=.*HttpOnly.*SameSite=Strict/);
   } finally {
     server.kill();
     await serverExited;
