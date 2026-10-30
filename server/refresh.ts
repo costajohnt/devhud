@@ -1,7 +1,7 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
 import { buildQueue } from './queue.ts';
-import { prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
+import { CARD_STATE_RETENTION_DAYS, prAttention, applyAcks, classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, fetchReviewRequests, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
 import type { Card, Pr, PrRef, State, Config, Snapshot, Bucket, Item, ActivityEntry, PrLogEntry, NewComment, FiledCard, FiledMeta, ReviewRequest } from './types.ts';
@@ -14,8 +14,9 @@ const DAY = 86400000;
 // buildSnapshot.
 export const CELEBRATION_RETENTION_DAYS = 90;
 // Per-card state (pins, horizons, acks) for a card absent from every fetch
-// this long is dropped; a card that comes back starts fresh (audit M20).
-export const CARD_STATE_RETENTION_DAYS = 90;
+// for CARD_STATE_RETENTION_DAYS (classify.ts) is dropped; a card that comes
+// back starts fresh (audit M20).
+export { CARD_STATE_RETENTION_DAYS };
 
 const prView = (p: Pr | null): PrRef | null => p && {
   repo: p.repo, number: p.number, url: p.url, branch: p.branch,
@@ -98,8 +99,9 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   // state.cards used to grow forever: every card ever classified, plus any
   // key an ack or move named. Stamp the cards this fetch returned, give
   // unstamped entries (older state files, acks on unknown keys) a first
-  // sighting, and drop entries unseen for the retention window. Skipped when
-  // the Jira fetch failed: those cards came from lastCards, not a fresh read.
+  // sighting, and drop entries unseen for the retention window. No deletes
+  // when the Jira fetch failed (the cards then came from lastCards); those
+  // still count as seen, which keeps entries alive through an outage.
   const nowIso = new Date().toISOString();
   const fetchedKeys = new Set(cards.map(c => c.key));
   const cardCutoff = Date.now() - CARD_STATE_RETENTION_DAYS * DAY;
@@ -490,10 +492,8 @@ async function runRefresh({ config, state, quiet }: { config: Config; state: Sta
     if (gh.errors.length) {
       githubErrors.push(...gh.errors);
       for (const failedRepo of gh.failedRepos) {
-        {
-          degradedPrRepos.add(failedRepo);
-          prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
-        }
+        degradedPrRepos.add(failedRepo);
+        prs.push(...(state.lastPrs ?? []).filter(p => p.repo === failedRepo));
       }
     }
     const linked = linkPrsToCards(cards, prs, config.jira.projectKey);

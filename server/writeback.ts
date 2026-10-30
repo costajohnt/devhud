@@ -92,7 +92,13 @@ export async function transitionCard(cfg: JiraConfig, key: string, targetStatusN
 // a card a human moved since the last tick is not moved again. statusCategory
 // is mapped exactly as jira.ts's mapIssue does: anything other than
 // 'new' | 'indeterminate' | 'done' becomes '' (name-only matching).
-export async function getIssueStatus(cfg: JiraConfig, key: string): Promise<Pick<Card, 'status' | 'statusCategory'>> {
+export interface LiveStatus extends Pick<Card, 'status' | 'statusCategory'> {
+  // Status transitions from the issue's changelog, oldest first. Optional:
+  // callers (and test stubs) that only need the current status omit it.
+  statusChanges?: { to: string; at: string }[];
+}
+
+export async function getIssueStatus(cfg: JiraConfig, key: string): Promise<LiveStatus> {
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}`, cfg.baseUrl);
   url.searchParams.set('fields', 'status');
   const res = await fetch(url, { headers: { Authorization: jiraAuth(cfg), Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
@@ -102,7 +108,29 @@ export async function getIssueStatus(cfg: JiraConfig, key: string): Promise<Pick
   return {
     status: data.fields?.status?.name ?? '',
     statusCategory: cat === 'new' || cat === 'indeterminate' || cat === 'done' ? cat : '',
+    statusChanges: await getStatusChanges(cfg, key),
   };
+}
+
+// The issue's status transitions, from the newest changelog page (the
+// endpoint pages oldest first). Recent transitions are all the
+// auto-transition check needs: did the card go through In Test/Done after
+// the PR merged.
+async function getStatusChanges(cfg: JiraConfig, key: string): Promise<{ to: string; at: string }[]> {
+  type Page = { total?: number; values?: { created?: string; items?: { field?: string; toString?: string | null }[] }[] };
+  const page = async (startAt: number) => {
+    const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/changelog`, cfg.baseUrl);
+    url.searchParams.set('startAt', String(startAt));
+    url.searchParams.set('maxResults', '100');
+    const res = await fetch(url, { headers: { Authorization: jiraAuth(cfg), Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return await res.json() as Page;
+  };
+  let p = await page(0);
+  if ((p.total ?? 0) > 100) p = await page((p.total ?? 0) - 100);
+  return (p.values ?? []).flatMap(h => (h.items ?? [])
+    .filter(i => i.field === 'status' && i.toString && h.created)
+    .map(i => ({ to: i.toString!, at: h.created! })));
 }
 
 // Resolves with the new comment's id when Jira's response carries one (it
@@ -408,12 +436,6 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
     if (!item.pr || item.pr.state !== 'merged') return false;
     if (ledger[autoTransitionId(item.key, item.pr)]) return false;
     const card = lastCards.get(item.key);
-    // A card touched in Jira after the merge may have gone to In Test and
-    // been rejected back between two refreshes, a trip reachedTestAt never
-    // saw (audit M2). The board can't tell that from a fresh pre-test card,
-    // so an automated write stays out; the flag still shows for the user.
-    const mergedAt = lastPrs.get(`${item.pr.repo}#${item.pr.number}`)?.mergedAt;
-    if (card?.updatedAt && mergedAt && Date.parse(card.updatedAt) > Date.parse(mergedAt)) return false;
     return isPreTest(card ?? { status: item.jiraStatus }, statuses);
   });
 
@@ -422,7 +444,7 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
   for (const item of candidates) {
     const id = autoTransitionId(item.key, item.pr!);
     const seen = lastCards.get(item.key)?.status ?? item.jiraStatus;
-    let live: Pick<Card, 'status' | 'statusCategory'>;
+    let live: LiveStatus;
     try {
       live = await getIssueStatusFn(config.jira, item.key);
     } catch (e) {
@@ -432,6 +454,19 @@ export async function autoTransitionMergedCards({ state, configPath, loadConfigF
     }
     if (!sameStatus(live.status, seen) || !isPreTest(live, statuses)) {
       const reason = `status changed: ${seen} -> ${live.status || '(none)'}`;
+      console.log(`auto-transition: ${item.key} skipped — ${reason}`);
+      ledger[id] = { at: now(), ok: false, skipped: true, error: reason.slice(0, 200) };
+      continue;
+    }
+    // A trip In Test -> back to pre-test between two refreshes leaves no
+    // reachedTestAt stamp, so the old merge looks unhandled (audit M2). The
+    // changelog says whether the card already went through QA after this
+    // merge: if so, QA sent it back and moving it again would undo that.
+    const mergedAt = lastPrs.get(`${item.pr!.repo}#${item.pr!.number}`)?.mergedAt;
+    const afterMerge = mergedAt ? (live.statusChanges ?? []).find(c =>
+      Date.parse(c.at) >= Date.parse(mergedAt) && (sameStatus(c.to, statuses.inTest) || sameStatus(c.to, statuses.done))) : undefined;
+    if (afterMerge) {
+      const reason = `already went to ${afterMerge.to} after the merge (${afterMerge.at}); not moving it again`;
       console.log(`auto-transition: ${item.key} skipped — ${reason}`);
       ledger[id] = { at: now(), ok: false, skipped: true, error: reason.slice(0, 200) };
       continue;

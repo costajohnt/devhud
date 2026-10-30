@@ -131,10 +131,11 @@ test('enrichPr fetches the newest issue comments on a thread longer than one pag
   vi.stubGlobal('fetch', fetchMock);
   resetGithubStats();
   const pr = await enrichPr(basePr({ repo: 'lp-org/lp-repo', number: 5 }), { token: 't', org: 'lp-org', repos: [], username: 'me' });
-  // Pages 3 and 4: the newest 150 of 350, including the newest human comment.
-  expect(pr.comments).toHaveLength(150);
+  // Pages 1, 3 and 4: page 1 is already fetched so it is kept, plus the newest
+  // 150 of 350, including the newest human comment.
+  expect(pr.comments).toHaveLength(250);
   expect(pr.comments.at(-1)).toMatchObject({ author: 'human', body: 'c350' });
-  expect(pr.comments[0]?.body).toBe('c201');
+  expect(pr.comments.some(c => c.body === 'c150')).toBe(false);
   expect(githubStats().byFamily.issue_comments).toBe(3);
   expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/issues/5/comments') && String(u).includes('sort='))).toBe(false);
 });

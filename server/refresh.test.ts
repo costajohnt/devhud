@@ -390,7 +390,8 @@ test('a PR merged since last refresh stays merged when its enrichment rejects', 
   const comment = { author: 'rev', body: 'old', createdAt: '2026-07-01T12:00:00Z' };
   const stale = pr({ state: 'open', ciStatus: 'failing', reviewState: 'approved', comments: [comment],
     updatedAt: '2026-07-01T12:00:00Z', enriched: true, enrichedAt: '2026-07-01T12:05:00Z', enrichConfirmed: true });
-  const fresh = pr({ state: 'merged', mergedAt: '2026-07-02T00:00:00Z', ciStatus: 'unknown', updatedAt: '2026-07-02T00:00:00Z' });
+  const recent = new Date(Date.now() - 86_400_000).toISOString();
+  const fresh = pr({ state: 'merged', mergedAt: recent, ciStatus: 'unknown', updatedAt: recent });
   vi.mocked(fetchPrs).mockResolvedValueOnce({ prs: [fresh], errors: [], failedRepos: [] });
   vi.mocked(enrichPr).mockClear();
   vi.mocked(enrichPr).mockRejectedValueOnce(new Error('GitHub 502 /repos/o/r/issues/1/comments'));
@@ -404,7 +405,7 @@ test('a PR merged since last refresh stays merged when its enrichment rejects', 
   expect(item?.attention).not.toContain('ci_failing');
   expect(item?.comments.map(c => c.body)).toEqual(['old']);
   const kept = state.lastPrs?.[0];
-  expect(kept).toMatchObject({ state: 'merged', updatedAt: '2026-07-02T00:00:00Z', reviewState: 'approved', enriched: true });
+  expect(kept).toMatchObject({ state: 'merged', updatedAt: recent, reviewState: 'approved', enriched: true });
   expect(kept?.enrichConfirmed).toBeUndefined();
 
   // The copied enrichedAt predates the fresh updatedAt, so the next refresh

@@ -375,7 +375,9 @@ async function newestPages<T>(family: GithubRequestFamily, path: string, token: 
   if (!last || last < 2) return first.body;
   const pages = last === 2 ? [2] : [last - 1, last];
   const rest = await Promise.all(pages.map(n => gh<T[]>(family, `${path}?per_page=100&page=${n}`, token)));
-  return [...(last === 2 ? first.body : []), ...rest.flat()];
+  // Page 1 is kept too (it is already fetched): for reviews, a change request
+  // there that nobody superseded still blocks the merge.
+  return [...first.body, ...rest.flat()];
 }
 const newestIssueComments = (path: string, token: string) => newestPages<RawComment>('issue_comments', path, token);
 
