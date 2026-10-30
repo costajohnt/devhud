@@ -22,7 +22,7 @@ const pr = (o: Partial<Pr> = {}): Pr => ({
   ciStatus: 'passing', reviewState: 'none', comments: [], enriched: true, ...o,
 });
 const upgraded = () => { const s = emptyState(); s.ownPrs = {}; return s; };
-const build = (state: ReturnType<typeof emptyState>, cards: Card[], prs: Pr[], o: { dataAsOf?: string; errors?: { github?: string } } = {}) =>
+const build = (state: ReturnType<typeof emptyState>, cards: Card[], prs: Pr[], o: { dataAsOf?: string; errors?: { github?: string; jira?: string } } = {}) =>
   (state.snapshot = buildSnapshot({ cards, prs, state, config, errors: o.errors ?? {}, dataAsOf: o.dataAsOf }));
 const reasons = (state: ReturnType<typeof emptyState>) => state.snapshot!.queue.map(e => e.id);
 
@@ -210,4 +210,56 @@ test('card state unseen for the retention window is pruned; a failed Jira fetch 
   // An unstamped entry (older state file) gets a first sighting, not a delete.
   expect(state.cards['P-8']!.lastSeenAt).toBeTruthy();
   expect(state.cards['P-1']!.lastSeenAt).toBeTruthy();
+});
+
+// Low (queue.ts:28): a state reason's wait time was the card's Jira
+// updatedAt, which moves on every unrelated edit, so "longest waiting first"
+// was approximate for CI/review entries. It now counts from first sighting.
+const OLD = '2026-01-01T00:00:00.000Z';
+const at = (state: ReturnType<typeof emptyState>, id: string) => state.snapshot!.queue.find(e => e.id === id)?.at;
+
+test('a state-reason entry keeps its first-seen time while the card updatedAt moves', () => {
+  const state = upgraded();
+  state.queueSeen = {};
+  const red = pr({ ciStatus: 'failing' });
+  build(state, [card({ updatedAt: '2026-07-01T00:00:00.000Z' })], [red]);
+  const first = at(state, 'P-1:ci_failing')!;
+  expect(first).not.toBe('2026-07-01T00:00:00.000Z');
+  expect(state.queueSeen['P-1:ci_failing']).toBe(first);
+  build(state, [card({ updatedAt: '2026-07-20T00:00:00.000Z' })], [red]);
+  expect(at(state, 'P-1:ci_failing')).toBe(first);
+});
+
+test('a card-less PR state-reason entry keeps its first-seen time too', () => {
+  const state = upgraded();
+  state.queueSeen = { 'o/r#4:ready_to_merge': OLD };
+  build(state, [], [pr({ branch: 'no-card', reviewState: 'approved', updatedAt: '2026-07-20T00:00:00Z' })]);
+  expect(at(state, 'o/r#4:ready_to_merge')).toBe(OLD);
+});
+
+test('the first-seen time resets once the entry has left the queue', () => {
+  const state = upgraded();
+  state.queueSeen = { 'P-1:ci_failing': OLD };
+  build(state, [card()], [pr({ ciStatus: 'failing' })]);
+  expect(at(state, 'P-1:ci_failing')).toBe(OLD);
+  build(state, [card()], [pr({ ciStatus: 'passing' })]);
+  expect(state.queueSeen['P-1:ci_failing']).toBeUndefined();
+  build(state, [card()], [pr({ ciStatus: 'failing' })]);
+  expect(at(state, 'P-1:ci_failing')).not.toBe(OLD);
+});
+
+test('a state with no queueSeen seeds first-seen from updatedAt, not now', () => {
+  const state = upgraded();
+  build(state, [card({ updatedAt: '2026-07-01T00:00:00.000Z' })], [pr({ ciStatus: 'failing' })]);
+  expect(at(state, 'P-1:ci_failing')).toBe('2026-07-01T00:00:00.000Z');
+  expect(state.queueSeen!['P-1:ci_failing']).toBe('2026-07-01T00:00:00.000Z');
+});
+
+test('a failed fetch keeps first-seen times for entries it could not see', () => {
+  const state = upgraded();
+  state.queueSeen = { 'P-1:ci_failing': OLD };
+  build(state, [card()], [], { errors: { github: 'down' } });
+  expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
+  build(state, [card()], [], { errors: { jira: 'down' } });
+  expect(state.queueSeen['P-1:ci_failing']).toBe(OLD);
 });

@@ -56,9 +56,19 @@ function entry(item: Item, reason: string, statuses: JiraStatuses): QueueEntry |
   }
 }
 
+// A state reason (REASONS.stateful) has no timestamp of its own; entry()
+// stands in the card's (or card-less PR's) updatedAt, which moves on every
+// unrelated edit. seen is State.queueSeen: when this entry id first appeared
+// in the queue, stamped by buildSnapshot. Comment reasons keep their oldest
+// unread comment and review requests their requestedAt, both real times.
+const firstSeen = (e: QueueEntry, seen: Record<string, string> | undefined): QueueEntry => {
+  const at = isReason(e.reason) && REASONS[e.reason].stateful ? seen?.[e.id] : undefined;
+  return at ? { ...e, at } : e;
+};
+
 // Highest priority first; within a priority, whoever has waited longest
 // first (entries with no timestamp last).
-export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatuses, reviewRequests: ReviewRequest[] = [], unlinkedPrs: UnlinkedPr[] = []): QueueEntry[] {
+export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatuses, reviewRequests: ReviewRequest[] = [], unlinkedPrs: UnlinkedPr[] = [], seen?: Record<string, string>): QueueEntry[] {
   const out: QueueEntry[] = [];
   // The user's PRs with no card: the same PR reasons a card's PR produces,
   // rendered through the same entry() as an item keyed by the PR ref.
@@ -72,7 +82,7 @@ export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatus
     };
     for (const reason of asItem.attention) {
       const e = entry(asItem, reason, statuses);
-      if (e) out.push({ ...e, kind: 'pr', summary: `${key} ${u.title}` });
+      if (e) out.push(firstSeen({ ...e, kind: 'pr', summary: `${key} ${u.title}` }, seen));
     }
   }
   // Someone else's PR waiting on your review: no card, keyed by the PR ref.
@@ -88,7 +98,7 @@ export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatus
     for (const item of items) {
       for (const reason of item.attention) {
         const e = entry(item, reason, statuses);
-        if (e) out.push(e);
+        if (e) out.push(firstSeen(e, seen));
       }
     }
   }
@@ -101,8 +111,8 @@ export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatus
     || a.key.localeCompare(b.key));
 }
 
-export const rebuildQueue = (snap: Snapshot, statuses: JiraStatuses): void => {
-  snap.queue = buildQueue(snap.buckets, statuses, snap.reviewRequests, snap.unlinkedPrs);
+export const rebuildQueue = (snap: Snapshot, statuses: JiraStatuses, seen?: Record<string, string>): void => {
+  snap.queue = buildQueue(snap.buckets, statuses, snap.reviewRequests, snap.unlinkedPrs, seen);
 };
 
 // Whether an item's remaining attention still earns needs_attention, using
