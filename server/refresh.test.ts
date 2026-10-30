@@ -1,6 +1,9 @@
 import { test, expect, vi } from 'vitest';
 import { buildSnapshot, refresh, CELEBRATION_RETENTION_DAYS, filedFetchPlan } from './refresh.ts';
-import { emptyState } from './state.ts';
+import { emptyState, loadState } from './state.ts';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { Config, Card, Pr, FiledMeta } from './types.ts';
 
 vi.mock('./jira.ts', () => ({
@@ -812,7 +815,7 @@ test('refresh() Filed fetch: full and stamped on first run, delta within 24h, fu
     expect(state.filedMeta!.fullFetchAt).toBe('2026-10-05T00:00:01.000Z');
 
     // Account switch with a failing fetch: the old account's list is not reused.
-    state.snapshot!.filed = old;
+    state.lastFiled = old;
     fetchMock.mockRejectedValueOnce(new Error('boom'));
     const switched = await refresh({ config: { ...config, jira: { ...config.jira, accountId: 'other' } }, state });
     expect(fetchMock.mock.calls[3]![1]).toEqual([]);
@@ -856,6 +859,53 @@ test('review requests: only the failed identity\'s repos keep last-known entries
   const snap = await refresh({ config, state, quiet: true });
   expect(snap.reviewRequests.map(r => r.id).sort()).toEqual(['home/b#2', 'work/a#1']);
   expect(Object.keys(state.prs)).toEqual(['work/a#1']);
+});
+
+// The filed list and review requests fall back through their own state
+// fields, so a failed fetch serves them even with no snapshot at all.
+test('a failed filed or review-request fetch serves state.lastFiled / lastReviewRequests, not the snapshot', async () => {
+  const { fetchFiledCards } = await import('./jira.ts');
+  const { fetchReviewRequests } = await import('./github.ts');
+  const filed = [{ key: 'OTHER-3', summary: 'Filed', jiraStatus: 'To Do', jiraUrl: '', createdAt: null }];
+  const req = { id: 'o/r#9', repo: 'o/r', number: 9, url: 'u', title: 'T', author: 'sam', requestedAt: null, updatedAt: '2026-07-03T00:00:00Z', dismissed: false };
+  const state = emptyState();
+  vi.mocked(fetchFiledCards).mockResolvedValueOnce(filed);
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [req], errors: [], failedRepos: [] });
+  await refresh({ config, state, quiet: true });
+  expect(state.lastFiled).toEqual(filed);
+  expect(state.lastReviewRequests).toEqual([req]);
+
+  // The snapshot is output only: dropping it loses no fallback.
+  state.snapshot = null;
+  vi.mocked(fetchFiledCards).mockRejectedValueOnce(new Error('reporter query failed'));
+  vi.mocked(fetchReviewRequests).mockRejectedValueOnce(new Error('search down'));
+  const snap = await refresh({ config, state, quiet: true });
+  expect(snap.filed).toEqual(filed);
+  expect(snap.reviewRequests.map(r => r.id)).toEqual(['o/r#9']);
+  expect(snap.errors.github).toContain('review requests: search down');
+});
+
+// A state file from before lastFiled/lastReviewRequests holds its fallbacks
+// only in the snapshot: the first refresh reads them from there, then writes
+// the new fields. A malformed field loads as absent rather than throwing.
+test('an older state file with fallbacks only in the snapshot loads and still falls back to them', async () => {
+  const { fetchFiledCards } = await import('./jira.ts');
+  const { fetchReviewRequests } = await import('./github.ts');
+  const filed = [{ key: 'OTHER-4', summary: 'Old filed', jiraStatus: 'To Do', jiraUrl: '', createdAt: null }];
+  const req = { id: 'o/r#7', repo: 'o/r', number: 7, url: 'u', title: 'T', author: 'sam', requestedAt: null, updatedAt: '2026-07-03T00:00:00Z', dismissed: false };
+  const path = join(mkdtempSync(join(tmpdir(), 'jd-')), 'state.json');
+  writeFileSync(path, JSON.stringify({ cards: {}, snapshot: { filed, reviewRequests: [req] }, lastReviewRequests: 'junk' }));
+  const state = loadState(path);
+  expect(state.lastFiled).toBeUndefined();
+  expect(state.lastReviewRequests).toBeUndefined();
+
+  vi.mocked(fetchFiledCards).mockRejectedValueOnce(new Error('reporter query failed'));
+  vi.mocked(fetchReviewRequests).mockRejectedValueOnce(new Error('search down'));
+  const snap = await refresh({ config, state, quiet: true });
+  expect(snap.filed).toEqual(filed);
+  expect(snap.reviewRequests.map(r => r.id)).toEqual(['o/r#7']);
+  expect(state.lastFiled).toEqual(filed);
+  expect(state.lastReviewRequests).toEqual([req]);
 });
 
 // Audit 2026-10-29 M1: when a source falls back to last-known-good data, the

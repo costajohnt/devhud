@@ -113,6 +113,18 @@ test('a card-less PR gaining a card keeps its seen comments', () => {
   expect(reasons(state)).not.toContain('P-1:new_pr_comments');
 });
 
+// M22 review: pruneState drops ownPrs entries for PRs no longer open, so it has
+// to run after classifyCards has merged them into the card that just linked
+// the PR. Pruned first, the merge in the same refresh finds nothing.
+test('a card-less PR that merges as it gains a card keeps its seen comments', () => {
+  const state = upgraded();
+  const own = pr({ comments: [{ author: 'amy', body: 'nit', createdAt: '2026-07-03T00:00:00Z' }] });
+  build(state, [], [own], { dataAsOf: '2026-07-10T00:00:00.000Z' });
+  applyAction({ state, config, type: 'ack', key: 'o/r#4', reason: 'new_pr_comments' });
+  build(state, [card()], [{ ...own, state: 'merged', mergedAt: '2026-07-11T00:00:00Z' }]);
+  expect(reasons(state)).not.toContain('P-1:new_pr_comments');
+});
+
 test('a degraded repo keeps a card-less PR\'s acks instead of pruning them', () => {
   const state = upgraded();
   const red = pr({ branch: 'chore', ciStatus: 'failing' });

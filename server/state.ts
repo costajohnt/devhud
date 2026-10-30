@@ -80,6 +80,11 @@ function migrateSnapshot(state: State): State {
   if (state.snapshot && !Array.isArray(state.snapshot.reviewRequests)) {
     state.snapshot.reviewRequests = [];
   }
+  // The refresh fallbacks that moved out of the snapshot. Absent in older
+  // files; anything but an array counts as absent, so refresh falls back to
+  // the snapshot's copies instead of throwing.
+  if (!Array.isArray(state.lastFiled)) delete state.lastFiled;
+  if (!Array.isArray(state.lastReviewRequests)) delete state.lastReviewRequests;
   return state;
 }
 

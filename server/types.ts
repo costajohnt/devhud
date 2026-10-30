@@ -443,7 +443,7 @@ export interface State {
   // a fetch window. Optional: absent in pre-existing state files, which seed
   // it on the next refresh.
   doneLedger?: DoneCard[];
-  // Provenance of snapshot.filed (refresh.ts filedFetchPlan): when the last
+  // Provenance of lastFiled (refresh.ts filedFetchPlan): when the last
   // full reporter fetch ran and for which Jira account and site. The list is
   // otherwise fetched incrementally, which can never drop a deleted, moved or
   // re-reported card, so a stale stamp or a changed account/site forces a
@@ -453,6 +453,13 @@ export interface State {
   snapshot: Snapshot | null;
   lastCards: Card[] | null;
   lastPrs: Pr[] | null;
+  // The filed list and review requests the last refresh served: the
+  // fallback when their fetch fails (refresh.ts readFiled,
+  // readReviewRequests), so the snapshot is only ever output. Optional:
+  // absent in older state files, where refresh falls back to the snapshot's
+  // copies once and writes these from then on.
+  lastFiled?: FiledCard[];
+  lastReviewRequests?: ReviewRequest[];
   prLog: Record<string, PrLogEntry>;
   // Auto-transition ledger (see AutoTransitionRecord). Optional: absent in
   // pre-existing state files; loadState defaults it to {}.

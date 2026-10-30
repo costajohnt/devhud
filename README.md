@@ -87,6 +87,8 @@ Or by hand: copy `config.example.json` to `config.json` and fill in, then `chmod
   }
   ```
 
+The server and MCP read `config.json` once at startup, so restart them after editing it. The one exception is the write-back gate (`writeEnabled`, `demo`), which every write re-reads from disk; see Write-back.
+
 ### 2. Install
 
 ```bash
