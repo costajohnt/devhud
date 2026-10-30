@@ -14,6 +14,7 @@ import { refresh } from './refresh.ts';
 import { loadConfig, qualifyRepo } from './config.ts';
 import { resolveIdentity } from './github.ts';
 import { isPreTest, primaryStatus, sameStatus } from './classify.ts';
+import { basicAuth, jiraFetch, statusCategory } from './jira.ts';
 import type { Card, Config, JiraConfig, GithubConfig, State, WriteGateResult, WriteResult } from './types.ts';
 
 interface JiraTransition {
@@ -64,26 +65,14 @@ export function findTransition(transitions: JiraTransition[], targetStatusName: 
   );
 }
 
-function jiraAuth(cfg: JiraConfig): string {
-  return 'Basic ' + Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
-}
-
 export async function transitionCard(cfg: JiraConfig, key: string, targetStatusName: string | undefined): Promise<{ transitionedTo: string }> {
-  const auth = jiraAuth(cfg);
+  const auth = basicAuth(cfg);
   // performWrite already validates key against KEY_RE before this is ever
   // called; encodeURIComponent here is belt-and-braces for any other caller.
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, cfg.baseUrl);
-  const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json() as { transitions?: JiraTransition[] };
+  const data = await (await jiraFetch(url, auth)).json() as { transitions?: JiraTransition[] };
   const transition = findTransition(data.transitions ?? [], targetStatusName);
-  const postRes = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: auth, Accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ transition: { id: transition.id } }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!postRes.ok) throw new Error(`Jira ${postRes.status}: ${(await postRes.text()).slice(0, 200)}`);
+  await jiraFetch(url, auth, { transition: { id: transition.id } });
   return { transitionedTo: transition.to?.name ?? '' };
 }
 
@@ -101,13 +90,10 @@ export interface LiveStatus extends Pick<Card, 'status' | 'statusCategory'> {
 export async function getIssueStatus(cfg: JiraConfig, key: string): Promise<LiveStatus> {
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}`, cfg.baseUrl);
   url.searchParams.set('fields', 'status');
-  const res = await fetch(url, { headers: { Authorization: jiraAuth(cfg), Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json() as { fields?: { status?: { name?: string; statusCategory?: { key?: string } } } };
-  const cat = data.fields?.status?.statusCategory?.key;
+  const data = await (await jiraFetch(url, basicAuth(cfg))).json() as { fields?: { status?: { name?: string; statusCategory?: { key?: string } } } };
   return {
     status: data.fields?.status?.name ?? '',
-    statusCategory: cat === 'new' || cat === 'indeterminate' || cat === 'done' ? cat : '',
+    statusCategory: statusCategory(data.fields?.status?.statusCategory?.key),
     statusChanges: await getStatusChanges(cfg, key),
   };
 }
@@ -122,9 +108,7 @@ async function getStatusChanges(cfg: JiraConfig, key: string): Promise<{ to: str
     const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/changelog`, cfg.baseUrl);
     url.searchParams.set('startAt', String(startAt));
     url.searchParams.set('maxResults', '100');
-    const res = await fetch(url, { headers: { Authorization: jiraAuth(cfg), Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    return await res.json() as Page;
+    return await (await jiraFetch(url, basicAuth(cfg))).json() as Page;
   };
   let p = await page(0);
   if ((p.total ?? 0) > 100) p = await page((p.total ?? 0) - 100);
@@ -141,13 +125,7 @@ export async function commentCard(cfg: JiraConfig, key: string, body: string): P
   // See transitionCard: belt-and-braces encodeURIComponent, key is already
   // validated by performWrite before reaching this function.
   const url = new URL(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, cfg.baseUrl);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: jiraAuth(cfg), Accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ body: buildAdfDoc(body) }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const res = await jiraFetch(url, basicAuth(cfg), { body: buildAdfDoc(body) });
   let id: unknown;
   try { id = ((await res.json()) as { id?: unknown } | null)?.id; } catch { id = undefined; }
   return id != null && id !== '' ? { commentId: String(id) } : {};
