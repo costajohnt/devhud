@@ -243,6 +243,25 @@ export interface Item {
   pinnedAt: string | null;
 }
 
+// One entry in the TODO queue (server/queue.ts): a single pending thing on
+// one card, e.g. CI failing or unread PR comments. id is `${key}:${reason}`.
+export interface QueueEntry {
+  id: string;
+  key: string;
+  summary: string;
+  reason: string;
+  // 1 = blocking someone or broken, 2 = waiting on a reply, 3 = housekeeping.
+  priority: 1 | 2 | 3;
+  title: string;
+  // Extra context: the failing checks, or the newest unread comment.
+  detail: string | null;
+  // Where to go to address it (the PR or the Jira card).
+  url: string;
+  // How long it has been waiting: the oldest unread comment, else the card's
+  // last update.
+  at: string | null;
+}
+
 export interface TodoItem {
   key: string;
   summary: string;
@@ -301,6 +320,9 @@ export interface Snapshot {
   updatedAt: string | null;
   errors: { jira: string | null; github: string | null };
   buckets: Record<Bucket, Item[]>;
+  // Ranked TODO queue derived from buckets (server/queue.ts). Absent in
+  // snapshots persisted before it existed; migrateSnapshot backfills [].
+  queue: QueueEntry[];
   todo: TodoItem[];
   // Jira "Blocked" cards, split out of the board the same way as todo.
   // Not a Bucket: the classifier never sees them, and they are not a

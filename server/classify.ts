@@ -23,7 +23,7 @@ const isIgnoredAuthor = (name: string | null | undefined, ignore: string[]): boo
 // reasons, which the lastSeen* watermarks govern). Only these may live in
 // CardState.ackedReasons — ack recording (actions.ts) and the pruning below
 // both filter against this list so the two files can't drift.
-export const STATE_REASONS: readonly string[] = ['ci_failing', 'merged_not_in_test', 'missing_qa_instructions', 'missing_fix_version'];
+export const STATE_REASONS: readonly string[] = ['ci_failing', 'changes_requested', 'ready_to_merge', 'merged_not_in_test', 'missing_qa_instructions', 'missing_fix_version'];
 
 // A card has a lifecycle state (its Jira status / PR state) and it has pending
 // events. Needs Attention is an overlay on the second axis, so only reasons
@@ -86,6 +86,12 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   // Unknown flags too, except while the base branch's own CI is still running
   // and there is no earlier verdict to go on (#86).
   if (pr?.ciStatus === 'failing' && pr.state === 'open' && ciFailureIsNew(pr)) attention.push('ci_failing');
+
+  // Review outcomes on an open PR are TODO items, not routing: the bucket
+  // already reflects the review state, the badge puts it on the queue.
+  // ready_to_merge waits for green CI so the two never contradict.
+  if (pr?.state === 'open' && pr.reviewState === 'changes_requested') attention.push('changes_requested');
+  if (pr?.state === 'open' && !pr.isDraft && pr.reviewState === 'approved' && !attention.includes('ci_failing')) attention.push('ready_to_merge');
 
   for (const c of pr?.comments ?? []) {
     if (!selfNames.has(c.author.toLowerCase()) && !isIgnoredAuthor(c.author, ignoreAuthors) && after(c.createdAt, cs.lastSeenPr)) {

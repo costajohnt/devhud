@@ -11,7 +11,7 @@ export function TodoSection({ data }: { data: DashboardData }) {
     <section id="todo" class="pr-section">
       <div class="pr-section-header">
         <span class="pr-section-dot muted" />
-        <span class="pr-section-title">Todo</span>
+        <span class="pr-section-title">Backlog</span>
         <span class="pr-section-count">{data.todo.length}</span>
       </div>
       {data.todo.map(t => (

@@ -68,6 +68,10 @@ Acknowledges a card's attention flags:
 - If the card was in `needs_attention`, moves it out: to its existing override bucket if one is set (`cardState.override`), otherwise to wherever the classifier would put it — the same order `classifyCard` uses, including the draft-PR rule that outranks everything else. (Both this and `unpin` call one shared `classifierDest` helper, so an acked card can't land somewhere the next refresh immediately undoes.)
 - Does **not** clear a prior override. Acking only dismisses the attention flags; it doesn't undo a previous manual move — that's what `unpin` is for.
 
+With an optional `reason` (one of the queue reasons below), the ack dismisses just that one TODO entry: `{ "type": "ack", "key": "PROJ-123", "reason": "new_pr_comments" }`. `new_pr_comments` advances only `lastSeenPr`, `new_jira_comments` only `lastSeenJira`, and any other reason is added to `cardState.ackedReasons` (muted while it stays continuously true). The card's other attention reasons and its other source's comments are untouched. If the card was in `needs_attention` and nothing left on it routes there, it moves out the same way a full ack moves it. `reason` on any other action type, or an unknown reason, is a `400`.
+
+Every action rebuilds `queue` from the edited snapshot before it is saved and broadcast.
+
 ### `type: "move"`
 
 Pins a card to a specific bucket:
@@ -159,7 +163,8 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
   buckets: {
     needs_attention: Item[], in_progress: Item[], self_review: Item[], waiting_review: Item[], mergeable: Item[], qa_ready: Item[], in_qa: Item[]
   },
-  todo: TodoItem[],
+  queue: QueueEntry[],              // the ranked TODO queue, see below
+  todo: TodoItem[],                 // Jira To Do cards with no PR (the "Backlog" section)
   blocked: TodoItem[],              // Jira Blocked cards, split out like todo
   unlinkedPrs: UnlinkedPr[],
   doneCards: DoneCard[],           // lifetime ledger of cards Jira has marked Done, newest first — drives the /done page
@@ -216,6 +221,26 @@ The full snapshot returned by `/api/refresh` and (once populated) `/api/data`:
 `ciNewFailures` is present only while `ciStatus` is `'failing'`: the failed checks that are not also failing on the PR's base branch. `[]` means every failure is pre-existing on the base, so the card gets no `ci_failing` reason; absent means the comparison was not possible and the card is flagged as before, unless `ciBasePending` is `true`: the base branch's CI is still running, so the verdict is unknown and the card is not flagged (refresh carries over the previous verdict for the same PR when it has one). The board shows such a PR as "CI red, base running".
 
 `isDraft` is `true` for a GitHub draft PR. An open draft routes the card to `self_review` unless the card is in a review status, and never to `mergeable`.
+
+### QueueEntry (TODO queue)
+
+Built by `server/queue.ts` from every board item's `attention` list: one entry per (card, reason).
+
+```
+{
+  id: string,            // "<key>:<reason>"
+  key: string, summary: string,
+  reason: 'ci_failing' | 'changes_requested' | 'new_pr_comments' | 'new_jira_comments'
+        | 'merged_not_in_test' | 'ready_to_merge' | 'missing_qa_instructions' | 'missing_fix_version',
+  priority: 1 | 2 | 3,   // 1 broken or blocking someone, 2 waiting on a reply, 3 housekeeping
+  title: string,         // e.g. "2 new PR comments from amy, bob"
+  detail: string | null, // the failing checks, or the newest unread comment
+  url: string,           // the PR or the Jira card to act on
+  at: string | null      // how long it has waited: oldest unread comment, else the card's last update
+}
+```
+
+Sorted by priority, then `at` ascending (longest waiting first, missing timestamps last), then reason order (the order of the union above), then key. `new_jira_comments` is priority 1 on a card in the In Test status, otherwise 2.
 
 ### TodoItem
 

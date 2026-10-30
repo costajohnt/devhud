@@ -62,9 +62,9 @@ test('an emptied bucket is not an event', () => {
   expect(next).toEqual([]);
 });
 
-test('copy names the card when there is one and counts them when there are several', () => {
-  expect(notificationText([card('P-1', 'Fix login redirect')]))
-    .toEqual({ title: 'P-1 needs attention', body: 'Fix login redirect' });
-  expect(notificationText([card('P-1'), card('P-2')]))
-    .toEqual({ title: '2 cards need attention', body: 'P-1, P-2' });
+test('copy shows the entry when there is one and counts them when there are several', () => {
+  expect(notificationText([card('P-1:ci_failing', 'P-1: CI failing on o/r#1')]))
+    .toEqual({ title: 'New TODO', body: 'P-1: CI failing on o/r#1' });
+  expect(notificationText([card('P-1', 'a'), card('P-2', 'b')]))
+    .toEqual({ title: '2 new TODOs', body: 'a\nb' });
 });

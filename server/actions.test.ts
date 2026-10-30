@@ -18,7 +18,7 @@ function stateWithItem(overrides: Partial<Snapshot> = {}) {
   const state = emptyState();
   state.snapshot = {
     updatedAt: '2026-07-01T00:00:00Z',
-    errors: { jira: null, github: null },
+    errors: { jira: null, github: null }, queue: [],
     buckets: {
       needs_attention: [{
         key: 'P-1', summary: 'S', jiraStatus: 'In Progress', jiraUrl: 'https://x/browse/P-1', bucket: 'needs_attention',

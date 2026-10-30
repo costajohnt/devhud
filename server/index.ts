@@ -246,8 +246,8 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
           const be = bodyError(e);
           return send(be.status, { error: be.error });
         }
-        const { type, key, bucket } = body as { type?: string; key?: unknown; bucket?: string };
-        const result = applyAction({ state, config, type: type ?? '', key, bucket });
+        const { type, key, bucket, reason } = body as { type?: string; key?: unknown; bucket?: string; reason?: unknown };
+        const result = applyAction({ state, config, type: type ?? '', key, bucket, reason });
         if ('error' in result) return send(result.status ?? 400, { error: result.error });
         try {
           saveState(statePath, state);

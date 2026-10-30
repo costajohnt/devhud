@@ -6,6 +6,7 @@ import type { Bucket } from './types.js';
 import { useBoardFilter, BoardStats, BoardFilterBar, BoardList } from './board.js';
 import { Detail } from './detail.js';
 import { Extras, TodoSection, BlockedSection } from './extras.js';
+import { QueuePanel } from './queue.js';
 import { DonePage } from './done.js';
 import { FiledPage } from './filed.js';
 import { fireConfetti } from './celebrate.js';
@@ -163,14 +164,14 @@ function AppContent() {
     return () => clearInterval(id);
   }, []);
 
-  // Glanceable tab title: a backgrounded tab shows "(2) devhud" when cards need
-  // attention.
+  // Glanceable tab title: a backgrounded tab shows "(2) devhud" when two
+  // things are on the TODO queue.
   useEffect(() => {
-    const n = data?.buckets.needs_attention.length ?? 0;
+    const n = data?.queue.length ?? 0;
     document.title = n > 0 ? `(${n}) devhud` : 'devhud';
   }, [data]);
 
-  // Desktop notification when a card newly enters Needs Attention. The title
+  // Desktop notification when a new entry lands on the TODO queue. The title
   // badge above only helps if the tab is on screen; this is what makes
   // leave-it-running mode work when it isn't. All the rules (skip the connect
   // replay, key-based rather than count-based, only while hidden) live in
@@ -178,7 +179,7 @@ function AppContent() {
   const seenAttention = useRef<string[] | undefined>(undefined);
   useEffect(() => {
     if (!data) return;
-    const cards = data.buckets.needs_attention.map(i => ({ key: i.key, summary: i.summary }));
+    const cards = data.queue.map(e => ({ key: e.id, summary: `${e.key}: ${e.title}` }));
     const { fire, next } = decideNotification(seenAttention.current, cards, {
       enabled: notifyOn,
       permission: notificationPermission(),
@@ -309,10 +310,10 @@ function AppContent() {
                 onClick={() => { void flipNotify(); }}
                 type="button"
                 aria-pressed={notifyOn}
-                aria-label={notifyOn ? 'Turn off attention notifications' : 'Turn on attention notifications'}
+                aria-label={notifyOn ? 'Turn off TODO notifications' : 'Turn on TODO notifications'}
                 title={notifyOn
-                  ? 'Notifying when a card needs attention'
-                  : 'Notify me when a card needs attention'}
+                  ? 'Notifying when something lands on your TODO list'
+                  : 'Notify me when something lands on my TODO list'}
               >
                 {notifyOn ? '🔔' : '🔕'}
               </button>
@@ -352,6 +353,9 @@ function AppContent() {
           <FiledPage data={data} />
         ) : path === '/' ? (
           <>
+            <div class="animate-in">
+              <QueuePanel data={data} onSelect={selectRow} act={onAct} actionInFlight={actionInFlight} />
+            </div>
             <BoardStats data={data} />
             <BoardFilterBar board={board} />
             <div class="dashboard-content animate-in delay-3">

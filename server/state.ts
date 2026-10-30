@@ -77,6 +77,10 @@ function migrateSnapshot(state: State): State {
   if (state.snapshot && !Array.isArray(state.snapshot.filed)) {
     state.snapshot.filed = [];
   }
+  // The next refresh rebuilds it; empty until then is the honest value.
+  if (state.snapshot && !Array.isArray(state.snapshot.queue)) {
+    state.snapshot.queue = [];
+  }
   return state;
 }
 
@@ -168,7 +172,7 @@ export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
-    todo: [], blocked: [], unlinkedPrs: [],
+    queue: [], todo: [], blocked: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     prLog: [], filed: [],
   };

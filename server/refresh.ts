@@ -1,5 +1,6 @@
 import { cardState } from './state.ts';
 import { linkPrsToCards, unlinked } from './link.ts';
+import { buildQueue } from './queue.ts';
 import { classifyCard, markReachedTest, isTodo, isDone, isCanceled, isBlocked, githubNewComment, jiraNewComment } from './classify.ts';
 import { fetchJiraCards, fetchFiledCards, doneWatermark } from './jira.ts';
 import { fetchPrs, enrichPr, isThrottleMessage, resetGithubStats, formatGithubStats } from './github.ts';
@@ -236,7 +237,7 @@ export function buildSnapshot({ cards, prs, state, config, errors, degradedPrRep
   return {
     updatedAt: new Date().toISOString(),
     errors: { jira: errors.jira ?? null, github: errors.github ?? null },
-    buckets, todo, blocked,
+    buckets, queue: buildQueue(buckets, statuses), todo, blocked,
     unlinkedPrs: unlinked(prs, linked).filter(p => p.state === 'open')
       .map(p => ({ repo: p.repo, number: p.number, url: p.url, title: p.title, state: p.state })),
     // Done page and counter both come from the lifetime ledger, so they agree

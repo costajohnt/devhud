@@ -1,4 +1,4 @@
-// Desktop notifications for cards entering Needs Attention.
+// Desktop notifications for new TODO queue entries.
 //
 // The decision half is pure (same split as live-event.ts) so the rules below
 // are testable in node without a Notification API or a DOM.
@@ -51,12 +51,12 @@ export function decideNotification(
   return { fire: cards.filter(c => !before.has(c.key)), next };
 }
 
-/** Notification copy: name the card when there's one, count them when there are several. */
+/** Notification copy for new TODO entries: the entry itself when there's one, a count when there are several. */
 export function notificationText(fire: AttentionCard[]): { title: string; body: string } {
   if (fire.length === 1) {
-    return { title: `${fire[0]!.key} needs attention`, body: fire[0]!.summary };
+    return { title: 'New TODO', body: fire[0]!.summary };
   }
-  return { title: `${fire.length} cards need attention`, body: fire.map(c => c.key).join(', ') };
+  return { title: `${fire.length} new TODOs`, body: fire.map(c => c.summary).join('\n') };
 }
 
 // --- imperative half: everything below touches the Notification API ---
