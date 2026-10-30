@@ -8,7 +8,6 @@ import { Detail } from './detail.js';
 import { Extras, TodoSection, BlockedSection } from './extras.js';
 import { DonePage } from './done.js';
 import { FiledPage } from './filed.js';
-import { SimonRunsPage, SimonRunPage } from './simon.js';
 import { fireConfetti } from './celebrate.js';
 import { readStorage, writeStorage } from './storage.js';
 import { SkeletonLoader } from './skeleton-loader.js';
@@ -59,13 +58,6 @@ function formatUpdated(iso: string | null): string {
 // nothing after mount. Reading `path` from useLocation() and branching in
 // plain JS (as the reference dashboard this app follows does) sidesteps
 // that memoization entirely.
-
-// decodeURIComponent throws URIError on malformed percent-encoding (/simon/%zz
-// from a mangled link); during render that would white-screen the whole app,
-// so a bad segment falls through to the not-found branch instead.
-function safeDecode(segment: string): string | null {
-  try { return decodeURIComponent(segment); } catch { return null; }
-}
 
 // Screen-reader text for a successful /api/action call; null for any action
 // shape we don't recognize (nothing is announced rather than something vague).
@@ -171,11 +163,11 @@ function AppContent() {
     return () => clearInterval(id);
   }, []);
 
-  // Glanceable tab title: a backgrounded tab shows "(2) simon" when cards need
+  // Glanceable tab title: a backgrounded tab shows "(2) devhud" when cards need
   // attention.
   useEffect(() => {
     const n = data?.buckets.needs_attention.length ?? 0;
-    document.title = n > 0 ? `(${n}) simon` : 'simon';
+    document.title = n > 0 ? `(${n}) devhud` : 'devhud';
   }, [data]);
 
   // Desktop notification when a card newly enters Needs Attention. The title
@@ -298,7 +290,7 @@ function AppContent() {
       <header class="dashboard-header">
         <div class="header-brand">
           <img class="header-icon" src="/favicon.svg" alt="" width="32" height="32" />
-          <h1>simon</h1>
+          <h1>devhud</h1>
         </div>
         <div class="header-bar">
           <div class="header-stats">
@@ -307,7 +299,6 @@ function AppContent() {
             <span><span class="val" style={{ color: 'var(--purple)' }}>{data.doneTotal}</span> done</span>
           </div>
           <div class="header-right">
-            <a class="header-link" href="/simon">runs</a>
             <span class="last-updated">{formatUpdated(data.updatedAt)}</span>
             <button class="celebrate-btn" onClick={() => { void celebrate(); }} type="button" aria-label="Celebrate" title="Celebrate">
               🎉
@@ -359,10 +350,6 @@ function AppContent() {
           <DonePage data={data} />
         ) : path === '/filed' ? (
           <FiledPage data={data} />
-        ) : path === '/simon' ? (
-          <SimonRunsPage />
-        ) : path.startsWith('/simon/') && safeDecode(path.slice('/simon/'.length)) !== null ? (
-          <SimonRunPage id={safeDecode(path.slice('/simon/'.length))!} />
         ) : path === '/' ? (
           <>
             <BoardStats data={data} />

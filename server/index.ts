@@ -8,7 +8,6 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { listRuns, readRun } from './simon.ts';
 import { writePidFile } from './transport.ts';
 import type { Config, State, Snapshot } from './types.ts';
 
@@ -287,22 +286,6 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         if (!('demo' in result && result.demo)) saveState(statePath, state);
         if (state.snapshot) broadcast(state.snapshot, { force: true });
         return send(200, result);
-      }
-      // Simon executor runs: read-only local file scans, deliberately outside
-      // the DashboardData snapshot/SSE cycle (cheap enough to serve on demand,
-      // and run telemetry shouldn't bloat every broadcast).
-      if (url.pathname === '/api/simon/runs' && req.method === 'GET') {
-        return send(200, await listRuns(config));
-      }
-      const runMatch = url.pathname.match(/^\/api\/simon\/runs\/([^/]+)$/);
-      if (runMatch && req.method === 'GET') {
-        // Malformed percent-encoding (e.g. %zz) makes decodeURIComponent throw
-        // URIError — that's client garbage, so it gets the same 404 as any
-        // other invalid id, not the generic 500.
-        let id: string;
-        try { id = decodeURIComponent(runMatch[1]!); } catch { return send(404, { error: 'run not found' }); }
-        const run = await readRun(config, id);
-        return run ? send(200, run) : send(404, { error: 'run not found' });
       }
       if (url.pathname.startsWith('/api/')) {
         return send(404, { error: 'not found' });

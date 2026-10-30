@@ -173,9 +173,7 @@ export function classifyCard({ card, pr, cs, statuses, username, usernames, igno
   }
   cs.lastStatus = card.status;
 
-  // A draft PR is the executor's "I finished, you look at it first" signal
-  // (github.ts maps a `Draft` label onto isDraft, which is how Simon marks
-  // every PR it opens). Moving the Jira card to a review status is the
+  // A draft PR is the author's "not ready for others yet" signal. Moving the Jira card to a review status is the
   // operator answering "I have looked, it is out for peer review" — an
   // explicit lifecycle statement, so the draft no longer holds the card in
   // Self Review Needed (#53). Same principle as #42: a card belongs in the

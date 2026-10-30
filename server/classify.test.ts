@@ -355,9 +355,8 @@ test('an approved PR still beats a Code Review status', () => {
   expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ reviewState: 'approved' }), cs: cs() }).bucket).toBe('mergeable');
 });
 
-// The draft PR is the one exception, reversed by #53: Simon labels every PR it
-// opens `Draft`, so "PR state is more specific" left every executor-shipped card
-// stuck in Self Review Needed. Moving the card to a review status is the
+// The draft PR is the one exception, reversed by #53: "PR state is more
+// specific" left a card with a draft PR stuck in Self Review Needed. Moving the card to a review status is the
 // operator overriding that. An approved PR (above) still wins.
 test('a draft PR yields to a Code Review status (#53)', () => {
   expect(classifyCard({ ...base, card: card({ status: 'Code Review' }), pr: pr({ isDraft: true }), cs: cs() }).bucket).toBe('waiting_review');
@@ -442,9 +441,8 @@ test('sameStatus never matches a blank or missing status', () => {
   expect(sameStatus(' Done ', 'done')).toBe(true);
 });
 
-// #53. Simon labels every PR it opens "Draft" (github.ts maps that label to
-// isDraft), so its cards sit in Self Review Needed until the label comes off.
-// Moving the Jira card to Code Review is the operator saying "I have reviewed
+// #53. A card with a draft PR sits in Self Review Needed until the PR is
+// marked ready. Moving the Jira card to Code Review is the operator saying "I have reviewed
 // this, it is out for peer review" — an explicit lifecycle statement that the
 // draft rule used to outrank, leaving the card in Self Review Needed forever.
 test('a draft PR whose card is in a review status -> waiting_review (#53)', () => {

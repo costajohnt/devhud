@@ -9,7 +9,7 @@ afterEach(() => vi.unstubAllGlobals());
 const gqlPr = (o: Partial<Parameters<typeof mapPr>[0]> = {}) => ({
   number: 7, url: 'u', title: 'T', body: 'B', headRefName: 'PROJ-1-x', state: 'OPEN', isDraft: false,
   createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-07-01T00:00:00Z', mergedAt: null, closedAt: null,
-  labels: { nodes: [] }, reviewRequests: { totalCount: 0 },
+  reviewRequests: { totalCount: 0 },
   commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
   ...o,
 });
@@ -33,7 +33,7 @@ const fakeGithub = (nodes: Record<string, unknown[]> | ((q: string) => unknown),
 test('mapPr basic fields, merged state, CI from the head commit rollup, pending review request', () => {
   const p = mapPr(gqlPr({ state: 'MERGED', mergedAt: '2026-07-01T00:00:00Z' }), 'org/r');
   expect(p).toMatchObject({ repo: 'org/r', number: 7, branch: 'PROJ-1-x', state: 'merged', ciStatus: 'unknown', reviewState: 'none', isDraft: false });
-  const open = mapPr(gqlPr({ reviewRequests: { totalCount: 2 }, labels: { nodes: [{ name: 'Draft' }] } }), 'org/r');
+  const open = mapPr(gqlPr({ reviewRequests: { totalCount: 2 }, isDraft: true }), 'org/r');
   expect(open).toMatchObject({ state: 'open', ciStatus: 'passing', reviewState: 'review_required', isDraft: true });
   expect(mapPr(gqlPr({ state: 'CLOSED', closedAt: '2026-07-02T00:00:00Z' }), 'org/r')).toMatchObject({ state: 'closed', closedAt: '2026-07-02T00:00:00Z' });
 });

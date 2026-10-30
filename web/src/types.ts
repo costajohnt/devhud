@@ -54,20 +54,3 @@ export interface DashboardData {
 export interface TodoItem { key: string; summary: string; jiraUrl: string; createdAt: string | null }
 
 export interface FiledCard { key: string; summary: string; jiraStatus: string; jiraUrl: string; createdAt: string | null }
-
-// --- Simon executor runs (mirrors server/types.ts, same duplication
-// convention as the payload shapes above) ---
-
-export type SimonEvent = { ts: string; event: string } & Record<string, unknown>;
-
-export interface SimonRunSummary {
-  id: string; key: string;
-  startedAt: string | null; endedAt: string | null;
-  outcome: string | null; haltedAt: string | null;
-  phase: string | null; class: string | null;
-  durationS: number | null; lastEventAt: string | null;
-}
-
-export interface SimonRunsPayload { configured: boolean; runs: SimonRunSummary[]; statusError?: string }
-
-export interface SimonRunDetail { id: string; key: string; events: SimonEvent[] }
