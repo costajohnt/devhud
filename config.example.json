@@ -24,7 +24,6 @@
     "username": "REPLACE"
   },
   "ignoreAuthors": [
-    "John",
     "Rovo"
   ],
   "port": 3010,

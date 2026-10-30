@@ -7,28 +7,35 @@
 
 // --- Config ---
 
+// One status name, or several that mean the same thing to the board (e.g.
+// ["Code Review", "PR Review"]). Every comparison goes through sameStatus,
+// which accepts either form.
+export type StatusNames = string | string[];
+
 export interface JiraStatuses {
-  todo: string;
-  inTest: string;
-  done: string;
+  todo: StatusNames;
+  // When a list, the first entry is the transition target for
+  // autoTransitionMerged.
+  inTest: StatusNames;
+  done: StatusNames;
   // Status name that means the work was abandoned (Jira puts it in the Done
   // category, but it is not a completion). Cards in this status are excluded
   // from the whole dashboard. Optional so existing { todo, inTest, done }
   // config/test fixtures keep working; defaults to 'Canceled' in loadConfig.
-  canceled?: string;
+  canceled?: StatusNames;
   // Status name that means the work is out for review. Optional: the two
   // common Jira defaults ('Code Review', 'In Review') are always recognised,
   // so this only needs setting for a project that renamed it (#64).
-  review?: string;
+  review?: StatusNames;
   // Status name that means the work is parked waiting on something outside
   // the developer. Optional so existing { todo, inTest, done } config/test
   // fixtures keep working; defaults to 'Blocked' in loadConfig.
-  blocked?: string;
+  blocked?: StatusNames;
   // Status name for active development. Together with review it forms the
   // "pre-test" allowlist: the only statuses merged_not_in_test may flag and
   // auto-transition may move from (see isPreTest in classify.ts). Optional;
   // defaults to 'In Progress'.
-  inProgress?: string;
+  inProgress?: StatusNames;
 }
 
 // Jira status categories: every status rolls up to one of these three. Used

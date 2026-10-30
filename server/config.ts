@@ -5,9 +5,10 @@ import type { Config, JiraStatuses, GithubIdentity } from './types.ts';
 const DEFAULT_STATUSES: JiraStatuses = { todo: 'To Do', inTest: 'In Test', done: 'Done', canceled: 'Canceled', blocked: 'Blocked' };
 
 // Comment authors whose comments never trigger triage or enter the actionable
-// queue: the user themselves and Atlassian's Rovo agent. Overridable via
+// queue. Your own comments are already excluded by Jira accountId and GitHub
+// username, so the default only mutes Atlassian's Rovo agent. Overridable via
 // config.json's top-level "ignoreAuthors".
-const DEFAULT_IGNORE_AUTHORS = ['John', 'Rovo'];
+const DEFAULT_IGNORE_AUTHORS = ['Rovo'];
 
 // Loose shape of whatever JSON.parse hands back for config.json: every field
 // optional/untyped until the validation below confirms it's present, at
@@ -192,6 +193,15 @@ export function loadConfig(path: string = fileURLToPath(new URL('../config.json'
 
   const allUsernames = [...new Set(identities.map(id => id.username))];
   const firstIdentity = identities[0]!;
+
+  // Each status is one name or a non-empty list of names. A wrong shape would
+  // otherwise silently never match and misroute every card.
+  for (const [k, v] of Object.entries(jira.statuses ?? {})) {
+    const names = Array.isArray(v) ? v : [v];
+    if (!names.length || names.some(n => typeof n !== 'string' || !n.trim())) {
+      throw new Error(`config at ${path} has an invalid "jira.statuses.${k}" (${JSON.stringify(v)}); must be a status name or a non-empty list of names`);
+    }
+  }
 
   // Off by default: write-back (Jira transitions/comments, PR comments) must
   // be explicitly opted into. See server/writeback.ts's checkWriteGate.
