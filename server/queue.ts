@@ -3,19 +3,19 @@
 // snapshot's bucket items, so it is rebuilt after every refresh and every
 // action and can never drift from the badges the board shows.
 import { ROUTING_REASONS, primaryStatus, sameStatus } from './classify.ts';
-import type { Bucket, Item, JiraStatuses, QueueEntry, Snapshot } from './types.ts';
+import type { Bucket, Item, JiraStatuses, QueueEntry, ReviewRequest, Snapshot } from './types.ts';
 
 // Every reason the queue knows how to render. Also the allowlist for a
 // per-reason ack (actions.ts), so an ack can't name something the queue
 // would never show.
 export const QUEUE_REASONS: readonly string[] = [
-  'ci_failing', 'changes_requested', 'new_pr_comments', 'new_jira_comments',
+  'ci_failing', 'changes_requested', 'review_requested', 'new_pr_comments', 'new_jira_comments',
   'merged_not_in_test', 'ready_to_merge', 'missing_qa_instructions', 'missing_fix_version',
 ];
 
 const BASE_PRIORITY: Record<string, 1 | 2 | 3> = {
   ci_failing: 1, changes_requested: 1,
-  new_pr_comments: 2, new_jira_comments: 2, merged_not_in_test: 2,
+  review_requested: 2, new_pr_comments: 2, new_jira_comments: 2, merged_not_in_test: 2,
   ready_to_merge: 3, missing_qa_instructions: 3, missing_fix_version: 3,
 };
 
@@ -25,7 +25,7 @@ const authors = (names: string[]) => [...new Set(names)].join(', ');
 function entry(item: Item, reason: string, statuses: JiraStatuses): QueueEntry | null {
   const pr = item.pr;
   const prName = pr ? `${pr.repo}#${pr.number}` : '';
-  const base = { id: `${item.key}:${reason}`, key: item.key, summary: item.summary, reason, priority: BASE_PRIORITY[reason]!, detail: null as string | null, at: item.updatedAt };
+  const base = { id: `${item.key}:${reason}`, kind: 'card' as const, key: item.key, summary: item.summary, reason, priority: BASE_PRIORITY[reason]!, detail: null as string | null, at: item.updatedAt };
   switch (reason) {
     case 'ci_failing':
       return pr && { ...base, title: `CI failing on ${prName}`, url: pr.url, detail: pr.ciNewFailures?.length ? pr.ciNewFailures.join(', ') : null };
@@ -66,8 +66,17 @@ function entry(item: Item, reason: string, statuses: JiraStatuses): QueueEntry |
 
 // Highest priority first; within a priority, whoever has waited longest
 // first (entries with no timestamp last).
-export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatuses): QueueEntry[] {
+export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatuses, reviewRequests: ReviewRequest[] = []): QueueEntry[] {
   const out: QueueEntry[] = [];
+  // Someone else's PR waiting on your review: no card, keyed by the PR ref.
+  for (const rr of reviewRequests) {
+    if (rr.dismissed) continue;
+    out.push({
+      id: `${rr.id}:review_requested`, kind: 'pr', key: rr.id, summary: rr.title, reason: 'review_requested',
+      priority: BASE_PRIORITY.review_requested!, title: `Review requested: ${rr.id} ${rr.title}${rr.author ? ` (${rr.author})` : ''}`,
+      detail: null, url: rr.url, at: rr.requestedAt ?? rr.updatedAt,
+    });
+  }
   for (const items of Object.values(buckets)) {
     for (const item of items) {
       for (const reason of item.attention) {
@@ -86,7 +95,7 @@ export function buildQueue(buckets: Record<Bucket, Item[]>, statuses: JiraStatus
 }
 
 export const rebuildQueue = (snap: Snapshot, statuses: JiraStatuses): void => {
-  snap.queue = buildQueue(snap.buckets, statuses);
+  snap.queue = buildQueue(snap.buckets, statuses, snap.reviewRequests);
 };
 
 // Whether an item's remaining attention still earns needs_attention, using

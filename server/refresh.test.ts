@@ -13,6 +13,7 @@ vi.mock('./jira.ts', () => ({
 vi.mock('./github.ts', async (importOriginal) => ({
   ...await importOriginal<typeof import('./github.ts')>(),
   fetchPrs: vi.fn(() => Promise.resolve({ prs: [], errors: [] })),
+  fetchReviewRequests: vi.fn(() => Promise.resolve({ requests: [], errors: [] })),
   enrichPr: vi.fn((p: Pr) => Promise.resolve(p)),
 }));
 
@@ -816,4 +817,23 @@ test('refresh() Filed fetch: full and stamped on first run, delta within 24h, fu
   } finally {
     vi.useRealTimers();
   }
+});
+
+test('review requests: a failed fetch keeps the last list; a clean fetch prunes stale dismissals', async () => {
+  const { fetchReviewRequests } = await import('./github.ts');
+  const req = { id: 'o/r#9', repo: 'o/r', number: 9, url: 'u', title: 'T', author: 'sam', requestedAt: null, updatedAt: '2026-07-03T00:00:00Z', dismissed: false };
+  const state = emptyState();
+  state.prs = { 'o/r#9': { dismissedAt: '2026-07-01T00:00:00Z' }, 'o/r#1': { dismissedAt: '2026-07-01T00:00:00Z' } };
+
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [req], errors: [] });
+  const first = await refresh({ config, state, quiet: true });
+  expect(first.reviewRequests.map(r => r.id)).toEqual(['o/r#9']);
+  expect(first.queue.map(e => e.id)).toContain('o/r#9:review_requested');
+  expect(Object.keys(state.prs)).toEqual(['o/r#9']);
+
+  vi.mocked(fetchReviewRequests).mockResolvedValueOnce({ requests: [], errors: ['review requests (me): 502'] });
+  const second = await refresh({ config, state, quiet: true });
+  expect(second.reviewRequests.map(r => r.id)).toEqual(['o/r#9']);
+  expect(second.errors.github).toContain('review requests (me): 502');
+  expect(Object.keys(state.prs)).toEqual(['o/r#9']);
 });

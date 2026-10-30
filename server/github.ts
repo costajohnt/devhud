@@ -1,4 +1,4 @@
-import type { Pr, PrComment, GithubConfig, CiStatus, ReviewState } from './types.ts';
+import type { Pr, PrComment, GithubConfig, CiStatus, ReviewState, ReviewRequest } from './types.ts';
 
 // Minimal shapes for the slices of the GitHub responses this file actually
 // reads — not full API types, just what's used below. PR discovery is one
@@ -419,6 +419,64 @@ fragment Checks on StatusCheckRollup {
 }`;
 
 interface PrSearchData { search?: { nodes?: (Partial<GqlPr> | null)[] | null } | null }
+
+const REVIEW_REQUEST_SEARCH = `query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number url title updatedAt
+        author { login }
+        repository { nameWithOwner }
+        timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 1) { nodes { ... on ReviewRequestedEvent { createdAt } } }
+      }
+    }
+  }
+}`;
+
+interface ReviewRequestNode {
+  number?: number; url?: string; title?: string; updatedAt?: string;
+  author?: { login?: string } | null;
+  repository?: { nameWithOwner?: string } | null;
+  timelineItems?: { nodes?: ({ createdAt?: string } | null)[] | null } | null;
+}
+
+// Open, non-draft PRs in the configured repos that request this user's
+// review (directly or via a team). One search per identity, not per repo:
+// repo: qualifiers OR together, so the extra cost is one request a refresh.
+export async function fetchReviewRequests(cfg: GithubConfig): Promise<{ requests: ReviewRequest[]; errors: string[] }> {
+  const groups = new Map<string, { username: string; token: string; repos: string[] }>();
+  const errors: string[] = [];
+  for (const repo of cfg.repos) {
+    const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
+    try {
+      const id = resolveIdentity(cfg, full);
+      const g = groups.get(id.username) ?? { ...id, repos: [] };
+      g.repos.push(full);
+      groups.set(id.username, g);
+    } catch (e) {
+      errors.push(`review requests ${full}: ${(e as Error).message}`);
+    }
+  }
+  const requests: ReviewRequest[] = [];
+  for (const g of groups.values()) {
+    try {
+      const q = `is:pr is:open draft:false review-requested:${g.username} ${g.repos.map(r => `repo:${r}`).join(' ')} sort:updated-desc`;
+      const data = await graphql<{ search?: { nodes?: (ReviewRequestNode | null)[] | null } | null }>(REVIEW_REQUEST_SEARCH, { q }, g.token);
+      for (const n of data.search?.nodes ?? []) {
+        if (!n || typeof n.number !== 'number' || !n.repository?.nameWithOwner) continue;
+        const repo = n.repository.nameWithOwner;
+        requests.push({
+          id: `${repo}#${n.number}`, repo, number: n.number, url: n.url ?? '', title: n.title ?? '',
+          author: n.author?.login ?? '', requestedAt: n.timelineItems?.nodes?.[0]?.createdAt ?? null,
+          updatedAt: n.updatedAt ?? '', dismissed: false,
+        });
+      }
+    } catch (e) {
+      errors.push(`review requests (${g.username}): ${(e as Error).message}`);
+    }
+  }
+  return { requests, errors };
+}
 
 // Returns the identity (username + token) that owns fullRepo ("owner/repo").
 // An identity whose repos list contains the repo owns it; bare names in that

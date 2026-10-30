@@ -34,7 +34,7 @@ const item = (overrides: Partial<Item> = {}): Item => ({
 });
 
 const snap = (overrides: Partial<DashboardData> = {}): DashboardData => ({
-  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null }, queue: [],
+  updatedAt: '2026-08-01T00:00:00Z', errors: { jira: null, github: null }, queue: [], reviewRequests: [],
   buckets: emptyBuckets(), todo: [], blocked: [], filed: [], unlinkedPrs: [], doneCards: [], doneTotal: 0,
   newlyDone: [], recentActivity: [], prLog: [], ...overrides,
 });
@@ -400,7 +400,7 @@ function remount() {
 }
 
 const entry = (key: string, reason = 'ci_failing'): QueueEntry => ({
-  id: `${key}:${reason}`, key, summary: `summary ${key}`, reason, priority: 1,
+  id: `${key}:${reason}`, kind: 'card', key, summary: `summary ${key}`, reason, priority: 1,
   title: `CI failing on o/r#1`, detail: null, url: 'https://gh/pr/1', at: null,
 });
 
@@ -581,4 +581,13 @@ test('Done on a TODO entry does not open or move the detail selection', async ()
   await act(async () => { await new Promise(r => setTimeout(r, 0)); });
   expect(fetchMock.mock.calls.some(([url]) => url === '/api/data')).toBe(true);
   expect(host.querySelector('.pr-detail')).toBeNull();
+});
+
+test('a review-request entry links to the PR instead of selecting a card', () => {
+  const pr: QueueEntry = { ...entry('o/a#9', 'review_requested'), kind: 'pr', title: 'Review requested: o/a#9 Add retries (sam)', url: 'https://gh/o/a/9' };
+  act(() => { es().emit(snap({ queue: [pr] })); });
+  const main = host.querySelector('#queue .queue-main')!;
+  expect(main.tagName).toBe('A');
+  expect(main.getAttribute('href')).toBe('https://gh/o/a/9');
+  expect(main.textContent).toContain('Review requested');
 });

@@ -81,6 +81,9 @@ function migrateSnapshot(state: State): State {
   if (state.snapshot && !Array.isArray(state.snapshot.queue)) {
     state.snapshot.queue = [];
   }
+  if (state.snapshot && !Array.isArray(state.snapshot.reviewRequests)) {
+    state.snapshot.reviewRequests = [];
+  }
   return state;
 }
 
@@ -172,7 +175,7 @@ export function emptySnapshot(): Snapshot {
   return {
     updatedAt: null, errors: { jira: null, github: null },
     buckets: { needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [] },
-    queue: [], todo: [], blocked: [], unlinkedPrs: [],
+    queue: [], reviewRequests: [], todo: [], blocked: [], unlinkedPrs: [],
     doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [],
     prLog: [], filed: [],
   };

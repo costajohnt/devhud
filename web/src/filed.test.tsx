@@ -9,7 +9,7 @@ const emptyBuckets = (): Record<Bucket, Item[]> => ({
   needs_attention: [], in_progress: [], self_review: [], waiting_review: [], mergeable: [], qa_ready: [], in_qa: [],
 });
 const data = (overrides: Partial<DashboardData> = {}): DashboardData => ({
-  updatedAt: null, errors: { jira: null, github: null }, queue: [], buckets: emptyBuckets(),
+  updatedAt: null, errors: { jira: null, github: null }, queue: [], reviewRequests: [], buckets: emptyBuckets(),
   todo: [], blocked: [], filed: [], unlinkedPrs: [], doneCards: [], doneTotal: 0, newlyDone: [], recentActivity: [], prLog: [],
   ...overrides,
 });

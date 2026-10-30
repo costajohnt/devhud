@@ -7,6 +7,15 @@ const PRIORITY: Record<QueueEntry['priority'], { text: string; cls: string }> = 
   3: { text: 'P3', cls: 'pill pill--blue' },
 };
 
+function QueueText({ e }: { e: QueueEntry }) {
+  return (
+    <span class="queue-text">
+      <span class="pr-row-title">{e.title}</span>
+      {e.detail && <span class="queue-detail">{e.detail}</span>}
+    </span>
+  );
+}
+
 // The ranked TODO queue: what needs the developer right now, across every
 // in-flight card. Server-built (server/queue.ts); this only renders it.
 // "Done" acks just that entry, so the card's other entries stay put.
@@ -31,13 +40,17 @@ export function QueuePanel({ data, onSelect, act, actionInFlight }: {
           {queue.map(e => (
             <li key={e.id} class="pr-row queue-row">
               <span class={PRIORITY[e.priority].cls}>{PRIORITY[e.priority].text}</span>
-              <button type="button" class="pr-row-main queue-main" onClick={() => onSelect(e.key)} title={e.summary}>
-                <span class="pr-row-id">{e.key}</span>
-                <span class="queue-text">
-                  <span class="pr-row-title">{e.title}</span>
-                  {e.detail && <span class="queue-detail">{e.detail}</span>}
-                </span>
-              </button>
+              {e.kind === 'card' ? (
+                <button type="button" class="pr-row-main queue-main" onClick={() => onSelect(e.key)} title={e.summary}>
+                  <span class="pr-row-id">{e.key}</span>
+                  <QueueText e={e} />
+                </button>
+              ) : (
+                // No card to open a detail panel for: the row goes to the PR.
+                <a class="pr-row-main queue-main" href={e.url} target="_blank" rel="noopener noreferrer" title={e.summary}>
+                  <QueueText e={e} />
+                </a>
+              )}
               <span class="pr-row-age">{ago(e.at)}</span>
               <a class="queue-link" href={e.url} target="_blank" rel="noopener noreferrer" aria-label={`Open: ${e.title}`}>Open</a>
               <button
