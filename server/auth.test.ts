@@ -88,6 +88,8 @@ test('the dashboard page needs a session; assets do not; a one-time login code c
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('app');
   expect((await fetch(`${base}/api/data`, { headers: { cookie: session } })).status).toBe(200);
+  // A browser session can't mint login codes: only the token holder can.
+  expect((await fetch(`${base}/api/login-code`, { method: 'POST', headers: { cookie: session } })).status).toBe(401);
   // Single use: the same code can't make a second session.
   expect((await fetch(`${base}/?login=${encodeURIComponent(code)}`, { redirect: 'manual' })).status).toBe(401);
 });
