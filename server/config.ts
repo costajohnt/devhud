@@ -49,6 +49,11 @@ export const isHttpsUrl = (u: string): boolean => {
   } catch { return false; }
 };
 
+// "name" means "<org>/name"; "owner/name" stands. The one place this rule
+// lives (audit M18): loadConfig emits qualified repos, and code that also
+// takes hand-built configs (tests) qualifies through this.
+export const qualifyRepo = (repo: string, org: string): string => (repo.includes('/') ? repo : `${org}/${repo}`);
+
 export function loadConfig(path: string = CONFIG_PATH): Config {
   let raw: string;
   try { raw = readFileSync(path, 'utf8'); }
@@ -184,12 +189,12 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
   // identity's own repos, deduplicated after qualifying bare names with the
   // org. GitHub owner/repo names are case-insensitive, so two spellings that
   // differ only in case are rejected rather than fetched twice.
-  const qualify = (r: string) => (r.includes('/') ? r : `${github.org}/${r}`);
+  const qualify = (r: string) => qualifyRepo(r, github.org!);
   const spelling = new Map<string, string>();
   const allRepos: string[] = [];
   for (const r of [...(github.repos ?? []), ...identities.flatMap(id => id.repos)]) {
     const q = qualify(r), key = q.toLowerCase(), prev = spelling.get(key);
-    if (prev === undefined) { spelling.set(key, q); allRepos.push(r); }
+    if (prev === undefined) { spelling.set(key, q); allRepos.push(q); }
     else if (prev !== q) throw new Error(`config at ${path}: github repos "${prev}" and "${q}" differ only in case; list each repo once`);
   }
   // Every repo must have exactly one owning identity (resolveIdentity in
@@ -212,6 +217,8 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     }
   }
 
+  // Identities own their repos fully qualified too, like allRepos above.
+  identities = identities.map(id => ({ ...id, repos: id.repos.map(qualify) }));
   const allUsernames = [...new Set(identities.map(id => id.username))];
   const firstIdentity = identities[0]!;
 

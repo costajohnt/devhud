@@ -178,7 +178,8 @@ test('rejects config values that would rewrite downstream queries/paths (JQL, Gi
   // repos) and must pass — exactly one slash.
   const ok = join(dir, 'qualified-repo.json');
   writeFileSync(ok, JSON.stringify({ ...base, github: { ...base.github, repos: ['r', 'otherorg/svc'] } }));
-  expect(loadConfig(ok).github.repos).toEqual(['r', 'otherorg/svc']);
+  // Emitted qualified (audit M18): bare names get the org.
+  expect(loadConfig(ok).github.repos).toEqual(['o/r', 'otherorg/svc']);
   const twoSlashes = join(dir, 'two-slash-repo.json');
   writeFileSync(twoSlashes, JSON.stringify({ ...base, github: { ...base.github, repos: ['a/b/c'] } }));
   expect(() => loadConfig(twoSlashes)).toThrow(/invalid "github\.repos"/);
@@ -248,7 +249,7 @@ test('multi-identity: single-identity config is also normalised to identities ar
   }));
   const cfg = loadConfig(p);
   expect(cfg.github.identities).toHaveLength(1);
-  expect(cfg.github.identities![0]).toMatchObject({ username: 'u', token: 'tok', repos: ['r'] });
+  expect(cfg.github.identities![0]).toMatchObject({ username: 'u', token: 'tok', repos: ['o/r'] });
   expect(cfg.github.usernames).toEqual(['u']);
 });
 
@@ -303,7 +304,7 @@ test('multi-identity: a catch-all identity (no repos) covers the top-level githu
   try {
     const cfg = loadConfig(p);
     // Top-level repos are kept (not dropped), unioned with identity repos.
-    expect(cfg.github.repos).toEqual(['webapp', 'api', 'me/side']);
+    expect(cfg.github.repos).toEqual(['acme/webapp', 'acme/api', 'me/side']);
     expect(cfg.github.identities![1]).toEqual({ username: 'work-user', token: 'tok-work', repos: [] });
   } finally {
     delete process.env.GH_TOKEN_WORK;
@@ -351,7 +352,7 @@ test('multi-identity: top-level repos all claimed by explicit identities need no
   const cfg = loadIdentities('id-all-claimed.json', { repos: ['webapp'], identities: [
     { username: 'work-user', tokenEnv: 'GH_TOKEN_WORK', repos: ['acme/webapp'] },
   ] });
-  expect(cfg.github.repos).toEqual(['webapp']);
+  expect(cfg.github.repos).toEqual(['acme/webapp']);
 });
 
 test('multi-identity: a repo listed under two identities is a config error', () => {

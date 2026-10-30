@@ -1,4 +1,5 @@
 import type { Pr, PrComment, GithubConfig, CiStatus, ReviewState, ReviewRequest } from './types.ts';
+import { qualifyRepo } from './config.ts';
 
 // Minimal shapes for the slices of the GitHub responses this file actually
 // reads — not full API types, just what's used below. PR discovery is one
@@ -470,7 +471,7 @@ export async function fetchReviewRequests(cfg: GithubConfig): Promise<{ requests
   const errors: string[] = [];
   const failedRepos: string[] = [];
   for (const repo of cfg.repos) {
-    const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
+    const full = qualifyRepo(repo, cfg.org);
     try {
       const id = resolveIdentity(cfg, full);
       const k = `${id.username}\0${id.token}`;
@@ -516,7 +517,7 @@ export function resolveIdentity(cfg: GithubConfig, fullRepo: string): { username
   const identities = cfg.identities;
   if (!identities?.length) return { username: cfg.username, token: cfg.token };
   const key = fullRepo.toLowerCase();
-  const qualify = (r: string) => (r.includes('/') ? r : `${cfg.org}/${r}`).toLowerCase();
+  const qualify = (r: string) => qualifyRepo(r, cfg.org).toLowerCase();
   const owner = identities.find(id => id.repos.some(r => qualify(r) === key))
     ?? identities.find(id => !id.repos.length);
   if (!owner) throw new Error(`no GitHub identity owns "${fullRepo}"; list it under one identity or add a catch-all identity`);
@@ -536,7 +537,7 @@ export async function fetchPrs(cfg: GithubConfig): Promise<{ prs: Pr[]; errors: 
   const errors: string[] = [];
   const failedRepos: string[] = [];
   for (const repo of cfg.repos) {
-    const full = repo.includes('/') ? repo : `${cfg.org}/${repo}`;
+    const full = qualifyRepo(repo, cfg.org);
     try {
       const { username, token } = resolveIdentity(cfg, full);
       // sort:updated-desc in the query string: GraphQL search has no sort
