@@ -105,6 +105,28 @@ test('an SSE message supersedes an in-flight manual refresh (stale response disc
   expect(hook.data?.updatedAt).toBe('fresh-from-sse');
 });
 
+test('an SSE message supersedes the post-action get() (stale /api/data response discarded)', async () => {
+  // The action POST succeeds; its follow-up GET /api/data is still in flight
+  // when the server's SSE broadcast of a newer snapshot lands.
+  let resolveGet!: (r: unknown) => void;
+  vi.stubGlobal('fetch', vi.fn((url: string) => url === '/api/action'
+    ? Promise.resolve({ ok: true, json: async () => ({ ok: true }) })
+    : new Promise(r => { resolveGet = r; })));
+
+  let actDone!: Promise<boolean>;
+  await act(async () => {
+    actDone = hook.act({ type: 'ack', key: 'P-1' });
+    await vi.waitFor(() => expect(resolveGet).toBeTypeOf('function'));
+  });
+  act(() => { es().emit(snap('fresh-from-sse')); });
+  await act(async () => {
+    resolveGet({ ok: true, json: async () => snap('stale-from-get') });
+    expect(await actDone).toBe(true);
+  });
+
+  expect(hook.data?.updatedAt).toBe('fresh-from-sse');
+});
+
 test('a tick event advances only updatedAt, without firing onRefreshed', () => {
   const fired: unknown[] = [];
   hook.onRefreshed.current = (d) => fired.push(d);
