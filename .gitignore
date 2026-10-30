@@ -6,3 +6,5 @@ data/*
 web/dist/
 .superpowers/
 dist/
+# Other sessions' worktrees of this repo.
+.claude/worktrees/
