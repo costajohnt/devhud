@@ -77,7 +77,7 @@ function describeAction(body: object): string | null {
 }
 
 function AppContent() {
-  const { data, loading, refreshing, connError, actionError, actionInFlight, refresh, act, onRefreshed, clearActionError } = useData();
+  const { data, loading, refreshing, connError, actionError, actionInFlight, needsLogin, refresh, act, onRefreshed, clearActionError } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   // Polite announcement for successful actions (moves, acks, unpins) — the
   // only feedback otherwise is the card silently relocating, which assistive
@@ -238,6 +238,13 @@ function AppContent() {
     document.documentElement.dataset.theme = t;
   };
 
+  if (needsLogin) {
+    return (
+      <div class="shell-center" role="alert">
+        <p class="shell-status">Open the dashboard with <code>devhud open</code> (or <code>node server/cli.ts open</code> from a checkout). It signs this browser in with a one-time link.</p>
+      </div>
+    );
+  }
   // connError falls through to the "Server unreachable" branch below (with
   // its Retry button) — without it, a server that's down at page load left
   // the skeleton up forever with the error banner unreachable behind it.

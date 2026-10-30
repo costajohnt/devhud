@@ -217,6 +217,7 @@ Tools exposed:
 devhud can optionally *write* to Jira and GitHub — transition a card's status, comment on a card, comment on a PR — instead of only reading. This is off by default and stays off until you explicitly turn it on:
 
 - Set `"writeEnabled": true` in `config.json`. The default (`false`, matching `config.example.json`) makes every write path refuse with a clear error: `write-back disabled; set writeEnabled: true in config.json`.
+- MCP write tools (`transition_card`, `comment_card`, `comment_pr`) additionally need `"mcpWriteEnabled": true`, so enabling `writeEnabled` for the CLI doesn't also expose writes through MCP tool calls, where an agent reads third-party Jira and GitHub text that could try to steer it. This gates the MCP tools only: an agent that can run shell commands can still run the CLI write commands.
 - The gate is re-checked from disk on **every single write** (not just at process startup) — `performWrite()` reloads `config.json` fresh before deciding whether to allow the call. Flip `writeEnabled` to `false` in `config.json` and the very next `transition`/`comment`/`pr-comment` refuses, with no server/CLI/MCP restart required. This fails **closed**: if that fresh read throws for any reason (the file was deleted, permissions changed, it's transiently unreadable mid-edit), the write is refused rather than falling back to whatever config the caller already had in memory — a long-running process can't keep writing just because its in-memory config happened to say `writeEnabled: true` before `config.json` became unreadable.
 - Demo mode **always** refuses writes, regardless of `writeEnabled` — there's nothing real for canned demo data to write to. That refusal is a "stub success" (not an error), so scripting against the CLI/MCP doesn't need special-case error handling for demo mode.
 - The dashboard web UI itself stays entirely read-only — there is no write-back UI in the SPA. Comments are only ever posted by an explicit CLI command (`comment`/`pr-comment`) or an explicit MCP tool call, and manual transitions the same way (`transition`/`transition_card`). Those require you (or, for MCP, a Claude session you're actively steering) to trigger them on purpose.
@@ -234,6 +235,10 @@ devhud can optionally *write* to Jira and GitHub — transition a card's status,
 ## API
 
 Full reference: [docs/API.md](docs/API.md). Summary:
+
+Every `/api/*` request needs the server's access token. The server makes a fresh one on every start and writes it to `data/api-token` (mode 600, next to `state.json`) once it holds its port; it is never printed or put in a URL. The CLI and MCP server read it from there and send it as the `x-devhud-token` header. The browser instead gets its own session: `devhud open` asks the server for a one-time, 60-second login code and opens the dashboard with it; the page trades the code for a session and keeps it in localStorage (scoped to this port, unlike a cookie) and sends it as a header. Opened any other way, the page says to run `devhud open`.
+
+What this protects against: other OS users on the machine, and processes or containers that can reach `127.0.0.1` but can't read your files. It can't stop software running as you, which can read the token file like the CLI does.
 
 - `GET /api/data` returns the last snapshot from memory.
 - `GET /api/events` is a Server-Sent Events stream: the current snapshot on connect, then a new one after every refresh, action and successful write.

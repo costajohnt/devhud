@@ -3,7 +3,7 @@
 // installed bins against a demo config in a scratch DEVHUD_HOME. Proves the
 // package installs and runs, which `npm pack` contents alone do not.
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,8 +59,18 @@ try {
       page = await fetch(`http://127.0.0.1:${port}/`).then(r => r.text(), () => '');
     }
     assert.match(page, /<title>devhud<\/title>/);
-    const data = await (await fetch(`http://127.0.0.1:${port}/api/data`)).json() as { queue?: unknown[] };
+    // The API needs the token the server wrote next to its state file.
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/data`)).status, 401, 'api/data refuses a request without the token');
+    const token = readFileSync(join(home, 'data', 'api-token'), 'utf8').trim();
+    const data = await (await fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-token': token } })).json() as { queue?: unknown[] };
     assert.ok(Array.isArray(data.queue), 'api/data has a queue');
+    // `devhud open`'s flow: a one-time login code (minted with the token)
+    // becomes a header session for the page.
+    const { code } = await (await fetch(`http://127.0.0.1:${port}/api/login-code`, { method: 'POST', headers: { 'x-devhud-token': token } })).json() as { code: string };
+    const claimed = await fetch(`http://127.0.0.1:${port}/api/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+    assert.equal(claimed.status, 200);
+    const { session } = await claimed.json() as { session: string };
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/data`, { headers: { 'x-devhud-session': session } })).status, 200);
   } finally {
     server.kill();
     await serverExited;

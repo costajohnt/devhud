@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.ts';
 import { BUCKETS } from './actions.ts';
 import { opSnapshot, opRefresh, opAction, opWrite } from './ops.ts';
-import { probeServer } from './transport.ts';
+import { probeServer, readApiToken } from './transport.ts';
 import type { Config, Snapshot } from './types.ts';
 
 // Re-exported for backward compatibility: server/cli.test.ts imports
@@ -189,21 +189,31 @@ export async function run(argv: string[], { config, statePath, configPath, probe
     return { code, out: '', err: '' };
   }
   if (cmd === 'open') {
-    const url = `http://localhost:${config.port}`;
+    // Ask the running server (authenticated with the token) for a one-time,
+    // 60-second login code and open that; the token itself never goes into
+    // the URL, the opener's argv or this output.
+    let url = `http://localhost:${config.port}`;
+    const token = readApiToken(statePath);
+    if (token) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${config.port}/api/login-code`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-devhud-token': token } });
+        if (r.ok) url += `/?login=${encodeURIComponent(((await r.json()) as { code: string }).code)}`;
+      } catch { /* server not running: open the plain URL, which says what to do */ }
+    }
     // Platform-appropriate opener: the macOS-only `open` binary printed
     // "Opening …" and exited 0 on Linux/Windows while opening nothing, and
     // its missing 'error' listener turned the ENOENT into an unhandled
     // 'error' event (a raw stack trace) whenever anything delayed the exit.
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     const child = spawn(opener, [url], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' });
-    child.on('error', (e) => console.error(`could not launch ${opener}: ${e.message} — open ${url} yourself`));
+    child.on('error', (e) => console.error(`could not launch ${opener}: ${e.message}; open http://localhost:${config.port} and run devhud open again`));
     child.unref();
-    return { code: 0, out: `Opening ${url}`, err: '' };
+    return { code: 0, out: `Opening http://localhost:${config.port}`, err: '' };
   }
 
   // Probed once here (not inside each op) so the transport note on stderr
   // can never disagree with the path the op actually took.
-  const viaServer = await probeServer(config.port, probeTimeoutMs ? { timeoutMs: probeTimeoutMs } : undefined);
+  const viaServer = await probeServer(config.port, { timeoutMs: probeTimeoutMs, token: readApiToken(statePath) });
   const err = viaServer ? 'via server' : 'direct';
   const ctx = { config, statePath, configPath, viaServer };
 

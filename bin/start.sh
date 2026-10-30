@@ -14,12 +14,12 @@ cd "$(dirname "$0")/.."
 if node --input-type=module -e "
   import { readFileSync } from 'node:fs';
   import { dirname, join } from 'node:path';
-  import { serverAppearsRunning, probeServer } from './server/transport.ts';
+  import { serverAppearsRunning, probeServer, readApiToken } from './server/transport.ts';
   import { STATE_PATH } from './server/paths.ts';
   let port;
   try { port = JSON.parse(readFileSync(join(dirname(STATE_PATH), 'server.pid'), 'utf8')).port; } catch { process.exit(1); }
   const pid = serverAppearsRunning(STATE_PATH);
-  process.exit(pid && port && await probeServer(port) ? 0 : 1);
+  process.exit(pid && port && await probeServer(port, { token: readApiToken(STATE_PATH) }) ? 0 : 1);
 " 2>/dev/null; then
   echo "devhud: server already running (data/server.pid); not starting another"
   exit 0
