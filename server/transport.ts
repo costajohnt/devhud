@@ -5,7 +5,7 @@
 // directly on disk via the same server/*.ts modules the server itself uses
 // (loadState/saveState/refresh/applyAction), so behavior is identical
 // either way.
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { saveState, writeFilePrivate } from './state.ts';
@@ -23,10 +23,25 @@ export function writePidFile(pidPath: string, port: number): void {
 
 // ~500ms budget: long enough that a live server on loopback always answers,
 // short enough that "no server running" doesn't make every command feel stuck.
+// With a token in hand this is a challenge, not a request: the client sends
+// a random nonce to GET /api/probe and the server answers with
+// probeProof(token, nonce). The token itself never leaves the client until
+// the listener has proved it holds the same one, so a squatter on the port
+// gets a nonce and nothing else. Without a token (test servers started
+// without one) it falls back to a plain GET /api/data, which a real server
+// answers 401.
+export const probeProof = (token: string, nonce: string): string => createHmac('sha256', token).update(nonce).digest('base64url');
+export const PROBE_NONCE_RE = /^[\w-]{16,64}$/;
+
 export async function probeServer(port: number, { timeoutMs = 500, token }: { timeoutMs?: number; token?: string | null } = {}): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/data`, { signal: AbortSignal.timeout(timeoutMs), headers: tokenHeaders(token) });
-    return res.ok;
+    const signal = AbortSignal.timeout(timeoutMs);
+    if (!token) return (await fetch(`http://127.0.0.1:${port}/api/data`, { signal })).ok;
+    const nonce = randomBytes(16).toString('base64url');
+    const res = await fetch(`http://127.0.0.1:${port}/api/probe?nonce=${nonce}`, { signal });
+    if (!res.ok) return false;
+    const { proof } = await res.json() as { proof?: unknown };
+    return proof === probeProof(token, nonce);
   } catch {
     return false;
   }
@@ -51,13 +66,12 @@ export async function probeServer(port: number, { timeoutMs = 500, token }: { ti
 // last-writer-wins race with no guard against it whatsoever. See
 // docs/ARCHITECTURE.md's "Concurrency" section for the full picture; don't
 // read this comment as covering that case too.
+const readPidFile = (statePath: string): { pid?: number; port?: number } | null => {
+  try { return JSON.parse(readFileSync(join(dirname(statePath), 'server.pid'), 'utf8')) as { pid?: number; port?: number }; } catch { return null; }
+};
+
 export function serverAppearsRunning(statePath: string): number | null {
-  let pid: number | undefined;
-  try {
-    pid = (JSON.parse(readFileSync(join(dirname(statePath), 'server.pid'), 'utf8')) as { pid?: number }).pid;
-  } catch {
-    return null;
-  }
+  const pid = readPidFile(statePath)?.pid;
   if (!pid) return null;
   try {
     process.kill(pid, 0);
@@ -108,13 +122,14 @@ export function writeApiToken(statePath: string, token: string): void {
 }
 
 // Is the listener on `port` OUR devhud? Both signals, same rule as
-// bin/start.sh: a live pid file (the data dir is owner-writable only, so
-// another local user cannot plant one) AND the probe. The probe alone trusted
-// whatever answered 200 on config.port while devhud was down, and handed it
-// the token plus every write (audit 2026-10-30 M1). Pid first, so the token
-// is never sent to a port no live devhud pid claims.
+// bin/start.sh: a live pid file that claims THIS port (the data dir is
+// owner-writable only, so another local user cannot plant one) AND the
+// challenge probe above. The probe alone trusted whatever answered 200 on
+// config.port while devhud was down, and handed it the token plus every
+// write (audit 2026-10-30 M1); a pid-only check still trusted a squatter on
+// config.port while a real devhud ran on another port.
 export async function probeDevhud(port: number, statePath: string, { timeoutMs }: { timeoutMs?: number } = {}): Promise<boolean> {
-  if (!serverAppearsRunning(statePath)) return false;
+  if (readPidFile(statePath)?.port !== port || !serverAppearsRunning(statePath)) return false;
   return probeServer(port, { timeoutMs, token: readApiToken(statePath) });
 }
 

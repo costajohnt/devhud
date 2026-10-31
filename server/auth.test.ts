@@ -139,9 +139,15 @@ test('sessions are capped: the oldest is dropped past 32', async () => {
 });
 
 test('the CLI reads the token from next to the state file and goes via the server', async () => {
-  const { port, statePath } = await start();
+  const { base, port, statePath } = await start();
   expect(await probeServer(port, { timeoutMs: 5000 })).toBe(false);
+  expect(await probeServer(port, { timeoutMs: 5000, token: 'wrong' })).toBe(false);
   expect(await probeServer(port, { timeoutMs: 5000, token: readApiToken(statePath) })).toBe(true);
+  // The challenge itself needs no credentials and leaks none.
+  expect((await fetch(`${base}/api/probe?nonce=short`)).status).toBe(400);
+  const { proof } = await (await fetch(`${base}/api/probe?nonce=${'a'.repeat(16)}`)).json() as { proof: string };
+  expect(proof).toMatch(/^[\w-]{43}$/);
+  expect(proof).not.toContain(readApiToken(statePath)!);
   const r = await run(['status', '--json'], { config: { ...config, port }, statePath, probeTimeoutMs: 5000 });
   expect(r.err).toBe('via server');
   expect(r.code).toBe(0);

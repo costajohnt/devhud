@@ -9,7 +9,7 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { writePidFile, newApiToken, writeApiToken, apiTokenPath, TOKEN_HEADER } from './transport.ts';
+import { writePidFile, newApiToken, writeApiToken, apiTokenPath, probeProof, PROBE_NONCE_RE, TOKEN_HEADER } from './transport.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config, State, Snapshot } from './types.ts';
 
@@ -281,6 +281,15 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         spentCodes.set(code, { session, until: now + SPENT_CODE_WINDOW_MS });
         if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.values().next().value!);
         return send(200, { session });
+      }
+      // Unauthenticated on purpose: the CLI/MCP probe proves this listener
+      // holds their token before they send it (transport.ts probeServer).
+      // The proof is an HMAC of the token over the caller's nonce, so it
+      // reveals nothing about the token to a caller who lacks it.
+      if (apiToken && url.pathname === '/api/probe' && req.method === 'GET') {
+        const nonce = url.searchParams.get('nonce') ?? '';
+        if (!PROBE_NONCE_RE.test(nonce)) return send(400, { error: 'nonce must be 16 to 64 url-safe characters' });
+        return send(200, { proof: probeProof(apiToken, nonce) });
       }
       if (url.pathname.startsWith('/api/')) {
         if (!authorized(req, url)) return send(401, { error: 'missing or invalid devhud token; run `devhud open` for the dashboard (the CLI and MCP read it automatically)' });

@@ -373,7 +373,9 @@ test('refresh via the HTTP transport surfaces a non-2xx response as an error ins
   await new Promise<void>(r => badServer.listen(0, () => r()));
   try {
     const badConfig = makeConfig({ port: (badServer.address() as AddressInfo).port });
-    const { code, err } = await run(['refresh'], { config: badConfig, statePath: pidOnlyStatePath, probeTimeoutMs: SLOW_PROBE_MS });
+    const statePath = tempStatePath();
+    writePidFile(join(dirname(statePath), 'server.pid'), badConfig.port); // the pid file must claim this port
+    const { code, err } = await run(['refresh'], { config: badConfig, statePath, probeTimeoutMs: SLOW_PROBE_MS });
     expect(code).toBe(1);
     expect(err).toContain('HTTP 500');
   } finally {

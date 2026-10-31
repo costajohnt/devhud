@@ -86,7 +86,9 @@ test('opAction via server forwards the action type instead of falling back to ac
 // pid file next to the state file claims it. Without that rule, a port
 // squatter (another local user, devhud down) answered the probe, received
 // the token and every write, and the CLI printed "comment ok".
-test('ops ignore a listener on config.port that no live pid file claims: writes go direct, reads come from disk', async () => {
+// A listener answering 200 to everything (including /api/probe with a made-up
+// proof) on config.port, without knowing the token.
+async function squat() {
   const dir = mkdtempSync(join(tmpdir(), 'jd-ops-squat-'));
   const statePath = join(dir, 'state.json');
   const state = emptyState();
@@ -95,22 +97,48 @@ test('ops ignore a listener on config.port that no live pid file claims: writes 
   writeFileSync(join(dir, 'api-token'), 'stale-token');
   const hits: string[] = [];
   const squatter = http.createServer((req, res) => {
-    hits.push(`${req.method} ${req.url} ${req.headers['x-devhud-token'] ?? ''}`);
+    hits.push(`${req.method} ${req.url?.split('?')[0]} ${req.headers['x-devhud-token'] ?? ''}`);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, doneTotal: 99 }));
+    res.end(JSON.stringify({ ok: true, doneTotal: 99, proof: 'nope' }));
   });
   await new Promise<void>(r => squatter.listen(0, '127.0.0.1', () => r()));
-  try {
-    const config = { port: (squatter.address() as AddressInfo).port, demo: true, writeEnabled: false,
-      jira: { projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
-      github: { org: 'o', repos: [], username: 'u', token: '' },
-    } as Config;
+  const port = (squatter.address() as AddressInfo).port;
+  const config = { port, demo: true, writeEnabled: false,
+    jira: { projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+    github: { org: 'o', repos: [], username: 'u', token: '' },
+  } as Config;
+  const expectIgnored = async () => {
     const snap = await opSnapshot({ config, statePath });
     expect(snap).toHaveProperty('doneTotal', 4);
     const written = await opWrite({ config, statePath, configPath: join(dir, 'missing.json') }, { type: 'comment', key: 'PROJ-1', body: 'hi' });
     expect(written).toHaveProperty('error'); // direct mode: config read fails closed, nothing was posted anywhere
-    expect(hits).toEqual([]);
+    expect(hits.filter(h => !h.startsWith('GET /api/probe '))).toEqual([]);
+    expect(hits.some(h => h.includes('stale-token'))).toBe(false);
+  };
+  return { dir, statePath, port, hits, squatter, expectIgnored };
+}
+
+test('ops never contact a listener on config.port that no live pid file claims (M1)', async () => {
+  const s = await squat();
+  try {
+    await s.expectIgnored();
+    expect(s.hits).toEqual([]);
+    // A live pid file for a different port does not vouch for this one either.
+    writePidFile(join(s.dir, 'server.pid'), s.port + 1);
+    await s.expectIgnored();
+    expect(s.hits).toEqual([]);
   } finally {
-    squatter.close();
+    s.squatter.close();
+  }
+});
+
+test('ops only ever send a nonce to a claimed port until it proves it holds the token (M1)', async () => {
+  const s = await squat();
+  try {
+    writePidFile(join(s.dir, 'server.pid'), s.port);
+    await s.expectIgnored();
+    expect(s.hits.length).toBeGreaterThan(0);
+  } finally {
+    s.squatter.close();
   }
 });
