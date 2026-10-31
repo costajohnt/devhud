@@ -29,7 +29,7 @@ export { probeServer };
 const HELP = `devhud — Jira/GitHub board CLI
 
 Usage:
-  devhud init [--force]                Interactive setup: writes config.json
+  devhud init [--force] [--from-env]   Setup: writes config.json (--from-env: answers from DEVHUD_INIT_* vars)
   devhud todo [--json]                 Show the prioritized TODO queue
   devhud status [--json]               Show the board snapshot
   devhud refresh [--json]              Refresh from Jira/GitHub (or demo data), then show it
@@ -320,8 +320,9 @@ if (isMain) {
     }
     // init runs before a config exists, so it can't go through loadConfig.
     if (process.argv[2] === 'init') {
-      const { runInit, ttyPrompter } = await import('./init.ts');
-      const { code, err } = await runInit({ prompter: ttyPrompter(), configPath, force: process.argv.includes('--force') });
+      const { runInit, ttyPrompter, envPrompter } = await import('./init.ts');
+      const prompter = process.argv.includes('--from-env') ? envPrompter() : ttyPrompter();
+      const { code, err } = await runInit({ prompter, configPath, force: process.argv.includes('--force') });
       if (err) console.error(err);
       process.exit(code);
     }

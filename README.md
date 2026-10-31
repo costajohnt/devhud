@@ -59,6 +59,33 @@ claude mcp add devhud --scope user -- devhud-mcp   # optional: let Claude work t
 
 Or `npx devhud init` without installing. The rest of this section covers running from a git checkout, which is the development setup.
 
+### Setting up from an agent
+
+`devhud init` prompts; an agent with no one to type runs `devhud init --from-env` instead, which takes every answer from `DEVHUD_INIT_*` environment variables (tokens never go on the command line) and still looks up the Jira accountId, the project's status names and the GitHub login itself:
+
+```bash
+DEVHUD_INIT_JIRA_URL=https://yourcompany.atlassian.net \
+DEVHUD_INIT_JIRA_EMAIL=you@company.com \
+DEVHUD_INIT_JIRA_TOKEN="$JIRA_API_TOKEN" \
+DEVHUD_INIT_JIRA_PROJECT=PROJ \
+DEVHUD_INIT_GITHUB_USERNAME=you \
+DEVHUD_INIT_GITHUB_ORG=yourorg \
+DEVHUD_INIT_GITHUB_REPOS=web,api \
+devhud init --from-env
+```
+
+`DEVHUD_INIT_GITHUB_TOKEN` is optional: left out, the config keeps an empty token and devhud reads `GITHUB_TOKEN` at runtime. `DEVHUD_INIT_GITHUB_USERNAME` and `DEVHUD_INIT_GITHUB_ORG` can be dropped when a GitHub token (either variable) is set: they default to its login. `DEVHUD_INIT_JIRA_ACCOUNT_ID` is only needed when Jira rejects the credentials, so being asked for it means the Jira email or token is wrong. A missing required variable exits 1 naming it, and nothing is written. Then:
+
+```bash
+devhud refresh --json   # fetches once; errors name the failing source
+devhud todo --json      # the prioritized queue, one entry per thing waiting on you
+devhud serve            # optional: dashboard + background refresh on :3010
+```
+
+`refresh` exits 0 even when Jira or GitHub fails (the board falls back to the last good data), so check the `errors` object in its JSON output.
+
+Write-back stays off (`writeEnabled: false`) until a person turns it on, and MCP write tools additionally need `mcpWriteEnabled: true` (see Write-back).
+
 ## Setup
 
 **Where files live:** from a git checkout, `config.json` sits at the repo root and state in `data/`, as below. An installed package (`npm i -g devhud`, or `npx devhud init`) can't write next to its code, so it uses `~/.devhud/config.json` and `~/.devhud/data/`; run `devhud init` to create the config there. `DEVHUD_HOME=/some/dir` overrides both. `npm run pack:check` builds the package, installs the tarball into a scratch prefix and runs the installed `devhud` and `devhud-mcp` end to end.
