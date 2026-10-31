@@ -2,12 +2,12 @@ import { test, expect } from 'vitest';
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { guessStatuses, runInit, type Prompter } from './init.ts';
+import { envPrompter, guessStatuses, runInit, type Prompter } from './init.ts';
 
 const prompter = (answers: string[]): Prompter & { asked: string[] } => {
   const asked: string[] = [];
   const next = (q: string, fallback?: string) => { asked.push(q); const a = answers.shift(); return Promise.resolve(a === undefined || a === '' ? fallback ?? '' : a); };
-  return { asked, ask: next, secret: q => next(q), close() {} };
+  return { asked, ask: (_id, q, fallback) => next(q, fallback), secret: (_id, q) => next(q), close() {} };
 };
 
 const json = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
@@ -92,4 +92,44 @@ test('init asks for the accountId when Jira rejects the credentials', async () =
   expect(r).toEqual({ code: 0 });
   expect(p.asked.some(q => /Could not reach Jira/.test(q))).toBe(true);
   expect(JSON.parse(readFileSync(configPath, 'utf8')).jira.accountId).toBe('acc-typed');
+});
+
+// Agents run init with no one to type: --from-env answers from DEVHUD_INIT_*.
+const lookups = (url: string) => {
+  if (url.endsWith('/rest/api/3/myself')) return json({ accountId: 'acc-123', displayName: 'Dev' });
+  if (url === 'https://api.github.com/user') return json({ login: 'octo' });
+  return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+};
+
+test('init --from-env writes the config from DEVHUD_INIT_* and still looks things up', async () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), 'devhud-init-')), 'config.json');
+  const env = {
+    DEVHUD_INIT_JIRA_URL: 'https://acme.atlassian.net', DEVHUD_INIT_JIRA_EMAIL: 'me@acme.com', DEVHUD_INIT_JIRA_TOKEN: 'jt',
+    DEVHUD_INIT_JIRA_PROJECT: 'proj', DEVHUD_INIT_GITHUB_TOKEN: 'ght', DEVHUD_INIT_GITHUB_REPOS: 'web, acme/api',
+  };
+  const r = await runInit({ prompter: envPrompter(env), configPath, fetchFn: lookups, log: () => {} });
+  expect(r).toEqual({ code: 0 });
+  const c = JSON.parse(readFileSync(configPath, 'utf8'));
+  expect(c.jira).toMatchObject({ baseUrl: 'https://acme.atlassian.net', email: 'me@acme.com', apiToken: 'jt', projectKey: 'PROJ', accountId: 'acc-123' });
+  expect(c.github).toEqual({ token: 'ght', org: 'octo', repos: ['web', 'acme/api'], username: 'octo' });
+});
+
+test('init --from-env names the missing variable and writes nothing', async () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), 'devhud-init-')), 'config.json');
+  const env = { DEVHUD_INIT_JIRA_URL: 'https://acme.atlassian.net', DEVHUD_INIT_JIRA_EMAIL: 'me@acme.com', DEVHUD_INIT_JIRA_TOKEN: 'jt' };
+  const r = await runInit({ prompter: envPrompter(env), configPath, fetchFn: lookups, log: () => {} });
+  expect(r.code).toBe(1);
+  expect(r.err).toMatch(/^DEVHUD_INIT_JIRA_PROJECT is not set/);
+  expect(() => readFileSync(configPath)).toThrow();
+});
+
+test('init --from-env leaves the GitHub token out of the config when unset', async () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), 'devhud-init-')), 'config.json');
+  const env = {
+    DEVHUD_INIT_JIRA_URL: 'https://acme.atlassian.net', DEVHUD_INIT_JIRA_EMAIL: 'me@acme.com', DEVHUD_INIT_JIRA_TOKEN: 'jt',
+    DEVHUD_INIT_JIRA_PROJECT: 'P', DEVHUD_INIT_GITHUB_USERNAME: 'me', DEVHUD_INIT_GITHUB_ORG: 'acme', DEVHUD_INIT_GITHUB_REPOS: 'web',
+  };
+  const r = await runInit({ prompter: envPrompter(env), configPath, fetchFn: lookups, log: () => {} });
+  expect(r.code).toBe(0);
+  expect(JSON.parse(readFileSync(configPath, 'utf8')).github.token).toBe('');
 });
