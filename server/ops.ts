@@ -12,7 +12,7 @@ import { refresh } from './refresh.ts';
 import { rebuildQueue } from './queue.ts';
 import { applyAction } from './actions.ts';
 import { performWrite } from './writeback.ts';
-import { probeServer, serverAppearsRunning, splitBrainError, saveStateGuarded, readApiToken, tokenHeaders } from './transport.ts';
+import { probeDevhud, serverAppearsRunning, splitBrainError, saveStateGuarded, readApiToken, tokenHeaders } from './transport.ts';
 import type { Config, Snapshot, Bucket, WriteResult } from './types.ts';
 
 export interface OpCtx {
@@ -27,7 +27,7 @@ export interface OpCtx {
 export interface OpError { error: string; }
 
 const base = (config: Config) => `http://127.0.0.1:${config.port}`;
-const probed = (ctx: OpCtx) => ctx.viaServer ?? probeServer(ctx.config.port, { token: readApiToken(ctx.statePath) });
+const probed = (ctx: OpCtx) => ctx.viaServer ?? probeDevhud(ctx.config.port, ctx.statePath);
 // The server's API token, read from next to the state file it guards.
 const auth = (ctx: OpCtx) => tokenHeaders(readApiToken(ctx.statePath));
 

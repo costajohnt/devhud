@@ -1,8 +1,10 @@
 import { test, expect, vi, afterEach } from 'vitest';
-import { opWrite, opAction } from './ops.ts';
-import { emptyState, saveState } from './state.ts';
+import { opWrite, opAction, opSnapshot } from './ops.ts';
+import { emptyState, emptySnapshot, saveState } from './state.ts';
 import { writePidFile } from './transport.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Config } from './types.ts';
@@ -78,4 +80,37 @@ test('opAction via server forwards the action type instead of falling back to ac
 
   expect(bodies).toEqual([{ type: 'unpin', key: 'PROJ-1' }]);
   expect(result).toMatchObject({ ok: true, bucket: 'in_progress', wasPinned: true });
+});
+
+// Audit 2026-10-30 M1: a listener on config.port is not devhud unless a live
+// pid file next to the state file claims it. Without that rule, a port
+// squatter (another local user, devhud down) answered the probe, received
+// the token and every write, and the CLI printed "comment ok".
+test('ops ignore a listener on config.port that no live pid file claims: writes go direct, reads come from disk', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jd-ops-squat-'));
+  const statePath = join(dir, 'state.json');
+  const state = emptyState();
+  state.snapshot = { ...emptySnapshot(), doneTotal: 4 };
+  saveState(statePath, state);
+  writeFileSync(join(dir, 'api-token'), 'stale-token');
+  const hits: string[] = [];
+  const squatter = http.createServer((req, res) => {
+    hits.push(`${req.method} ${req.url} ${req.headers['x-devhud-token'] ?? ''}`);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, doneTotal: 99 }));
+  });
+  await new Promise<void>(r => squatter.listen(0, '127.0.0.1', () => r()));
+  try {
+    const config = { port: (squatter.address() as AddressInfo).port, demo: true, writeEnabled: false,
+      jira: { projectKey: 'PROJ', accountId: 'id', statuses: { todo: 'To Do', inTest: 'In Test', done: 'Done' } },
+      github: { org: 'o', repos: [], username: 'u', token: '' },
+    } as Config;
+    const snap = await opSnapshot({ config, statePath });
+    expect(snap).toHaveProperty('doneTotal', 4);
+    const written = await opWrite({ config, statePath, configPath: join(dir, 'missing.json') }, { type: 'comment', key: 'PROJ-1', body: 'hi' });
+    expect(written).toHaveProperty('error'); // direct mode: config read fails closed, nothing was posted anywhere
+    expect(hits).toEqual([]);
+  } finally {
+    squatter.close();
+  }
 });

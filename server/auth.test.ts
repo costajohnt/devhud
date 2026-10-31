@@ -7,7 +7,7 @@ import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createServer } from './index.ts';
 import { saveState, emptyState } from './state.ts';
-import { newApiToken, writeApiToken, readApiToken, apiTokenPath, probeServer } from './transport.ts';
+import { newApiToken, writeApiToken, readApiToken, apiTokenPath, probeServer, writePidFile } from './transport.ts';
 import { run } from './cli.ts';
 import { performWrite } from './writeback.ts';
 import type { Config } from './types.ts';
@@ -34,6 +34,7 @@ async function start(apiToken?: string) {
   server = createServer({ config: { ...config }, statePath, webDist, apiToken: token });
   await new Promise<void>(r => server!.listen(0, '127.0.0.1', () => r()));
   const port = (server!.address() as AddressInfo).port;
+  writePidFile(join(dir, 'data', 'server.pid'), port);
   return { base: `http://127.0.0.1:${port}`, port, token, statePath };
 }
 

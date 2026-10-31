@@ -2,6 +2,7 @@ import { test, expect, vi } from 'vitest';
 import { boardStatus, BOARD_DONE_CARDS, doRefresh, ackCard, moveCard, cardComments, transitionCard, commentCard, commentPr } from './handlers.ts';
 import { loadState, saveState, emptyState, emptySnapshot } from '../server/state.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { writePidFile } from '../server/transport.ts';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Config, Snapshot } from '../server/types.ts';
@@ -239,6 +240,7 @@ test('transitionCard against a non-demo config with writeEnabled false refuses w
 // structured { error }, not a raw throw out of an MCP tool call.
 test('boardStatus returns a structured error instead of throwing when the fetch fails after a successful probe', async () => {
   const statePath = tempStatePath();
+  writePidFile(join(dirname(statePath), 'server.pid'), 39220); // the probe needs a live pid file too (audit M1)
   const viaServerConfig: Config = { ...config, demo: false, port: 39220 };
   const fetchSpy = vi.spyOn(global, 'fetch')
     .mockResolvedValueOnce({ ok: true } as Response) // probeServer's own check
@@ -250,6 +252,7 @@ test('boardStatus returns a structured error instead of throwing when the fetch 
 
 test('cardComments propagates a getSnapshot error instead of masking it as an unknown-key error', async () => {
   const statePath = tempStatePath();
+  writePidFile(join(dirname(statePath), 'server.pid'), 39221);
   const viaServerConfig: Config = { ...config, demo: false, port: 39221 };
   const fetchSpy = vi.spyOn(global, 'fetch')
     .mockResolvedValueOnce({ ok: true } as Response)
@@ -261,6 +264,7 @@ test('cardComments propagates a getSnapshot error instead of masking it as an un
 
 test('doRefresh via the HTTP transport surfaces a non-2xx response as an error instead of parsing it as a snapshot', async () => {
   const statePath = tempStatePath();
+  writePidFile(join(dirname(statePath), 'server.pid'), 39222);
   const viaServerConfig: Config = { ...config, demo: false, port: 39222 };
   const fetchSpy = vi.spyOn(global, 'fetch')
     .mockResolvedValueOnce({ ok: true } as Response) // probeServer's own check

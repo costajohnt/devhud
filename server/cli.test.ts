@@ -1,6 +1,8 @@
 import { test, expect, beforeAll, afterAll, vi } from 'vitest';
-import { run, formatStatus, probeServer, parseCli, qualifyRepo, wantsHelp } from './cli.ts';
+import { run, formatStatus, parseCli, wantsHelp } from './cli.ts';
+import { qualifyRepo } from './config.ts';
 import { createServer } from './index.ts';
+import { probeServer, writePidFile } from './transport.ts';
 import { loadState, saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -319,6 +321,7 @@ test('--help / no command prints usage; exit 0 with --help, exit 1 with no comma
 const SLOW_PROBE_MS = 5000;
 let server: http.Server;
 let serverConfig: Config;
+let pidOnlyStatePath: string;
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'jd-cli-http-'));
   const statePath = join(dir, 'state.json');
@@ -335,18 +338,23 @@ beforeAll(async () => {
   server = createServer({ config: serverConfig, statePath, webDist });
   await new Promise<void>(r => server.listen(0, () => r()));
   serverConfig.port = (server.address() as AddressInfo).port; // cli.ts probes/talks to this port
+  // The CLI only trusts a listener that a live pid file next to the state
+  // file claims (audit M1). This dir holds the pid file and nothing else, so
+  // a state read on the via-server path would still see an empty board.
+  pidOnlyStatePath = join(mkdtempSync(join(tmpdir(), 'jd-cli-pid-')), 'state.json');
+  writePidFile(join(dirname(pidOnlyStatePath), 'server.pid'), serverConfig.port);
 });
 afterAll(() => server.close());
 
 test('status goes through the HTTP transport when a server is listening on the configured port', async () => {
-  const { code, out, err } = await run(['status', '--json'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json', probeTimeoutMs: SLOW_PROBE_MS });
+  const { code, out, err } = await run(['status', '--json'], { config: serverConfig, statePath: pidOnlyStatePath, probeTimeoutMs: SLOW_PROBE_MS });
   expect(code).toBe(0);
   expect(err).toBe('via server');
   expect(JSON.parse(out).doneTotal).toBe(7);
 });
 
 test('ack goes through the HTTP transport and reports the resulting bucket', async () => {
-  const { code, out, err } = await run(['ack', 'P-9'], { config: serverConfig, statePath: '/nonexistent/should-not-be-read.json', probeTimeoutMs: SLOW_PROBE_MS });
+  const { code, out, err } = await run(['ack', 'P-9'], { config: serverConfig, statePath: pidOnlyStatePath, probeTimeoutMs: SLOW_PROBE_MS });
   expect(code).toBe(0);
   expect(err).toBe('via server');
   expect(out).toBe('P-9 -> in_progress');
@@ -365,7 +373,7 @@ test('refresh via the HTTP transport surfaces a non-2xx response as an error ins
   await new Promise<void>(r => badServer.listen(0, () => r()));
   try {
     const badConfig = makeConfig({ port: (badServer.address() as AddressInfo).port });
-    const { code, err } = await run(['refresh'], { config: badConfig, statePath: '/nonexistent/should-not-be-read.json', probeTimeoutMs: SLOW_PROBE_MS });
+    const { code, err } = await run(['refresh'], { config: badConfig, statePath: pidOnlyStatePath, probeTimeoutMs: SLOW_PROBE_MS });
     expect(code).toBe(1);
     expect(err).toContain('HTTP 500');
   } finally {
@@ -442,7 +450,9 @@ test('pr-comment with a bare repo name sends the org-qualified repo and the verb
     return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
   }));
   try {
-    const { code } = await run(['pr-comment', 'webapp#12', 'use', '--force', 'not', '-x', '--json'], { config, statePath: tempStatePath() });
+    const statePath = tempStatePath();
+    writePidFile(join(dirname(statePath), 'server.pid'), config.port);
+    const { code } = await run(['pr-comment', 'webapp#12', 'use', '--force', 'not', '-x', '--json'], { config, statePath });
     expect(code).toBe(0);
     expect(sent).toEqual([{ type: 'pr_comment', repo: 'o/webapp', number: 12, body: 'use --force not -x' }]);
   } finally {

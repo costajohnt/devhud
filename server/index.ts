@@ -9,7 +9,7 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { writePidFile, newApiToken, writeApiToken, TOKEN_HEADER } from './transport.ts';
+import { writePidFile, newApiToken, writeApiToken, apiTokenPath, TOKEN_HEADER } from './transport.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config, State, Snapshot } from './types.ts';
 
@@ -577,6 +577,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   const shutdown = () => {
     try { unlinkSync(pidPath); } catch {}
+    // The token must not outlive the server: a leftover is what a CLI/MCP
+    // would otherwise hand to whatever next binds the port (audit L4).
+    try { unlinkSync(apiTokenPath(STATE_PATH)); } catch {}
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

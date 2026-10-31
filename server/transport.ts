@@ -107,5 +107,16 @@ export function writeApiToken(statePath: string, token: string): void {
   writeFilePrivate(apiTokenPath(statePath), token);
 }
 
+// Is the listener on `port` OUR devhud? Both signals, same rule as
+// bin/start.sh: a live pid file (the data dir is owner-writable only, so
+// another local user cannot plant one) AND the probe. The probe alone trusted
+// whatever answered 200 on config.port while devhud was down, and handed it
+// the token plus every write (audit 2026-10-30 M1). Pid first, so the token
+// is never sent to a port no live devhud pid claims.
+export async function probeDevhud(port: number, statePath: string, { timeoutMs }: { timeoutMs?: number } = {}): Promise<boolean> {
+  if (!serverAppearsRunning(statePath)) return false;
+  return probeServer(port, { timeoutMs, token: readApiToken(statePath) });
+}
+
 export const TOKEN_HEADER = 'x-devhud-token';
 export const tokenHeaders = (token: string | null | undefined): Record<string, string> => (token ? { [TOKEN_HEADER]: token } : {});
