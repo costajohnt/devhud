@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -95,6 +95,11 @@ test('init asks for the accountId when Jira rejects the credentials', async () =
 });
 
 // Agents run init with no one to type: --from-env answers from DEVHUD_INIT_*.
+// runInit falls back to the real GITHUB_TOKEN for the login lookup: keep the
+// machine's own out of these tests.
+afterEach(() => { vi.unstubAllEnvs(); });
+const noGithubEnv = () => vi.stubEnv('GITHUB_TOKEN', '');
+const jiraEnv = { DEVHUD_INIT_JIRA_URL: 'https://acme.atlassian.net', DEVHUD_INIT_JIRA_EMAIL: 'me@acme.com', DEVHUD_INIT_JIRA_TOKEN: 'jt', DEVHUD_INIT_JIRA_PROJECT: 'P' };
 const lookups = (url: string) => {
   if (url.endsWith('/rest/api/3/myself')) return json({ accountId: 'acc-123', displayName: 'Dev' });
   if (url === 'https://api.github.com/user') return json({ login: 'octo' });
@@ -132,4 +137,28 @@ test('init --from-env leaves the GitHub token out of the config when unset', asy
   const r = await runInit({ prompter: envPrompter(env), configPath, fetchFn: lookups, log: () => {} });
   expect(r.code).toBe(0);
   expect(JSON.parse(readFileSync(configPath, 'utf8')).github.token).toBe('');
+});
+
+test('init --from-env: a set variable beats the GitHub-login default', async () => {
+  noGithubEnv();
+  const configPath = join(mkdtempSync(join(tmpdir(), 'devhud-init-')), 'config.json');
+  const env = { ...jiraEnv, DEVHUD_INIT_GITHUB_TOKEN: 'ght', DEVHUD_INIT_GITHUB_USERNAME: 'me', DEVHUD_INIT_GITHUB_ORG: 'acme', DEVHUD_INIT_GITHUB_REPOS: 'web' };
+  expect((await runInit({ prompter: envPrompter(env), configPath, fetchFn: lookups, log: () => {} })).code).toBe(0);
+  expect(JSON.parse(readFileSync(configPath, 'utf8')).github).toMatchObject({ username: 'me', org: 'acme' });
+});
+
+test.each(['', '   '])('init --from-env requires the Jira token (value %j) and writes nothing', async (token) => {
+  noGithubEnv();
+  const configPath = join(mkdtempSync(join(tmpdir(), 'devhud-init-')), 'config.json');
+  const env = { ...jiraEnv, DEVHUD_INIT_JIRA_TOKEN: token, DEVHUD_INIT_GITHUB_USERNAME: 'me', DEVHUD_INIT_GITHUB_ORG: 'acme', DEVHUD_INIT_GITHUB_REPOS: 'web' };
+  const r = await runInit({ prompter: envPrompter(env), configPath, fetchFn: lookups, log: () => {} });
+  expect(r.err).toMatch(/^DEVHUD_INIT_JIRA_TOKEN is not set/);
+  expect(() => readFileSync(configPath)).toThrow();
+});
+
+test('init --from-env with no GitHub token anywhere needs the username', async () => {
+  noGithubEnv();
+  const configPath = join(mkdtempSync(join(tmpdir(), 'devhud-init-')), 'config.json');
+  const r = await runInit({ prompter: envPrompter({ ...jiraEnv, DEVHUD_INIT_GITHUB_REPOS: 'web' }), configPath, fetchFn: lookups, log: () => {} });
+  expect(r.err).toMatch(/^DEVHUD_INIT_GITHUB_USERNAME is not set/);
 });
