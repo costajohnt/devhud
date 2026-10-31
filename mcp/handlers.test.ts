@@ -194,7 +194,7 @@ test('ackCard refuses a direct-mode write when a server.pid exists for a live pr
   seedSnapshot(statePath);
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
   const result = await ackCard({ config, statePath, viaServer: false, key: 'P-1' }) as { error: string };
-  expect(result.error).toContain('appears to be running');
+  expect(result).toHaveProperty('error', expect.stringContaining('appears to be running'));
 });
 
 test('transitionCard against demo config returns the stub-success refusal, not an error', async () => {
@@ -208,14 +208,14 @@ test('commentCard against demo config returns the stub-success refusal', async (
   const statePath = tempStatePath();
   const configPath = tempConfigFile({ demo: true });
   const result = await commentCard({ config, statePath, viaServer: false, configPath, key: 'P-1', body: 'looks good' });
-  expect(result.demo).toBe(true);
+  expect(result).toHaveProperty('demo', true);
 });
 
 test('commentPr against demo config returns the stub-success refusal', async () => {
   const statePath = tempStatePath();
   const configPath = tempConfigFile({ demo: true });
   const result = await commentPr({ config, statePath, viaServer: false, configPath, repo: 'acme/webapp', number: 482, body: 'nice work' });
-  expect(result.demo).toBe(true);
+  expect(result).toHaveProperty('demo', true);
 });
 
 test('transitionCard refuses a direct-mode write when a server.pid exists for a live process (split-brain guard)', async () => {
@@ -223,7 +223,7 @@ test('transitionCard refuses a direct-mode write when a server.pid exists for a 
   const writeEnabledConfig: Config = { ...config, demo: false, writeEnabled: true };
   writeFileSync(join(dirname(statePath), 'server.pid'), JSON.stringify({ pid: process.pid, port: config.port, startedAt: 'x' }));
   const result = await transitionCard({ config: writeEnabledConfig, statePath, viaServer: false, key: 'P-1', status: 'Done' });
-  expect(result.error).toContain('appears to be running');
+  expect(result).toHaveProperty('error', expect.stringContaining('appears to be running'));
 });
 
 test('transitionCard against a non-demo config with writeEnabled false refuses with a real error', async () => {
@@ -231,7 +231,7 @@ test('transitionCard against a non-demo config with writeEnabled false refuses w
   const nonDemoConfig: Config = { ...config, demo: false, writeEnabled: false };
   const configPath = tempConfigFile({ demo: false, writeEnabled: false });
   const result = await transitionCard({ config: nonDemoConfig, statePath, viaServer: false, configPath, key: 'P-1', status: 'Done' });
-  expect(result.error).toBe('write-back disabled; set writeEnabled: true in config.json');
+  expect(result).toHaveProperty('error', 'write-back disabled; set writeEnabled: true in config.json');
 });
 
 // getSnapshot's HTTP-mode path is two round-trips (probeServer's own fetch,

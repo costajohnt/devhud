@@ -6,7 +6,7 @@
 // server/ops.ts, the shared dual-transport layer the CLI uses too — this
 // file only shapes tool results (summaries, untrusted-text notes) on top.
 import { opSnapshot, opRefresh, opAction, opWrite } from '../server/ops.ts';
-import type { Config, Snapshot, Bucket, QueueEntry } from '../server/types.ts';
+import type { Config, Snapshot, Bucket, QueueEntry, WriteResult } from '../server/types.ts';
 
 export interface Ctx {
   config: Config;
@@ -83,17 +83,15 @@ export async function unpinCard(ctx: Ctx & { key: string }): Promise<ActionShape
   return await opAction(ctx, { type: 'unpin', key: ctx.key });
 }
 
-export type WriteShape = Record<string, unknown>;
-
-export async function transitionCard(ctx: Ctx & { key: string; status: string }): Promise<WriteShape> {
+export async function transitionCard(ctx: Ctx & { key: string; status: string }): Promise<WriteResult> {
   return await opWrite(ctx, { type: 'transition', key: ctx.key, status: ctx.status, source: 'mcp' });
 }
 
-export async function commentCard(ctx: Ctx & { key: string; body: string }): Promise<WriteShape> {
+export async function commentCard(ctx: Ctx & { key: string; body: string }): Promise<WriteResult> {
   return await opWrite(ctx, { type: 'comment', key: ctx.key, body: ctx.body, source: 'mcp' });
 }
 
-export async function commentPr(ctx: Ctx & { repo: string; number: number; body: string }): Promise<WriteShape> {
+export async function commentPr(ctx: Ctx & { repo: string; number: number; body: string }): Promise<WriteResult> {
   return await opWrite(ctx, { type: 'pr_comment', repo: ctx.repo, number: ctx.number, body: ctx.body, source: 'mcp' });
 }
 
