@@ -39,7 +39,11 @@ export async function readBody(req: AsyncIterable<Buffer | string>): Promise<Rec
     chunks.push(buf);
   }
   const s = Buffer.concat(chunks).toString('utf8');
-  return JSON.parse(s || '{}') as Record<string, unknown>;
+  const parsed: unknown = JSON.parse(s || '{}');
+  // `null`, `[]` and scalars parse fine but every handler indexes the body
+  // as an object; map them to the documented 400 rather than a 500.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('body is not a JSON object');
+  return parsed as Record<string, unknown>;
 }
 
 // The deliberate size limit must be distinguishable from a malformed body
@@ -352,6 +356,9 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {
+        // Token only: the SPA has no write UI, so a browser session must
+        // never reach Jira/GitHub write-back (audit L1).
+        if (apiToken && !sameToken(headerToken(req), apiToken)) return send(401, { error: 'write-back needs the API token header; a dashboard session cannot write' });
         const guardErr = guardMutation(req);
         if (guardErr) return send(guardErr.status, { error: guardErr.error });
         let body: Record<string, unknown>;

@@ -115,6 +115,21 @@ test('login codes expire after a minute', async () => {
   }
 });
 
+test('a browser session cannot reach /api/write; only the token can (L1)', async () => {
+  const { base, token } = await start();
+  const { session } = await (await claim(base, await mintCode(base, token))).json() as { session: string };
+  const post = (headers: Record<string, string>, body = '{"type":"comment","key":"PROJ-1","body":"hi"}') =>
+    fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body });
+  expect((await post({ 'x-devhud-session': session })).status).toBe(401);
+  // The same session still reads and acks.
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': session } })).status).toBe(200);
+  // The token gets past auth: a null body is the documented 400, not a 500 (L2).
+  expect((await post({ 'x-devhud-token': token }, 'null')).status).toBe(400);
+  expect((await post({ 'x-devhud-token': token }, '[]')).status).toBe(400);
+  // Without write-back configured the token holder is refused by the gate, not by auth.
+  expect((await post({ 'x-devhud-token': token })).status).not.toBe(401);
+});
+
 test('sessions are capped: the oldest is dropped past 32', async () => {
   const { base, token } = await start();
   const sessions: string[] = [];
