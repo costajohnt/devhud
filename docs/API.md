@@ -1,6 +1,26 @@
 # API Reference
 
-devhud exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). There is no authentication: anyone with access to the machine and port can call it. Five routes under `/api/` (`/api/data`, `/api/events`, `/api/refresh`, `/api/action` and `/api/write`), plus static file serving for the SPA.
+devhud exposes a small local HTTP API on `127.0.0.1` (loopback only, not reachable from other machines). Every `/api/*` request needs a credential (see Authentication below). Five board routes under `/api/` (`/api/data`, `/api/events`, `/api/refresh`, `/api/action` and `/api/write`), three auth routes (`/api/probe`, `/api/login-code`, `/api/session`), plus static file serving for the SPA.
+
+## Authentication
+
+Loopback alone would let any local principal that can reach the port read the board and, with `writeEnabled`, write to Jira/GitHub as you. So:
+
+- **API token.** The server makes a fresh random token on every start and writes it to `data/api-token` (mode 600, next to `state.json`) once it holds its port; it is never printed or put in a URL. The CLI and MCP server read it from there and send it as the `x-devhud-token` header on every request. Anything without a valid token or session gets `401 { "error": "missing or invalid devhud token; ..." }`.
+- **Browser session.** The dashboard never sees the token. `devhud open` (holding the token) asks `POST /api/login-code` for a one-time 60-second code and opens the page with it; the page trades the code at `POST /api/session` for a session, keeps it in localStorage (scoped to this port, unlike a cookie) and sends it as the `x-devhud-session` header. `GET /api/events` also accepts `?session=` because EventSource cannot set headers; the request log drops query strings. A code claimed a second time within five minutes revokes the session its first claim produced. At most 32 sessions are kept; the oldest is dropped.
+- **`POST /api/write` is token-only.** The SPA has no write UI, so a session on that route is `401` even though the same session reads and acks.
+
+### GET /api/probe
+
+Unauthenticated. `?nonce=<16 to 64 url-safe chars>` returns `{ "proof": "<base64url HMAC-SHA256(token, nonce)>" }`, `400` for a bad nonce. The CLI and MCP use it to check that the listener on the configured port is this server before they send the token anywhere: they also require `data/server.pid` to name a live pid and this port. The proof reveals nothing usable to a caller who does not already hold the token.
+
+### POST /api/login-code
+
+Token header only (a session is `401`). Returns `{ "code": "<one-time code>" }`, valid for 60 seconds.
+
+### POST /api/session
+
+Body `{ "code": "<code>" }`, `Content-Type: application/json`. Returns `{ "session": "<session>" }`, `401` for an unknown, expired or already-claimed code.
 
 There are two other ways to reach the same board: `server/cli.ts` (a plain-TS CLI, see the README's CLI section) and `mcp/` (a stdio MCP server for Claude sessions, see the README's Claude integration section). Both use the same dual-transport rule as this API: proxy through a running server when one's up, otherwise operate directly on `data/state.json` via the same server modules this API uses, so behavior is identical across all three.
 
@@ -340,8 +360,9 @@ Guards that apply across routes, rather than to one endpoint. A client written o
 | --- | --- | --- |
 | `403` | **Every** `/api/*` route, reads included: the `Host` header is not `127.0.0.1:<port>` or `localhost:<port>` (the port the connection actually landed on). | `{ "error": "invalid Host header" }` |
 | `415` | `POST /api/refresh`, `/api/action`, `/api/write`: `Content-Type` is not `application/json`. | `{ "error": "Content-Type must be application/json" }` |
+| `401` | **Every** `/api/*` route except `GET /api/probe`: no valid `x-devhud-token` or `x-devhud-session` header (see Authentication). `POST /api/write` and `POST /api/login-code` take the token only. | `{ "error": "missing or invalid devhud token; ..." }` |
 | `413` | `POST /api/action`, `/api/write`: request body exceeded the 1 MB cap. | `{ "error": "body too large" }` |
-| `400` | `POST /api/action`, `/api/write`: body is not parseable JSON (distinct from the size cap above). | `{ "error": "invalid JSON body" }` |
+| `400` | `POST /api/action`, `/api/write`, `/api/session`: body is not parseable JSON, or parses to something other than an object (`null`, an array, a scalar). | `{ "error": "invalid JSON body" }` |
 | `503` | `GET /api/events`: 32 event streams are already open. | `{ "error": "too many event streams" }` |
 | `500` | Any unhandled error. The real error (which can carry filesystem paths) is logged server-side only. | `{ "error": "internal error" }` |
 
@@ -357,15 +378,15 @@ Any request not starting with `/api/` is treated as a static file request agains
 - If the resolved path is a real file, it's served with a `content-type` derived from its extension (`.html`, `.js`, `.css`, `.svg`, `.woff2`, `.png`, `.json`; anything else falls back to `application/octet-stream`).
 - If the path doesn't resolve to a file (a client-side route like `/done`, or any unknown path), the server falls back to serving `index.html` so the SPA router (`preact-iso`, reading `window.location` client-side) can render its own not-found or route view.
 
-`/api/*` paths that don't match `GET /api/data`, `GET /api/events`, `POST /api/refresh`, `POST /api/action`, or `POST /api/write` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
+`/api/*` paths that don't match `GET /api/data`, `GET /api/events`, `POST /api/refresh`, `POST /api/action`, `POST /api/write`, `GET /api/probe`, `POST /api/login-code` or `POST /api/session` (wrong method or unknown path) return `404` with `{ "error": "not found" }` instead of falling through to the SPA.
 
 ## Single-instance behavior
 
-The server binds `127.0.0.1:<port>` (loopback only, not reachable from other hosts on the network) via `http.Server#listen`. If another instance is already bound to that port, `listen` fails with `EADDRINUSE`; the server logs `already running on port <port>` and exits with code 1, rather than probing a pid file (a pid file can false-negative after a crash, or false-positive if the pid was reused by an unrelated process). On successful bind, a `data/server.pid` file is written with `{ pid, port, startedAt }` for operator convenience (not used for the instance check itself), and removed on `SIGINT`/`SIGTERM`.
+The server binds `127.0.0.1:<port>` (loopback only, not reachable from other hosts on the network) via `http.Server#listen`. If another instance is already bound to that port, `listen` fails with `EADDRINUSE`; the server logs `already running on port <port>` and exits with code 1, rather than probing a pid file (a pid file can false-negative after a crash, or false-positive if the pid was reused by an unrelated process). On successful bind, a `data/server.pid` file is written with `{ pid, port, startedAt }` (not used for the instance check itself, but the CLI and MCP require it before they trust the port, see `GET /api/probe`), and removed together with `data/api-token` on `SIGINT`/`SIGTERM`.
 
 ## CLI
 
-`server/cli.ts` exposes `init`/`todo`/`status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: it probes `GET /api/data` on `127.0.0.1:<port>` with a ~500ms timeout, and if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — that branch is chosen once per command in `server/ops.ts`, which both the CLI and the MCP server consume, and `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
+`server/cli.ts` exposes `init`/`todo`/`status`/`refresh`/`ack`/`move`/`unpin`/`transition`/`comment`/`pr-comment`/`serve`/`open` over this same API surface without a browser. Its core design is dual transport: if `data/server.pid` names a live process and this port, it probes `GET /api/probe` on `127.0.0.1:<port>` with a ~500ms timeout and checks the proof against `data/api-token`; if that succeeds it drives every command through the HTTP endpoints documented above (so a running server's live in-memory state is the one read/mutated); if nothing answers, it operates directly on `data/state.json` via the same `loadState`/`saveState`/`refresh`/`applyAction` modules the server itself uses, so behavior is identical either way — that branch is chosen once per command in `server/ops.ts`, which both the CLI and the MCP server consume, and `ack`/`move` semantics in particular come from a single shared `applyAction` function (`server/actions.ts`) that both the HTTP handler and the CLI call, so the two transports can never drift. Which transport was used is always printed to stderr in human-readable mode. See the README's CLI section for usage examples.
 
 ## Demo mode
 
