@@ -17,14 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, qualifyRepo } from './config.ts';
 import { BUCKETS } from './actions.ts';
 import { opSnapshot, opRefresh, opAction, opWrite } from './ops.ts';
-import { probeServer, readApiToken } from './transport.ts';
+import { probeDevhud, readApiToken } from './transport.ts';
 import type { Config, Snapshot } from './types.ts';
-
-// Re-exported for backward compatibility: server/cli.test.ts imports
-// probeServer from here, and server/transport.ts is also used directly by
-// the MCP server (mcp/handlers.ts) so all transports (HTTP proxy, direct
-// disk access, and the split-brain guard) can't drift between callers.
-export { probeServer };
 
 const HELP = `devhud — Jira/GitHub board CLI
 
@@ -144,8 +138,6 @@ export function parseCli(argv: string[]): { values: { json: boolean; help: boole
 // and performWrite's repos[] scope check apply to bare config.repos entries,
 // so a ref copied from config.repos works as-is. Already-qualified refs pass
 // through untouched.
-// Kept as a re-export: cli.test.ts imports it from here.
-export { qualifyRepo };
 
 export interface CliResult {
   code: number;
@@ -214,7 +206,7 @@ export async function run(argv: string[], { config, statePath, configPath, probe
 
   // Probed once here (not inside each op) so the transport note on stderr
   // can never disagree with the path the op actually took.
-  const viaServer = forceViaServer ?? await probeServer(config.port, { timeoutMs: probeTimeoutMs, token: readApiToken(statePath) });
+  const viaServer = forceViaServer ?? await probeDevhud(config.port, statePath, { timeoutMs: probeTimeoutMs });
   const err = viaServer ? 'via server' : 'direct';
   const ctx = { config, statePath, configPath, viaServer };
 

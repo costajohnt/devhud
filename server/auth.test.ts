@@ -7,7 +7,7 @@ import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createServer } from './index.ts';
 import { saveState, emptyState } from './state.ts';
-import { newApiToken, writeApiToken, readApiToken, apiTokenPath, probeServer } from './transport.ts';
+import { newApiToken, writeApiToken, readApiToken, apiTokenPath, probeServer, writePidFile } from './transport.ts';
 import { run } from './cli.ts';
 import { performWrite } from './writeback.ts';
 import type { Config } from './types.ts';
@@ -34,6 +34,7 @@ async function start(apiToken?: string) {
   server = createServer({ config: { ...config }, statePath, webDist, apiToken: token });
   await new Promise<void>(r => server!.listen(0, '127.0.0.1', () => r()));
   const port = (server!.address() as AddressInfo).port;
+  writePidFile(join(dir, 'data', 'server.pid'), port);
   return { base: `http://127.0.0.1:${port}`, port, token, statePath };
 }
 
@@ -114,6 +115,21 @@ test('login codes expire after a minute', async () => {
   }
 });
 
+test('a browser session cannot reach /api/write; only the token can (L1)', async () => {
+  const { base, token } = await start();
+  const { session } = await (await claim(base, await mintCode(base, token))).json() as { session: string };
+  const post = (headers: Record<string, string>, body = '{"type":"comment","key":"PROJ-1","body":"hi"}') =>
+    fetch(`${base}/api/write`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body });
+  expect((await post({ 'x-devhud-session': session })).status).toBe(401);
+  // The same session still reads and acks.
+  expect((await fetch(`${base}/api/data`, { headers: { 'x-devhud-session': session } })).status).toBe(200);
+  // The token gets past auth: a null body is the documented 400, not a 500 (L2).
+  expect((await post({ 'x-devhud-token': token }, 'null')).status).toBe(400);
+  expect((await post({ 'x-devhud-token': token }, '[]')).status).toBe(400);
+  // Without write-back configured the token holder is refused by the gate, not by auth.
+  expect((await post({ 'x-devhud-token': token })).status).not.toBe(401);
+});
+
 test('sessions are capped: the oldest is dropped past 32', async () => {
   const { base, token } = await start();
   const sessions: string[] = [];
@@ -123,9 +139,15 @@ test('sessions are capped: the oldest is dropped past 32', async () => {
 });
 
 test('the CLI reads the token from next to the state file and goes via the server', async () => {
-  const { port, statePath } = await start();
+  const { base, port, statePath } = await start();
   expect(await probeServer(port, { timeoutMs: 5000 })).toBe(false);
+  expect(await probeServer(port, { timeoutMs: 5000, token: 'wrong' })).toBe(false);
   expect(await probeServer(port, { timeoutMs: 5000, token: readApiToken(statePath) })).toBe(true);
+  // The challenge itself needs no credentials and leaks none.
+  expect((await fetch(`${base}/api/probe?nonce=short`)).status).toBe(400);
+  const { proof } = await (await fetch(`${base}/api/probe?nonce=${'a'.repeat(16)}`)).json() as { proof: string };
+  expect(proof).toMatch(/^[\w-]{43}$/);
+  expect(proof).not.toContain(readApiToken(statePath)!);
   const r = await run(['status', '--json'], { config: { ...config, port }, statePath, probeTimeoutMs: 5000 });
   expect(r.err).toBe('via server');
   expect(r.code).toBe(0);

@@ -914,6 +914,19 @@ test('bundleStatus stays quiet when there is no source tree to compare against',
   expect(bundleStatus(join(root, 'does-not-exist'), join(root, 'dist'))).toBeNull();
 });
 
+test('readBody rejects a JSON body that is not an object as a SyntaxError, so routes answer 400 not 500 (L2)', async () => {
+  for (const raw of ['null', '[]', '"s"', '1']) {
+    const stream = new PassThrough();
+    const p = readBody(stream);
+    stream.end(raw);
+    await expect(p).rejects.toBeInstanceOf(SyntaxError);
+  }
+  const ok = new PassThrough();
+  const q = readBody(ok);
+  ok.end('');
+  expect(await q).toEqual({});
+});
+
 test('readBody decodes a multi-byte UTF-8 character split across two writes', async () => {
   const bytes = Buffer.from(JSON.stringify({ body: 'caf\u00e9 \u{1F600} \u201cq\u201d' }), 'utf8');
   // Split inside the 4-byte emoji so neither half is valid UTF-8 on its own.

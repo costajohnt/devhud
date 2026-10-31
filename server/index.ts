@@ -9,7 +9,7 @@ import { loadState, saveState, emptySnapshot } from './state.ts';
 import { refresh } from './refresh.ts';
 import { applyAction } from './actions.ts';
 import { performWrite, autoTransitionMergedCards } from './writeback.ts';
-import { writePidFile, newApiToken, writeApiToken, TOKEN_HEADER } from './transport.ts';
+import { writePidFile, newApiToken, writeApiToken, apiTokenPath, probeProof, PROBE_NONCE_RE, TOKEN_HEADER } from './transport.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config, State, Snapshot } from './types.ts';
 
@@ -39,7 +39,11 @@ export async function readBody(req: AsyncIterable<Buffer | string>): Promise<Rec
     chunks.push(buf);
   }
   const s = Buffer.concat(chunks).toString('utf8');
-  return JSON.parse(s || '{}') as Record<string, unknown>;
+  const parsed: unknown = JSON.parse(s || '{}');
+  // `null`, `[]` and scalars parse fine but every handler indexes the body
+  // as an object; map them to the documented 400 rather than a 500.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('body is not a JSON object');
+  return parsed as Record<string, unknown>;
 }
 
 // The deliberate size limit must be distinguishable from a malformed body
@@ -278,6 +282,15 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.values().next().value!);
         return send(200, { session });
       }
+      // Unauthenticated on purpose: the CLI/MCP probe proves this listener
+      // holds their token before they send it (transport.ts probeServer).
+      // The proof is an HMAC of the token over the caller's nonce, so it
+      // reveals nothing about the token to a caller who lacks it.
+      if (apiToken && url.pathname === '/api/probe' && req.method === 'GET') {
+        const nonce = url.searchParams.get('nonce') ?? '';
+        if (!PROBE_NONCE_RE.test(nonce)) return send(400, { error: 'nonce must be 16 to 64 url-safe characters' });
+        return send(200, { proof: probeProof(apiToken, nonce) });
+      }
       if (url.pathname.startsWith('/api/')) {
         if (!authorized(req, url)) return send(401, { error: 'missing or invalid devhud token; run `devhud open` for the dashboard (the CLI and MCP read it automatically)' });
       }
@@ -352,6 +365,9 @@ export function createServer({ config, statePath, webDist, configPath, refreshFn
         return send(200, result);
       }
       if (url.pathname === '/api/write' && req.method === 'POST') {
+        // Token only: the SPA has no write UI, so a browser session must
+        // never reach Jira/GitHub write-back (audit L1).
+        if (apiToken && !sameToken(headerToken(req), apiToken)) return send(401, { error: 'write-back needs the API token header; a dashboard session cannot write' });
         const guardErr = guardMutation(req);
         if (guardErr) return send(guardErr.status, { error: guardErr.error });
         let body: Record<string, unknown>;
@@ -577,6 +593,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   const shutdown = () => {
     try { unlinkSync(pidPath); } catch {}
+    // The token must not outlive the server: a leftover is what a CLI/MCP
+    // would otherwise hand to whatever next binds the port (audit L4).
+    try { unlinkSync(apiTokenPath(STATE_PATH)); } catch {}
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

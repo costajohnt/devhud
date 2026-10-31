@@ -132,6 +132,17 @@ test('performWrite rejects an unknown type before touching the gate', async () =
   expect(result).toEqual({ error: 'unknown write type "delete"', status: 400 });
 });
 
+test('performWrite rejects non-string key/repo/body/status before any upstream call (L3)', async () => {
+  const state = emptyState();
+  const fetchSpy = vi.spyOn(global, 'fetch');
+  const err = { error: 'key, repo, body and status must be strings', status: 400 };
+  expect(await performWrite({ state, type: 'comment', key: 'P-1', body: { x: 1 } as unknown as string, configPath: NO_CONFIG })).toEqual(err);
+  expect(await performWrite({ state, type: 'transition', key: 'P-1', status: 5 as unknown as string, configPath: NO_CONFIG })).toEqual(err);
+  expect(await performWrite({ state, type: 'pr_comment', repo: ['o/r'] as unknown as string, number: 1, body: 'hi', configPath: NO_CONFIG })).toEqual(err);
+  expect(fetchSpy).not.toHaveBeenCalled();
+  fetchSpy.mockRestore();
+});
+
 test('performWrite validates required fields per type', async () => {
   const state = emptyState();
   expect(await performWrite({ state, type: 'transition', key: 'P-1', configPath: NO_CONFIG })).toEqual({ error: 'transition requires key and status', status: 400 });

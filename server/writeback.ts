@@ -218,6 +218,11 @@ export async function performWrite({
   if (!WRITE_TYPES.includes(type)) {
     return { error: `unknown write type "${type}"`, status: 400 };
   }
+  // HTTP and MCP callers can send any JSON shape; the Jira/GitHub calls
+  // below assume strings (audit L3).
+  if ([key, repo, body, status].some(v => v !== undefined && typeof v !== 'string')) {
+    return { error: 'key, repo, body and status must be strings', status: 400 };
+  }
   if (type === 'transition' && (!key || !status)) {
     return { error: 'transition requires key and status', status: 400 };
   }

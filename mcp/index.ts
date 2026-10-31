@@ -204,7 +204,7 @@ server.registerTool(
   },
   async ({ key, status }) => {
     const result = await transitionCard({ ...ctx, key, status });
-    return result.error ? errorText(result.error as string) : text(result);
+    return 'error' in result ? errorText(result.error) : text(result);
   },
 );
 
@@ -225,7 +225,7 @@ server.registerTool(
   },
   async ({ key, body }) => {
     const result = await commentCard({ ...ctx, key, body });
-    return result.error ? errorText(result.error as string) : text(result);
+    return 'error' in result ? errorText(result.error) : text(result);
   },
 );
 
@@ -247,7 +247,7 @@ server.registerTool(
   },
   async ({ repo, number, body }) => {
     const result = await commentPr({ ...ctx, repo, number, body });
-    return result.error ? errorText(result.error as string) : text(result);
+    return 'error' in result ? errorText(result.error) : text(result);
   },
 );
 
