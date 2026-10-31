@@ -5,7 +5,7 @@
   "engines": { "node": ">=22.18" },
   "scripts": { "dev": "vite", "build": "tsc && vite build" },
   "dependencies": {
-    "preact": "^11.0.2",
+    "preact": "^11.1.0",
     "preact-iso": "^2.12.2",
     "canvas-confetti": "^1.9.4",
     "chart.js": "^4.6.1",
