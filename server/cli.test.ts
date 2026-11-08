@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { run, formatStatus, parseCli, wantsHelp } from './cli.ts';
 import { qualifyRepo } from './config.ts';
 import { createServer } from './index.ts';
-import { probeServer, writePidFile } from './transport.ts';
+import { probeServer, writePidFile, writeApiToken } from './transport.ts';
 import { loadState, saveState, emptyState } from './state.ts';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -380,6 +380,32 @@ test('refresh via the HTTP transport surfaces a non-2xx response as an error ins
     expect(err).toContain('HTTP 500');
   } finally {
     badServer.close();
+  }
+});
+
+// Audit 2026-11-07 M1: `open` used to POST the API token to whatever held
+// config.port. A squatter that answers everything 200 but cannot produce the
+// HMAC proof must never see the token header.
+test('open refuses and sends no token to a listener that fails the probe challenge', async () => {
+  const seen: http.IncomingHttpHeaders[] = [];
+  const squatter = http.createServer((req, res) => {
+    seen.push(req.headers);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ proof: 'wrong', code: 'stolen' }));
+  });
+  await new Promise<void>(r => squatter.listen(0, '127.0.0.1', () => r()));
+  try {
+    const squatConfig = makeConfig({ port: (squatter.address() as AddressInfo).port });
+    const statePath = tempStatePath();
+    writePidFile(join(dirname(statePath), 'server.pid'), squatConfig.port); // pass the pid check so the challenge is what refuses
+    writeApiToken(statePath, 'fake-test-token');
+    const { code, err } = await run(['open'], { config: squatConfig, statePath, probeTimeoutMs: SLOW_PROBE_MS });
+    expect(code).toBe(1);
+    expect(err).toContain('token not sent');
+    expect(seen.length).toBeGreaterThan(0); // the challenge did reach it
+    expect(seen.some(h => 'x-devhud-token' in h)).toBe(false);
+  } finally {
+    squatter.close();
   }
 });
 

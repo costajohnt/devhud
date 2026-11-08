@@ -188,6 +188,12 @@ export async function run(argv: string[], { config, statePath, configPath, probe
     let url = `http://localhost:${config.port}`;
     const token = readApiToken(statePath);
     if (token) {
+      // Same gate as every other token-bearing path: only a listener that
+      // passes probeDevhud (pid file for this port + HMAC challenge) gets
+      // the token. Anything else on config.port is refused, nothing sent.
+      if (!await probeDevhud(config.port, statePath, { timeoutMs: probeTimeoutMs })) {
+        return { code: 1, out: '', err: `no verified devhud server on port ${config.port} (not running, or another process holds the port); token not sent. Start it with \`devhud serve\`.` };
+      }
       try {
         const r = await fetch(`http://127.0.0.1:${config.port}/api/login-code`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-devhud-token': token } });
         if (r.ok) url += `/?login=${encodeURIComponent(((await r.json()) as { code: string }).code)}`;
